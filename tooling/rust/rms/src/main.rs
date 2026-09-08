@@ -43926,7 +43926,10 @@ fn resolve_next_owner_for_task(
 
         let exact_subjects = exact_structured_subject_modules(subject_route, modules)
             .into_iter()
-            .filter(|module| !task_explicitly_excludes_module_owner(task, module))
+            .filter(|module| {
+                !task_explicitly_excludes_module_owner(task, module)
+                    && !task_mentions_module_only_as_proof_target(task, module)
+            })
             .collect::<Vec<_>>();
         if exact_subjects.len() == 1 {
             let selected = exact_subjects[0];
@@ -43976,7 +43979,10 @@ fn resolve_next_owner_for_task(
                 modules
                     .values()
                     .find(|module| module.path == PathBuf::from(&candidate.module.path))
-                    .is_none_or(|module| !task_explicitly_excludes_module_owner(task, module))
+                    .is_none_or(|module| {
+                        !task_explicitly_excludes_module_owner(task, module)
+                            && !task_mentions_module_only_as_proof_target(task, module)
+                    })
             })
             .collect::<Vec<_>>();
         if let Some(top) = declared_owners.first() {
@@ -44011,6 +44017,7 @@ fn resolve_next_owner_for_task(
         if let Some(direct) = modules.values().find(|module| {
             module.path == root.join("module.yaml")
                 && !task_explicitly_excludes_module_owner(task, module)
+                && !task_mentions_module_only_as_proof_target(task, module)
         }) {
             (
                 Some(direct.path.clone()),
@@ -44018,7 +44025,10 @@ fn resolve_next_owner_for_task(
                 vec![owner_candidate(subject_route, direct, modules)],
             )
         } else {
-            top_level.retain(|module| !task_explicitly_excludes_module_owner(task, module));
+            top_level.retain(|module| {
+                !task_explicitly_excludes_module_owner(task, module)
+                    && !task_mentions_module_only_as_proof_target(task, module)
+            });
             if top_level.len() == 1 {
                 (
                     Some(top_level[0].path.clone()),
@@ -44037,13 +44047,13 @@ fn resolve_next_owner_for_task(
                         .then_with(|| left.module.name.cmp(&right.module.name))
                 });
                 let unique =
-                    unique_top_route(&ranked).map(|candidate| candidate.module.path.clone());
+                    decisive_top_route(&ranked).map(|candidate| candidate.module.path.clone());
                 let reason = if unique.is_some() {
                     "unique positive prospective task match"
                 } else if ranked.is_empty() {
                     "no module manifests were discovered"
                 } else if ranked.first().is_some_and(|candidate| candidate.score > 0) {
-                    "task matches multiple top-level modules equally"
+                    "task has no decisive top-level module match"
                 } else {
                     "task has no positive top-level module match"
                 };
@@ -44426,7 +44436,10 @@ fn longest_exact_task_module_mentions<'a>(
 ) -> Vec<&'a ModuleIndexEntry> {
     let mut matches = modules
         .values()
-        .filter(|module| task_qualifiedly_mentions_module(task, module, modules))
+        .filter(|module| {
+            task_qualifiedly_mentions_module(task, module, modules)
+                && !task_mentions_module_only_as_proof_target(task, module)
+        })
         .collect::<Vec<_>>();
     let Some(longest) = matches
         .iter()
@@ -44438,6 +44451,51 @@ fn longest_exact_task_module_mentions<'a>(
     matches.retain(|module| semantic_id_segment(&module.name).split('-').count() == longest);
     matches.sort_by(|left, right| left.path.cmp(&right.path));
     matches
+}
+
+fn task_mentions_module_only_as_proof_target(task: &str, module: &ModuleIndexEntry) -> bool {
+    let task_tokens = semantic_id_segment(task)
+        .split('-')
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let module_tokens = semantic_id_segment(&module.name)
+        .split('-')
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if module_tokens.is_empty() || module_tokens.len() > task_tokens.len() {
+        return false;
+    }
+    let proof_actions = ["cover", "exercise", "prove", "test", "validate", "verify"];
+    let owner_actions = [
+        "add",
+        "change",
+        "evolve",
+        "fix",
+        "implement",
+        "modify",
+        "repair",
+        "replace",
+        "update",
+    ];
+    let mut found = false;
+    for start in 0..=task_tokens.len() - module_tokens.len() {
+        if task_tokens[start..start + module_tokens.len()] != module_tokens {
+            continue;
+        }
+        found = true;
+        let nearest_action = task_tokens[start.saturating_sub(10)..start]
+            .iter()
+            .rev()
+            .find(|token| {
+                proof_actions.contains(&token.as_str()) || owner_actions.contains(&token.as_str())
+            });
+        if !nearest_action.is_some_and(|action| proof_actions.contains(&action.as_str())) {
+            return false;
+        }
+    }
+    found
 }
 
 fn explicit_composite_export_reconciliation_modules<'a>(
@@ -46190,6 +46248,18 @@ fn unique_top_route(candidates: &[RouteCandidate]) -> Option<&RouteCandidate> {
     if candidates
         .get(1)
         .is_some_and(|next| next.score == top.score)
+    {
+        return None;
+    }
+    Some(top)
+}
+
+fn decisive_top_route(candidates: &[RouteCandidate]) -> Option<&RouteCandidate> {
+    let top = candidates.first()?;
+    if top.score <= 0
+        || candidates
+            .get(1)
+            .is_some_and(|next| top.score < 8 && top.score - next.score < 2)
     {
         return None;
     }
@@ -98050,6 +98120,65 @@ open_questions: [Must reports persist, and must other tooling consume the harnes
     }
 
     #[test]
+    fn proof_only_exact_module_mention_does_not_select_an_owner() {
+        let root = route_capability_fixture("proof-only-module-participant");
+        let proof_participant = root.join("modules/play-game-boundary/implementation.yaml");
+        let mut invalid = load_manifest(&proof_participant).unwrap();
+        set_yaml_string_path(&mut invalid.value, &["spec"], "rms/implementation/v9");
+        write_yaml_manifest(&invalid).unwrap();
+        initialize_test_git_repository(&root);
+        let task = "Fix native engine joined Session refresh erasing valid transport evidence; preserve evidence only in the same Session and peer lifetime, reject stale evidence, and prove repeated refresh plus the next play-game-boundary interaction. Select only an existing authoritative owner. Do not infer that play-game-domain owns the native engine projection.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [engine-refresh, peer-lifetime, play-game-boundary, transport-evidence]
+facts:
+  domain_decisions: {disposition: required, basis: explicit, source_quote: "reject stale evidence"}
+  lifecycle: {disposition: required, basis: explicit, source_quote: "same Session and peer lifetime"}
+  effects: {disposition: required, basis: inferred, rationale: Runtime evidence is retained by the native engine.}
+  runnable_surface: {disposition: absent, basis: inferred, rationale: No runnable surface changes.}
+  reuse: {disposition: unknown, basis: inferred, rationale: The canonical owner is unresolved.}
+responsibilities:
+  - {id: retain-transport-evidence, kind: storage, summary: Retain valid evidence for one peer lifetime.}
+  - {id: reject-stale-evidence, kind: decision, summary: Reject evidence outside that lifetime.}
+surface_kinds: []
+binding_preferences: []
+open_questions: [Which existing module owns the native engine projection?]
+"#;
+
+        let report = build_next_report_with_intent(
+            &root,
+            None,
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(report.result, NextResult::NeedsOwner, "{report:#?}");
+        assert_eq!(report.owner.status(), OwnerStatus::None);
+        assert!(report.owner.selected_module().is_none());
+        assert!(report.blockers.is_empty(), "{:#?}", report.blockers);
+        assert!(report.warnings.iter().any(|warning| {
+            warning.contains("non-blocking canonical debt")
+                && warning.contains("modules/play-game-boundary/implementation.yaml")
+        }));
+        assert!(task_mentions_module_only_as_proof_target(
+            task,
+            load_module_index(&root)
+                .unwrap()
+                .values()
+                .find(|module| module.name == "play-game-boundary")
+                .unwrap()
+        ));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn scaffold_replacement_selects_the_target_instead_of_its_named_provider() {
         let root = route_capability_fixture("scaffold-replacement-owner");
         initialize_test_git_repository(&root);
@@ -106873,6 +107002,34 @@ semantic_functions: []
         fs::remove_dir_all(&cycle_root).unwrap();
         assert_eq!(cycle.status(), OwnerStatus::Ambiguous);
         assert_eq!(cycle.route.len(), 1);
+    }
+
+    #[test]
+    fn heuristic_owner_selection_requires_a_decisive_margin() {
+        let candidate = |name: &str, score: i32| RouteCandidate {
+            module: RouteModuleSummary {
+                name: name.to_string(),
+                path: format!("modules/{name}/module.yaml"),
+                kind: "module".to_string(),
+                shape: "workflow".to_string(),
+                visibility: None,
+            },
+            score,
+            reasons: Vec::new(),
+        };
+        let weak = vec![candidate("first", 5), candidate("second", 4)];
+        assert!(decisive_top_route(&weak).is_none());
+
+        let decisive = vec![candidate("first", 5), candidate("second", 3)];
+        assert_eq!(
+            decisive_top_route(&decisive).map(|route| route.module.name.as_str()),
+            Some("first")
+        );
+        let independently_strong = vec![candidate("first", 8), candidate("second", 7)];
+        assert_eq!(
+            decisive_top_route(&independently_strong).map(|route| route.module.name.as_str()),
+            Some("first")
+        );
     }
 
     #[test]
