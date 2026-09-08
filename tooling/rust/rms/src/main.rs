@@ -41587,12 +41587,13 @@ fn build_next_report_with_optional_program(
                 .to_string(),
         ];
     }
-    let explicit_outside_coverage = task_explicitly_classifies_native_outside_coverage(task);
+    let explicit_outside_coverage =
+        task_explicitly_classifies_native_outside_coverage(task, intent.as_ref());
     if explicit_outside_coverage {
         classification.lane = TaskLane::ImplementationCandidate;
         classification.confidence = "deterministic".to_string();
         classification.reasons = vec![
-            "caller explicitly classifies the requested native work outside RMS coverage and forbids RMS adoption or canonical mutation"
+            "caller explicitly classifies the requested native work outside RMS coverage and does not request a new RMS owner"
                 .to_string(),
         ];
     }
@@ -44361,23 +44362,18 @@ fn task_explicitly_excludes_module_owner(task: &str, module: &ModuleIndexEntry) 
     })
 }
 
-fn task_explicitly_classifies_native_outside_coverage(task: &str) -> bool {
+fn task_explicitly_classifies_native_outside_coverage(
+    task: &str,
+    intent: Option<&IntentModel>,
+) -> bool {
     let task = semantic_id_segment(task);
     let outside_rms = task.contains("outside-rms-coverage");
     let native_scope = ["native", "backend", "project-native", "agent-native"]
         .iter()
         .any(|term| task_mentions_token(&task, term));
-    let forbids_rms_authority = [
-        "do-not-adopt",
-        "do-not-mutate",
-        "do-not-select-any-rms-module",
-        "do-not-edit-rms-canonical-artifacts",
-        "no-rms-adoption",
-        "no-rms-mutation",
-    ]
-    .iter()
-    .any(|phrase| task.contains(phrase));
-    outside_rms && native_scope && forbids_rms_authority
+    let requests_new_rms_owner =
+        intent.is_some_and(|model| model.change_scope == IntentChangeScope::NewModule);
+    outside_rms && native_scope && !requests_new_rms_owner
 }
 
 fn longest_exact_task_module_mentions<'a>(
@@ -97917,23 +97913,24 @@ open_questions: [Which existing module owns production contact identity?]
                     .contains("explicitly treat the work as outside RMS coverage")
             }));
 
-        let outside_task = "Implement the private native backend contact policy as Account Identity work outside RMS coverage. Extend the project-native contract and add pure Rust tests. Do not adopt, mutate, or select any RMS module, including play-game-domain; do not edit RMS canonical artifacts.";
+        let outside_task = "Extend the existing development tooling with a bounded native benchmark. This is an existing-module implementation candidate, not a new system, new module, standalone package, or RMS adoption. The tool is outside RMS coverage. No RMS module owns this harness and no RMS canonical artifact may change.";
         let outside_intent = r#"spec: rms/intent-model/v0.1
 operation: semantic-change
 change_scope: existing-module
 subjects: [contact-directory-participation, play-game-domain]
 facts:
-  domain_decisions: {disposition: required, basis: explicit, source_quote: "Implement the private native backend contact policy as Account Identity work outside RMS coverage."}
-  lifecycle: {disposition: required, basis: inferred, rationale: The policy correlates verification attempts.}
-  effects: {disposition: absent, basis: inferred, rationale: Pure native policy introduces no external effects.}
+  domain_decisions: {disposition: absent, basis: inferred, rationale: The benchmark introduces no product decision.}
+  lifecycle: {disposition: required, basis: inferred, rationale: The benchmark prepares inputs and reports results.}
+  effects: {disposition: unknown, basis: inferred, rationale: Persistence of benchmark reports is unspecified.}
   runnable_surface: {disposition: absent, basis: inferred, rationale: No runnable surface is requested.}
-  reuse: {disposition: absent, basis: inferred, rationale: No reusable RMS package is requested.}
+  reuse: {disposition: unknown, basis: inferred, rationale: Consumption by other tooling is unspecified.}
 responsibilities:
-  - {id: contact-directory-participation, kind: decision, summary: Decide verified directory participation.}
-  - {id: contact-verification-lifecycle, kind: workflow, summary: Correlate verification attempts.}
+  - {id: execute-native-benchmark, kind: workflow, summary: Execute the bounded native benchmark.}
+  - {id: serialize-protocol-messages, kind: boundary, summary: Exchange in-process protocol messages.}
+  - {id: report-benchmark-results, kind: monitor, summary: Report correctness bytes and timings.}
 surface_kinds: []
 binding_preferences: [rust]
-open_questions: []
+open_questions: [Must reports persist, and must other tooling consume the harness?]
 "#;
         let outside = build_next_report_with_intent(
             &root,
@@ -97958,6 +97955,10 @@ open_questions: []
             TaskLane::ImplementationCandidate
         );
         assert!(outside.blockers.is_empty());
+        assert!(outside
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("material fact `effects` remains unknown")));
         assert!(receipt.payload.allowed_action_families.is_empty());
         assert!(outside
             .steps
