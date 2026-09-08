@@ -39188,7 +39188,9 @@ fn project_check_coverage(
         .iter()
         .filter(|path| changed.contains(*path))
         .count();
-    let coverage_mode = if affected_names.is_some() {
+    let coverage_mode = if mode == CheckMode::Environment {
+        "environment"
+    } else if affected_names.is_some() {
         report.delta.coverage_status.as_str()
     } else if requested.is_some() {
         "module"
@@ -39198,6 +39200,10 @@ fn project_check_coverage(
         "complete"
     };
     let certification = match coverage_mode {
+        "environment" => {
+            "Environment readiness was observed; module closures were discovered but not certified."
+                .to_string()
+        }
         "partial" | "full" if affected_names.is_some() => format!(
             "Affected candidate delta {} across {} selected RMS closure(s); native and outside-coverage paths are not certified by RMS.",
             report.result.label(),
@@ -39217,10 +39223,6 @@ fn project_check_coverage(
             report.result.label(),
             unowned.len()
         ),
-        _ if mode == CheckMode::Environment => {
-            "Environment readiness was observed; module closures were discovered but not certified."
-                .to_string()
-        }
         _ => format!(
             "Selected complete-workspace RMS scope {}; {} production paths are unowned.",
             report.result.label(),
@@ -41043,8 +41045,7 @@ fn environment_check_report_from_diagnosis(root: &Path, diagnosis: DiagnoseRepor
         .find(|provider| provider.command == "codex");
     let codex_blocked =
         configured_codex && codex_readiness.is_some_and(|provider| provider.status != "available");
-    let result = if diagnosis.validation.status == "fail"
-        || diagnosis.config.status == "invalid"
+    let result = if diagnosis.config.status == "invalid"
         || diagnosis.run_records.status == "not-directory"
         || codex_blocked
     {
@@ -41076,8 +41077,12 @@ fn environment_check_report_from_diagnosis(root: &Path, diagnosis: DiagnoseRepor
         .validation
         .diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic.severity == Severity::Warning)
-        .map(|diagnostic| diagnostic.message.clone())
+        .map(|diagnostic| {
+            format!(
+                "Canonical validation debt: {} [{}]: {}",
+                diagnostic.path, diagnostic.check, diagnostic.message
+            )
+        })
         .collect::<Vec<_>>();
     if diagnosis.skill_sources.review_required > 0 {
         warnings.push(format!(
@@ -41114,7 +41119,7 @@ fn environment_check_report_from_diagnosis(root: &Path, diagnosis: DiagnoseRepor
         warnings,
         next_action,
         done_when: vec![
-            "Canonical validation has no errors. Repository, configuration, configured provider/model, and detected skill-source diagnosis all pass. Warning-level canonical debt remains visible but does not block environment readiness."
+            "Configuration, run storage, configured provider/model, and detected skill-source readiness pass. Canonical repository debt remains visible but does not certify or block environment readiness; design and change gates enforce their applicable canonical prerequisites."
                 .to_string(),
         ],
         components: vec![component],
@@ -107181,7 +107186,7 @@ semantic_functions: []
             build_environment_check_report(&failing_root)
                 .unwrap()
                 .result,
-            CheckResult::Fail
+            CheckResult::Pass
         );
         assert!(
             build_check_report(&failing_root.join("unreadable-root"), CheckMode::Project).is_err()
@@ -107191,7 +107196,7 @@ semantic_functions: []
     }
 
     #[test]
-    fn environment_readiness_keeps_canonical_warnings_visible_without_blocking() {
+    fn environment_readiness_keeps_canonical_debt_visible_without_blocking() {
         let root = copy_minimal_fixture("environment-warning-readiness");
         let mut diagnosis = build_diagnose_report(&root).unwrap();
         diagnosis.config.default_provider = None;
@@ -107200,14 +107205,21 @@ semantic_functions: []
         diagnosis.skill_sources.review_required = 0;
         diagnosis.codex_plugin_cache.status = "present".to_string();
         diagnosis.validation = ValidationReadiness {
-            status: "review-required".to_string(),
-            errors: 0,
+            status: "fail".to_string(),
+            errors: 1,
             warnings: 1,
-            diagnostics: vec![warning(
-                "semantic.trace-case-unrepresented",
-                &root.join("module.yaml"),
-                "declared transition case has no active replay bundle",
-            )],
+            diagnostics: vec![
+                error(
+                    "semantic.unrelated-owner-debt",
+                    &root.join("modules/unrelated/module.yaml"),
+                    "unrelated module has canonical debt",
+                ),
+                warning(
+                    "semantic.trace-case-unrepresented",
+                    &root.join("module.yaml"),
+                    "declared transition case has no active replay bundle",
+                ),
+            ],
         };
 
         let environment = environment_check_report_from_diagnosis(&root, diagnosis);
@@ -107216,14 +107228,19 @@ semantic_functions: []
         assert_eq!(check_exit_code(environment.result), 0);
         assert!(environment.components[0]
             .summary
-            .contains("0 validation error(s), 1 validation warning(s)"));
+            .contains("1 validation error(s), 1 validation warning(s)"));
+        assert!(environment
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("unrelated module has canonical debt")));
         assert!(environment.warnings.iter().any(
             |warning| warning.contains("declared transition case has no active replay bundle")
         ));
         assert_eq!(
             environment.details["diagnosis"]["validation"]["status"],
-            "review-required"
+            "fail"
         );
+        assert_eq!(environment.details["diagnosis"]["validation"]["errors"], 1);
         assert_eq!(
             environment.details["diagnosis"]["validation"]["warnings"],
             1

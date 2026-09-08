@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Make `rms check --environment` report only workbench readiness. Keep canonical validation errors and warnings visible as non-certifying debt without making unrelated product debt block provider-backed inspection or design; canonical design, candidate, and release gates remain unchanged.
 - Keep a selected existing-module semantic route available when its typed intent is complete and validation errors belong only to unrelated modules. Preserve owner-local, intent, and root-canonical blockers, keep unrelated debt visible, and leave candidate and committed gates unchanged.
 - Expose the exact `rms/property-counterexample/v0.1` shape through `rms property replay --schema`, including a minimal native-input example, and validate replay artifacts against the embedded schema.
 - Make property-run profiles select only their declared realizations. A smoke run skips CI-only and nightly-only properties, while an entirely empty selected profile still fails with `property.command-missing`.

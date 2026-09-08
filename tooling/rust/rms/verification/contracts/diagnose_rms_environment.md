@@ -2,9 +2,12 @@
 
 Covered by CLI execution in the repository root. The command reports discovered RMS artifacts, validation status, optional workbench config status, run-record readiness, native tool availability, and optional provider readiness without mutating project artifacts. For configured Codex routing it resolves the effective model and reasoning effort, verifies structured-output support, and checks both explicit selections against the catalog bundled with the installed Codex binary. It never silently selects or downgrades a model or reasoning effort.
 
+`rms check --environment` projects workbench readiness from this diagnosis. Canonical validation errors and warnings remain visible as non-certifying debt, but they do not make environment readiness fail. Design and change gates enforce their applicable canonical prerequisites independently.
+
 Executable coverage:
 
 - `diagnose_report_includes_config_and_serializes_to_json` verifies `.rms/config.yaml` readiness, including reasoning effort and provider timeout, is represented in the shared diagnose report and serializes for `rms diagnose --json`.
 - `codex_readiness_checks_the_effective_model_without_silently_selecting_one` verifies compatible project and user model sources, supported and unsupported reasoning efforts, an absent bundled model, and an older Codex binary that cannot expose its bundled catalog.
+- `environment_readiness_keeps_canonical_debt_visible_without_blocking` verifies that canonical errors and warnings remain visible without blocking otherwise-ready configuration, run storage, skills, and providers.
 - The same report includes `git source revision` readiness and guidance when strict audit cannot yet be used as production evidence.
 - Repository smoke execution of `rms diagnose --root .` checks the text report path.
