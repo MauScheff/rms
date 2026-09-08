@@ -41587,8 +41587,7 @@ fn build_next_report_with_optional_program(
                 .to_string(),
         ];
     }
-    let explicit_outside_coverage =
-        task_explicitly_classifies_native_outside_coverage(task, intent.as_ref());
+    let explicit_outside_coverage = task_explicitly_classifies_native_outside_coverage(task);
     if explicit_outside_coverage {
         classification.lane = TaskLane::ImplementationCandidate;
         classification.confidence = "deterministic".to_string();
@@ -41731,6 +41730,13 @@ fn build_next_report_with_optional_program(
     } else {
         owner.warnings.clone()
     };
+    if explicit_outside_coverage
+        && intent
+            .as_ref()
+            .is_some_and(|model| model.change_scope == IntentChangeScope::NewModule)
+    {
+        warnings.push("The provider inferred `change_scope: new-module`, but the task explicitly classifies the native work outside RMS coverage and does not request RMS adoption. RMS ignored the inferred topology and issued no canonical authority.".to_string());
+    }
     for diagnostic in validation
         .diagnostics
         .iter()
@@ -44362,18 +44368,40 @@ fn task_explicitly_excludes_module_owner(task: &str, module: &ModuleIndexEntry) 
     })
 }
 
-fn task_explicitly_classifies_native_outside_coverage(
-    task: &str,
-    intent: Option<&IntentModel>,
-) -> bool {
-    let task = semantic_id_segment(task);
-    let outside_rms = task.contains("outside-rms-coverage");
+fn task_explicitly_classifies_native_outside_coverage(task: &str) -> bool {
+    let normalized_task = semantic_id_segment(task);
+    let outside_rms = normalized_task.contains("outside-rms-coverage");
     let native_scope = ["native", "backend", "project-native", "agent-native"]
         .iter()
-        .any(|term| task_mentions_token(&task, term));
-    let requests_new_rms_owner =
-        intent.is_some_and(|model| model.change_scope == IntentChangeScope::NewModule);
-    outside_rms && native_scope && !requests_new_rms_owner
+        .any(|term| task_mentions_token(&normalized_task, term));
+    outside_rms && native_scope && !task_explicitly_requests_new_rms_owner(task)
+}
+
+fn task_explicitly_requests_new_rms_owner(task: &str) -> bool {
+    task.split(['.', ';', '\n']).any(|clause| {
+        let clause = semantic_id_segment(clause);
+        let negative = [
+            "do-not-add",
+            "do-not-adopt",
+            "do-not-create",
+            "must-not-add",
+            "must-not-adopt",
+            "must-not-create",
+            "no-new-rms-module",
+            "not-a-new-rms-module",
+            "not-rms-adoption",
+        ]
+        .iter()
+        .any(|phrase| clause.contains(phrase));
+        let action = ["add", "adopt", "create", "introduce", "model"]
+            .iter()
+            .any(|term| task_mentions_token(&clause, term));
+        let rms_owner = task_mentions_token(&clause, "rms")
+            && ["module", "owner", "boundary"]
+                .iter()
+                .any(|term| task_mentions_token(&clause, term));
+        action && rms_owner && !negative
+    })
 }
 
 fn longest_exact_task_module_mentions<'a>(
@@ -97968,6 +97996,34 @@ open_questions: [Must reports persist, and must other tooling consume the harnes
                 step.description
                     .contains("requested native, outside-coverage")
             }));
+
+        let provider_new_owner_intent = outside_intent
+            .replace("operation: semantic-change", "operation: design")
+            .replace("change_scope: existing-module", "change_scope: new-module");
+        let provider_new_owner = build_next_report_with_intent(
+            &root,
+            None,
+            outside_task,
+            RawIntentInput {
+                yaml: Some(provider_new_owner_intent),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            provider_new_owner.result,
+            NextResult::NoRmsChange,
+            "{provider_new_owner:#?}"
+        );
+        assert_eq!(provider_new_owner.owner.status(), OwnerStatus::None);
+        assert!(provider_new_owner.warnings.iter().any(|warning| {
+            warning.contains("provider inferred `change_scope: new-module`")
+                && warning.contains("issued no canonical authority")
+        }));
+        assert!(!task_explicitly_classifies_native_outside_coverage(
+            "Adopt this native code that is outside RMS coverage into a new RMS module."
+        ));
         fs::remove_dir_all(&root).unwrap();
     }
 
