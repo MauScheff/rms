@@ -41471,7 +41471,7 @@ fn enforce_non_ready_ownerlessness(
     if matches!(result, NextResult::Ready | NextResult::NoRmsChange) {
         return;
     }
-    if let Some(selected) = owner.take_selected() {
+    let cleared_selected = if let Some(selected) = owner.take_selected() {
         if !owner
             .candidates
             .iter()
@@ -41485,13 +41485,18 @@ fn enforce_non_ready_ownerlessness(
                 ],
             });
         }
-    }
+        true
+    } else {
+        false
+    };
     owner.clear_selection();
     owner.route.clear();
-    owner.reason = format!(
-        "route result `{}` is non-ready; RMS selected no owner, and candidates or inspection context must not be used as substitute ownership authority",
-        result.label()
-    );
+    if cleared_selected {
+        owner.reason = format!(
+            "route result `{}` is non-ready; RMS selected no owner, and candidates or inspection context must not be used as substitute ownership authority",
+            result.label()
+        );
+    }
     context.files.clear();
     context.implementation = None;
     context.declared_roles.clear();
@@ -41740,9 +41745,6 @@ fn build_next_report_with_optional_program(
     } else if owner_scoped_existing_semantic_change {
         warnings.push("The selected existing module is eligible for an owner-scoped semantic change. Unrelated module validation debt remains visible and must still pass the candidate and committed gates.".to_string());
     }
-    warnings.sort();
-    warnings.dedup();
-
     let mut blockers = if machine_repair.is_some() || spec_repair.is_some() {
         Vec::new()
     } else {
@@ -41751,7 +41753,9 @@ fn build_next_report_with_optional_program(
             .iter()
             .filter(|diagnostic| {
                 diagnostic.severity == Severity::Error
-                    && if bounded_proof_support_roles {
+                    && if matches!(owner.status(), OwnerStatus::Ambiguous | OwnerStatus::None) {
+                        unresolved_owner_route_hard_blocker(&root, diagnostic)
+                    } else if bounded_proof_support_roles {
                         bounded_owner_scoped_semantic_route_hard_blocker(&root, diagnostic, &owner)
                     } else if bounded_observation_source_repair || bounded_existing_implementation {
                         bounded_existing_owner_route_hard_blocker(
@@ -41778,6 +41782,21 @@ fn build_next_report_with_optional_program(
     }
     blockers.sort();
     blockers.dedup();
+    for diagnostic in validation
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+    {
+        let rendered = format!(
+            "{} [{}]: {}",
+            diagnostic.path, diagnostic.check, diagnostic.message
+        );
+        if !blockers.contains(&rendered) {
+            warnings.push(format!("non-blocking canonical debt: {rendered}"));
+        }
+    }
+    warnings.sort();
+    warnings.dedup();
 
     let model_required = intent.is_none()
         && validation
@@ -41788,12 +41807,19 @@ fn build_next_report_with_optional_program(
         .diagnostics
         .iter()
         .any(|item| item.check == "intent.material-unknown");
+    let existing_owner_unresolved = intent.as_ref().is_some_and(|model| {
+        model.change_scope == IntentChangeScope::ExistingModule
+            && !profile.report.module_manifests.is_empty()
+            && matches!(owner.status(), OwnerStatus::Ambiguous | OwnerStatus::None)
+    });
     let result = if machine_repair.is_some() || spec_repair.is_some() {
         NextResult::Ready
     } else if model_required {
         NextResult::IntentRequired
     } else if !blockers.is_empty() {
         NextResult::Blocked
+    } else if existing_owner_unresolved {
+        NextResult::NeedsOwner
     } else if material_unknown {
         NextResult::ClarificationRequired
     } else if classification.lane == TaskLane::RepositoryOperation {
@@ -42763,6 +42789,22 @@ fn bounded_existing_owner_route_hard_blocker(
             || diagnostic.check.starts_with("semantic.revision"))
 }
 
+fn unresolved_owner_route_hard_blocker(root: &Path, diagnostic: &Diagnostic) -> bool {
+    if diagnostic.check.starts_with("intent.") {
+        return true;
+    }
+    let diagnostic_path = Path::new(&diagnostic.path);
+    let diagnostic_path = if diagnostic_path.is_absolute() {
+        diagnostic_path.to_path_buf()
+    } else {
+        root.join(diagnostic_path)
+    };
+    let diagnostic_path = fs::canonicalize(&diagnostic_path).unwrap_or(diagnostic_path);
+    diagnostic_path == root
+        || diagnostic_path == root.join(WORKBENCH_CONFIG_PATH)
+        || diagnostic_path.parent() == Some(root)
+}
+
 fn bounded_owner_scoped_semantic_route_hard_blocker(
     root: &Path,
     diagnostic: &Diagnostic,
@@ -43667,7 +43709,10 @@ fn resolve_next_owner_for_task(
             }
         }
     } else {
-        let exact_artifact_modules = exact_task_canonical_artifact_modules(task, root, modules);
+        let exact_artifact_modules = exact_task_canonical_artifact_modules(task, root, modules)
+            .into_iter()
+            .filter(|module| !task_explicitly_excludes_module_owner(task, module))
+            .collect::<Vec<_>>();
         if exact_artifact_modules.len() == 1 {
             let selected = exact_artifact_modules[0];
             let summary = route_module_summary(selected, None);
@@ -43711,7 +43756,10 @@ fn resolve_next_owner_for_task(
         }
 
         let export_reconciliation_modules =
-            explicit_composite_export_reconciliation_modules(task, modules);
+            explicit_composite_export_reconciliation_modules(task, modules)
+                .into_iter()
+                .filter(|module| !task_explicitly_excludes_module_owner(task, module))
+                .collect::<Vec<_>>();
         if export_reconciliation_modules.len() == 1 {
             let selected = export_reconciliation_modules[0];
             let summary = route_module_summary(selected, None);
@@ -43755,7 +43803,10 @@ fn resolve_next_owner_for_task(
             ));
         }
 
-        let explicit_owner_modules = explicit_task_existing_owner_modules(task, modules);
+        let explicit_owner_modules = explicit_task_existing_owner_modules(task, modules)
+            .into_iter()
+            .filter(|module| !task_explicitly_excludes_module_owner(task, module))
+            .collect::<Vec<_>>();
         if explicit_owner_modules.len() == 1 {
             let selected = explicit_owner_modules[0];
             let summary = route_module_summary(selected, None);
@@ -43798,7 +43849,10 @@ fn resolve_next_owner_for_task(
             ));
         }
 
-        let exact_task_modules = longest_exact_task_module_mentions(task, modules);
+        let exact_task_modules = longest_exact_task_module_mentions(task, modules)
+            .into_iter()
+            .filter(|module| !task_explicitly_excludes_module_owner(task, module))
+            .collect::<Vec<_>>();
         if exact_task_modules.len() == 1 {
             let selected = exact_task_modules[0];
             let summary = route_module_summary(selected, None);
@@ -43841,7 +43895,10 @@ fn resolve_next_owner_for_task(
             ));
         }
 
-        let exact_subjects = exact_structured_subject_modules(subject_route, modules);
+        let exact_subjects = exact_structured_subject_modules(subject_route, modules)
+            .into_iter()
+            .filter(|module| !task_explicitly_excludes_module_owner(task, module))
+            .collect::<Vec<_>>();
         if exact_subjects.len() == 1 {
             let selected = exact_subjects[0];
             let summary = route_module_summary(selected, None);
@@ -43884,7 +43941,15 @@ fn resolve_next_owner_for_task(
             ));
         }
 
-        let declared_owners = declared_ownership_candidates(task, modules);
+        let declared_owners = declared_ownership_candidates(task, modules)
+            .into_iter()
+            .filter(|candidate| {
+                modules
+                    .values()
+                    .find(|module| module.path == PathBuf::from(&candidate.module.path))
+                    .is_none_or(|module| !task_explicitly_excludes_module_owner(task, module))
+            })
+            .collect::<Vec<_>>();
         if let Some(top) = declared_owners.first() {
             let tied = declared_owners
                 .iter()
@@ -43914,16 +43979,17 @@ fn resolve_next_owner_for_task(
             ));
         }
 
-        if let Some(direct) = modules
-            .values()
-            .find(|module| module.path == root.join("module.yaml"))
-        {
+        if let Some(direct) = modules.values().find(|module| {
+            module.path == root.join("module.yaml")
+                && !task_explicitly_excludes_module_owner(task, module)
+        }) {
             (
                 Some(direct.path.clone()),
                 "direct root module".to_string(),
                 vec![owner_candidate(subject_route, direct, modules)],
             )
         } else {
+            top_level.retain(|module| !task_explicitly_excludes_module_owner(task, module));
             if top_level.len() == 1 {
                 (
                     Some(top_level[0].path.clone()),
@@ -43958,10 +44024,13 @@ fn resolve_next_owner_for_task(
     };
 
     let Some(initial_path) = initial_path else {
-        let status = if candidates.is_empty() {
-            UnselectedOwnerStatus::None
-        } else {
+        let status = if candidates
+            .first()
+            .is_some_and(|candidate| candidate.score > 0)
+        {
             UnselectedOwnerStatus::Ambiguous
+        } else {
+            UnselectedOwnerStatus::None
         };
         return Ok(OwnerResolution::unresolved(
             status,
@@ -44234,6 +44303,29 @@ fn explicit_task_existing_owner_modules<'a>(
     matches.retain(|module| Some(semantic_id_segment(&module.name).split('-').count()) == longest);
     matches.sort_by(|left, right| left.path.cmp(&right.path));
     matches
+}
+
+fn task_explicitly_excludes_module_owner(task: &str, module: &ModuleIndexEntry) -> bool {
+    task.split(['.', ';', '\n']).any(|clause| {
+        let clause = semantic_id_segment(clause);
+        task_mentions_token(&clause, &module.name)
+            && [
+                "do-not-infer",
+                "do-not-select",
+                "must-not-infer",
+                "must-not-select",
+                "cannot-own",
+                "does-not-own",
+                "is-not-the-owner",
+                "not-an-owner",
+                "not-the-owner",
+            ]
+            .iter()
+            .any(|phrase| clause.contains(phrase))
+            && (task_mentions_token(&clause, "owner")
+                || task_mentions_token(&clause, "owns")
+                || task_mentions_token(&clause, "ownership"))
+    })
 }
 
 fn longest_exact_task_module_mentions<'a>(
@@ -97715,6 +97807,67 @@ open_questions: []
     }
 
     #[test]
+    fn ownerless_route_ignores_excluded_owner_and_keeps_unrelated_debt_non_blocking() {
+        let root = route_capability_fixture("ownerless-route-unrelated-debt");
+        let unrelated_path = root.join("modules/play-game-boundary/implementation.yaml");
+        let mut unrelated = load_manifest(&unrelated_path).unwrap();
+        set_yaml_string_path(&mut unrelated.value, &["spec"], "rms/implementation/v9");
+        write_yaml_manifest(&unrelated).unwrap();
+        initialize_test_git_repository(&root);
+        let task = "Add verified contact directory participation and revocation contracts with pure tests. Select only an existing authoritative owner. Do not infer that play-game-domain owns contact identity or create an owner merely for coverage.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [contact-directory-participation, play-game-domain]
+facts:
+  domain_decisions: {disposition: required, basis: explicit, source_quote: "verified contact directory participation"}
+  lifecycle: {disposition: required, basis: explicit, source_quote: "participation and revocation"}
+  effects: {disposition: absent, basis: inferred, rationale: Pure contracts introduce no external effects.}
+  runnable_surface: {disposition: absent, basis: inferred, rationale: No runnable surface is requested.}
+  reuse: {disposition: unknown, basis: inferred, rationale: The authoritative existing owner is unresolved.}
+responsibilities:
+  - {id: contact-directory-participation, kind: decision, summary: Decide verified directory participation.}
+  - {id: contact-directory-revocation, kind: workflow, summary: Revoke directory participation.}
+surface_kinds: []
+binding_preferences: []
+open_questions: [Which existing module owns production contact identity?]
+"#;
+
+        let report = build_next_report_with_intent(
+            &root,
+            None,
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(report.result, NextResult::NeedsOwner, "{report:#?}");
+        assert_eq!(report.owner.status(), OwnerStatus::None);
+        assert!(report.owner.selected_module().is_none());
+        assert!(!report.owner.reason.contains("route result `needs-owner`"));
+        assert!(report.owner.reason.contains("module"));
+        assert!(report.blockers.is_empty(), "{:#?}", report.blockers);
+        assert_eq!(report.validation.status, "fail");
+        assert!(report.warnings.iter().any(|warning| {
+            warning.contains("non-blocking canonical debt")
+                && warning.contains("modules/play-game-boundary/implementation.yaml")
+        }));
+        assert!(report
+            .steps
+            .iter()
+            .flat_map(|group| &group.steps)
+            .any(|step| {
+                step.description
+                    .contains("explicitly treat the work as outside RMS coverage")
+            }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn scaffold_replacement_selects_the_target_instead_of_its_named_provider() {
         let root = route_capability_fixture("scaffold-replacement-owner");
         initialize_test_git_repository(&root);
@@ -106363,7 +106516,7 @@ semantic_functions: []
         let no_match =
             resolve_next_owner(&root, None, "make dragons sparkle", &profile.modules, false)
                 .unwrap();
-        assert_eq!(no_match.status(), OwnerStatus::Ambiguous);
+        assert_eq!(no_match.status(), OwnerStatus::None);
         assert!(no_match.selected_module().is_none());
 
         fs::write(
