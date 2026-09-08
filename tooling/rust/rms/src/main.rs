@@ -44393,6 +44393,22 @@ fn task_explicitly_requests_new_rms_owner(task: &str) -> bool {
         ]
         .iter()
         .any(|phrase| clause.contains(phrase));
+        let coordinated_negative = ["do-not", "must-not"]
+            .iter()
+            .any(|phrase| clause.contains(phrase))
+            && ![
+                "but-add",
+                "but-adopt",
+                "but-create",
+                "instead-add",
+                "instead-adopt",
+                "instead-create",
+                "then-add",
+                "then-adopt",
+                "then-create",
+            ]
+            .iter()
+            .any(|phrase| clause.contains(phrase));
         let action = ["add", "adopt", "create", "introduce", "model"]
             .iter()
             .any(|term| task_mentions_token(&clause, term));
@@ -44400,7 +44416,7 @@ fn task_explicitly_requests_new_rms_owner(task: &str) -> bool {
             && ["module", "owner", "boundary"]
                 .iter()
                 .any(|term| task_mentions_token(&clause, term));
-        action && rms_owner && !negative
+        action && rms_owner && !(negative || coordinated_negative)
     })
 }
 
@@ -98023,6 +98039,12 @@ open_questions: [Must reports persist, and must other tooling consume the harnes
         }));
         assert!(!task_explicitly_classifies_native_outside_coverage(
             "Adopt this native code that is outside RMS coverage into a new RMS module."
+        ));
+        assert!(task_explicitly_classifies_native_outside_coverage(
+            "Implement a private native verification workflow outside RMS coverage. Do not send real messages, expose routes, deploy, or adopt an RMS module."
+        ));
+        assert!(!task_explicitly_classifies_native_outside_coverage(
+            "Do not leave this native code outside RMS coverage; instead adopt it into a new RMS module."
         ));
         fs::remove_dir_all(&root).unwrap();
     }
