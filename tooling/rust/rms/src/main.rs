@@ -41616,6 +41616,8 @@ fn build_next_report_with_optional_program(
         && owner.status() == OwnerStatus::Selected;
     let bounded_proof_support_roles =
         exact_owner_scoped_proof_support_role_change_ready(task, intent.as_ref(), &owner);
+    let owner_scoped_existing_semantic_change =
+        owner_scoped_existing_semantic_change_ready(intent.as_ref(), &owner);
     let skill_sources = detect_skill_sources(&root, home_dir().ok().as_deref());
     let mut warnings = if classification.lane == TaskLane::RepositoryOperation {
         Vec::new()
@@ -41652,6 +41654,8 @@ fn build_next_report_with_optional_program(
     }
     if bounded_proof_support_roles {
         warnings.push("The exact existing module is eligible for a bounded canonical proof-support role addition. Unrelated validation debt remains visible and must still pass the candidate and committed gates.".to_string());
+    } else if owner_scoped_existing_semantic_change {
+        warnings.push("The selected existing module is eligible for an owner-scoped semantic change. Unrelated module validation debt remains visible and must still pass the candidate and committed gates.".to_string());
     }
     warnings.sort();
     warnings.dedup();
@@ -41666,13 +41670,16 @@ fn build_next_report_with_optional_program(
                 diagnostic.severity == Severity::Error
                     && if bounded_proof_support_roles {
                         bounded_owner_scoped_semantic_route_hard_blocker(&root, diagnostic, &owner)
+                    } else if bounded_observation_source_repair || bounded_existing_implementation {
+                        bounded_existing_owner_route_hard_blocker(
+                            diagnostic,
+                            &owner,
+                            &profile_error_keys,
+                        )
+                    } else if owner_scoped_existing_semantic_change {
+                        bounded_owner_scoped_semantic_route_hard_blocker(&root, diagnostic, &owner)
                     } else {
-                        !(bounded_observation_source_repair || bounded_existing_implementation)
-                            || bounded_existing_owner_route_hard_blocker(
-                                diagnostic,
-                                &owner,
-                                &profile_error_keys,
-                            )
+                        true
                     }
             })
             .map(|diagnostic| {
@@ -42528,6 +42535,29 @@ fn exact_owner_scoped_proof_support_role_change_ready(
         && !requests_product_semantics
 }
 
+fn owner_scoped_existing_semantic_change_ready(
+    intent: Option<&IntentModel>,
+    owner: &OwnerResolution,
+) -> bool {
+    let Some(intent) = intent else {
+        return false;
+    };
+    owner.status() == OwnerStatus::Selected
+        && intent.operation == IntentOperation::SemanticChange
+        && intent.change_scope == IntentChangeScope::ExistingModule
+        && !intent.responsibilities.is_empty()
+        && intent.open_questions.is_empty()
+        && [
+            &intent.facts.domain_decisions,
+            &intent.facts.lifecycle,
+            &intent.facts.effects,
+            &intent.facts.runnable_surface,
+            &intent.facts.reuse,
+        ]
+        .iter()
+        .all(|fact| fact.disposition != IntentDisposition::Unknown)
+}
+
 fn provider_task_adopts_new_canonical_owner(
     normalized_task: &str,
     model: &IntentModel,
@@ -42672,6 +42702,9 @@ fn bounded_owner_scoped_semantic_route_hard_blocker(
     };
     let diagnostic_path = fs::canonicalize(&diagnostic_path).unwrap_or(diagnostic_path);
     diagnostic_path.starts_with(owner_dir)
+        || diagnostic_path == root
+        || diagnostic_path == root.join(WORKBENCH_CONFIG_PATH)
+        || diagnostic_path.parent() == Some(root)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97477,6 +97510,81 @@ open_questions: []
             ),
             &report.owner,
         ));
+
+        let owner_path = root.join("modules/play-game-domain/implementation.yaml");
+        let mut owner = load_manifest(&owner_path).unwrap();
+        set_yaml_string_path(&mut owner.value, &["spec"], "rms/implementation/v9");
+        write_yaml_manifest(&owner).unwrap();
+        let blocked = build_next_report_with_intent(
+            &root,
+            None,
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(blocked.result, NextResult::Blocked, "{blocked:#?}");
+        assert!(!blocked.blockers.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn owner_scoped_adapter_semantics_route_despite_unrelated_module_debt() {
+        let root = route_capability_fixture("owner-scoped-adapter-route");
+        let unrelated_path = root.join("modules/play-game-boundary/implementation.yaml");
+        let mut unrelated = load_manifest(&unrelated_path).unwrap();
+        set_yaml_string_path(&mut unrelated.value, &["spec"], "rms/implementation/v9");
+        write_yaml_manifest(&unrelated).unwrap();
+        initialize_test_git_repository(&root);
+        let task = "Add thin native adapters to the existing play-game-domain module: a Rust C ABI boundary with explicit buffer ownership and typed failures, and a Swift wrapper that calls the same Rust core locally. Preserve the pure core and all game semantics. Assess the adapter boundary and select the supported ownership route before source edits.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [native-adapter-boundary, play-game-domain]
+facts:
+  domain_decisions: {disposition: absent, basis: explicit, source_quote: "Preserve the pure core and all game semantics.", rationale: Existing decisions remain unchanged.}
+  lifecycle: {disposition: required, basis: inferred, rationale: "Buffer allocation, transfer, and release require explicit lifecycle rules."}
+  effects: {disposition: absent, basis: inferred, rationale: Local native calls have no external effects.}
+  runnable_surface: {disposition: absent, basis: inferred, rationale: Library adapters are not a runnable product surface.}
+  reuse: {disposition: required, basis: explicit, source_quote: "a Swift wrapper that calls the same Rust core locally", rationale: The wrapper reuses the existing core.}
+responsibilities:
+  - {id: native-adapter-boundary, kind: boundary, summary: Declare the C ABI and Swift adapter boundary.}
+  - {id: buffer-ownership, kind: workflow, summary: Declare buffer ownership and release rules.}
+surface_kinds: []
+binding_preferences: [rust, swift]
+open_questions: []
+"#;
+
+        let report = build_next_report_with_intent(
+            &root,
+            None,
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(report.result, NextResult::Ready, "{report:#?}");
+        assert_eq!(report.task_classification.lane, TaskLane::Semantic);
+        assert_eq!(
+            report
+                .owner
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("play-game-domain")
+        );
+        assert!(report.blockers.is_empty());
+        assert_eq!(report.validation.status, "fail");
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("owner-scoped semantic change")));
 
         let owner_path = root.join("modules/play-game-domain/implementation.yaml");
         let mut owner = load_manifest(&owner_path).unwrap();
