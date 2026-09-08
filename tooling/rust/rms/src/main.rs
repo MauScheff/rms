@@ -39866,18 +39866,32 @@ fn check_report_findings(report: &CheckReport) -> Vec<String> {
         report.result,
         CheckResult::Fail | CheckResult::ReviewRequired
     ) {
-        findings.extend(report.warnings.iter().map(|warning| {
-            format!(
-                "review-required: [{}] {warning}",
-                report
-                    .components
-                    .first()
-                    .map(|component| component.subject.as_str())
-                    .unwrap_or("closure")
-            )
-        }));
+        findings.extend(
+            report
+                .warnings
+                .iter()
+                .filter(|warning| !is_non_invalidating_outside_closure_notice(warning))
+                .map(|warning| {
+                    format!(
+                        "review-required: [{}] {warning}",
+                        report
+                            .components
+                            .first()
+                            .map(|component| component.subject.as_str())
+                            .unwrap_or("closure")
+                    )
+                }),
+        );
     }
     findings
+}
+
+fn is_non_invalidating_outside_closure_notice(warning: &str) -> bool {
+    const SUFFIX: &str =
+        " dirty path(s) are outside the certified module closure and did not invalidate this scoped proof";
+    warning
+        .strip_suffix(SUFFIX)
+        .is_some_and(|count| count.parse::<usize>().is_ok())
 }
 
 fn normalize_baseline_finding(
@@ -114397,6 +114411,68 @@ architecture:
             .iter()
             .any(|finding| finding.contains("schema.validate")));
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn affected_global_change_keeps_scope_notices_out_of_delta_but_retains_real_failures() {
+        let root = unique_test_dir("affected-global-scope-notices");
+        let warning_owner = root.join("modules/warning-owner/module.yaml");
+        let healthy_owner = root.join("modules/healthy-owner/module.yaml");
+        write_profile_manifest(&warning_owner, "rms/module/v0.1", Some("warning-owner"));
+        write_profile_manifest(&healthy_owner, "rms/module/v0.1", Some("healthy-owner"));
+        fs::write(
+            &warning_owner,
+            format!(
+                "{}\nx-scaffold:\n  shape: boundary-adapter\n",
+                fs::read_to_string(&warning_owner).unwrap()
+            ),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("notes")).unwrap();
+        fs::write(root.join("GLOSSARY.md"), "# Glossary\n\nBaseline term.\n").unwrap();
+        fs::write(root.join("notes/unrelated.txt"), "baseline\n").unwrap();
+        initialize_test_git(&root);
+        fs::write(
+            root.join("GLOSSARY.md"),
+            "# Glossary\n\nBaseline term.\n\nGlobal candidate term.\n",
+        )
+        .unwrap();
+        fs::write(root.join("notes/unrelated.txt"), "candidate\n").unwrap();
+
+        let notices_only = build_affected_check_report(&root, CheckMode::Changes, None).unwrap();
+
+        assert_eq!(notices_only.result, CheckResult::Pass, "{notices_only:#?}");
+        assert!(notices_only.delta.candidate_regressions.is_empty());
+        assert!(!notices_only.delta.unchanged_baseline_debt.is_empty());
+        assert!(notices_only.warnings.iter().any(|warning| {
+            warning.contains(
+                "dirty path(s) are outside the certified module closure and did not invalidate this scoped proof",
+            )
+        }));
+
+        fs::write(
+            &warning_owner,
+            fs::read_to_string(&warning_owner)
+                .unwrap()
+                .replace("version: 0.1.0", "version:\n    - invalid"),
+        )
+        .unwrap();
+        let real_failure = build_affected_check_report(&root, CheckMode::Changes, None).unwrap();
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(real_failure.result, CheckResult::Fail, "{real_failure:#?}");
+        assert!(real_failure
+            .delta
+            .candidate_regressions
+            .iter()
+            .any(|finding| finding.contains("schema.validate")));
+        assert!(real_failure
+            .delta
+            .candidate_regressions
+            .iter()
+            .all(|finding| !finding.contains(
+                "dirty path(s) are outside the certified module closure and did not invalidate this scoped proof"
+            )));
     }
 
     #[test]
