@@ -4472,8 +4472,13 @@ enum PropertyCommands {
 
     /// Replay a recorded RMS property analysis or legacy fuzz counterexample.
     Replay {
-        /// Path to rms/property-analysis/v0.1, v0.2, or a legacy property counterexample.
-        analysis: PathBuf,
+        /// Path to rms/property-analysis/v0.1, v0.2, or rms/property-counterexample/v0.1.
+        #[arg(required_unless_present = "schema")]
+        analysis: Option<PathBuf>,
+
+        /// Print the exact rms/property-counterexample/v0.1 JSON Schema and example.
+        #[arg(long, conflicts_with = "analysis")]
+        schema: bool,
 
         /// Emit machine-readable JSON.
         #[arg(long)]
@@ -10290,7 +10295,23 @@ fn run_main() -> Result<()> {
                 out.as_deref(),
                 json,
             ),
-            PropertyCommands::Replay { analysis, json } => run_property_replay(&analysis, json),
+            PropertyCommands::Replay {
+                analysis,
+                schema,
+                json,
+            } => {
+                if schema {
+                    print!("{}", property_counterexample_schema());
+                    Ok(())
+                } else {
+                    run_property_replay(
+                        analysis
+                            .as_deref()
+                            .ok_or_else(|| anyhow!("property replay requires an analysis path"))?,
+                        json,
+                    )
+                }
+            }
         },
         Commands::Hunt {
             root,
@@ -17701,13 +17722,8 @@ fn execute_property_realizations_with_batch_and_cache(
     let targets = targets.collect::<Vec<_>>();
     let command_frequencies = targets
         .iter()
-        .flat_map(|target| {
-            target
-                .realizations
-                .iter()
-                .filter(|realization| realization.profile == profile.label())
-                .filter(|realization| !realization_is_integration_test(realization))
-        })
+        .flat_map(|target| property_realizations_for_profile(target, profile))
+        .filter(|realization| !realization_is_integration_test(realization))
         .fold(
             BTreeMap::<String, usize>::new(),
             |mut counts, realization| {
@@ -17717,29 +17733,12 @@ fn execute_property_realizations_with_batch_and_cache(
         );
     let realization_total = targets
         .iter()
-        .flat_map(|target| target.realizations.iter())
-        .filter(|realization| realization.profile == profile.label())
+        .flat_map(|target| property_realizations_for_profile(target, profile))
         .count();
     let realization_suite_started = Instant::now();
     let mut realization_current = 0usize;
     for target in &targets {
-        let matching = target
-            .realizations
-            .iter()
-            .filter(|realization| realization.profile == profile.label())
-            .collect::<Vec<_>>();
-        if matching.is_empty() {
-            diagnostics.push(error(
-                "property.realization-missing",
-                implementation,
-                format!(
-                    "{} `{}` has no `{}` realization",
-                    target.kind,
-                    target.id,
-                    profile.label()
-                ),
-            ));
-        }
+        let matching = property_realizations_for_profile(target, profile).collect::<Vec<_>>();
         for realization in matching {
             if !is_stable_semantic_id(&realization.command) {
                 diagnostics.push(error(
@@ -18158,6 +18157,16 @@ fn execute_property_realizations_with_batch_and_cache(
     Ok(report)
 }
 
+fn property_realizations_for_profile(
+    target: &PropertyTargetReport,
+    profile: PropertyProfile,
+) -> impl Iterator<Item = &PropertyRealization> {
+    target
+        .realizations
+        .iter()
+        .filter(move |realization| realization.profile == profile.label())
+}
+
 fn execute_module_property_realizations(
     module_path: &Path,
     manifest: &LoadedManifest,
@@ -18178,31 +18187,14 @@ fn execute_module_property_realizations(
     let base = module_path.parent().unwrap_or_else(|| Path::new("."));
     let realization_total = targets
         .iter()
-        .flat_map(|target| target.realizations.iter())
-        .filter(|realization| realization.profile == profile.label())
+        .flat_map(|target| property_realizations_for_profile(target, profile))
         .map(|realization| usize::from(realization.generator.is_some()) + 1)
         .sum::<usize>();
     let realization_suite_started = Instant::now();
     let mut realization_current = 0usize;
 
     for target in &targets {
-        let matching = target
-            .realizations
-            .iter()
-            .filter(|realization| realization.profile == profile.label())
-            .collect::<Vec<_>>();
-        if matching.is_empty() {
-            diagnostics.push(error(
-                "property.realization-missing",
-                module_path,
-                format!(
-                    "{} `{}` has no `{}` realization",
-                    target.kind,
-                    target.id,
-                    profile.label()
-                ),
-            ));
-        }
+        let matching = property_realizations_for_profile(target, profile).collect::<Vec<_>>();
         for realization in matching {
             if realization.command != "composition" {
                 diagnostics.push(error(
@@ -19484,6 +19476,13 @@ fn run_property_replay(counterexample: &Path, json_output: bool) -> Result<()> {
         });
         return print_property_analysis(&report, json_output);
     }
+    if get_str(&value, &["spec"]) == Some("rms/property-counterexample/v0.1") {
+        validate_json_against_schema(
+            &serde_json::to_value(&value)?,
+            property_counterexample_schema(),
+            "property counterexample",
+        )?;
+    }
     let mut summary = property_counterexample_summary(counterexample, &value);
     if summary.status == "fail" {
         if json_output {
@@ -19543,6 +19542,10 @@ fn run_property_replay(counterexample: &Path, json_output: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn property_counterexample_schema() -> &'static str {
+    include_str!("../../../../schemas/property-counterexample.schema.json")
 }
 
 fn evaluate_recorded_property_analysis(
@@ -22367,7 +22370,16 @@ fn property_counterexample_summary(
         .and_then(|value| value.get("property_definitions"))
         .and_then(JsonValue::as_array)
         .is_some_and(|definitions| !definitions.is_empty());
-    let legacy_replayable = spec == Some("rms/property-counterexample/v0.1")
+    let legacy_schema_valid = spec == Some("rms/property-counterexample/v0.1")
+        && serde_json::to_value(value).is_ok_and(|value| {
+            validate_json_against_schema(
+                &value,
+                property_counterexample_schema(),
+                "property counterexample",
+            )
+            .is_ok()
+        });
+    let legacy_replayable = legacy_schema_valid
         && property.is_some()
         && proves.is_some()
         && (replay_command.is_some() || trace.is_some());
@@ -26685,6 +26697,7 @@ fn schema_for_spec(spec: &str) -> Option<&'static str> {
         "rms/probe-counterexample/v0.1" => Some(include_str!(
             "../../../../schemas/probe-counterexample.schema.json"
         )),
+        "rms/property-counterexample/v0.1" => Some(property_counterexample_schema()),
         "rms/property-analysis/v0.1" => Some(include_str!(
             "../../../../schemas/property-analysis.schema.json"
         )),
@@ -97636,6 +97649,13 @@ architecture:
         evidence: verification/properties/shared.md
         realizations:
           - { profile: smoke, strategy: deterministic-corpus, command: properties, runner: scripts/properties.sh#second_runner }
+      - id: ci-only-property
+        proves: ci-law
+        input_space: finite CI cases
+        oracle: [CI runner exits successfully]
+        evidence: verification/properties/shared.md
+        realizations:
+          - { profile: ci, strategy: deterministic-corpus, command: properties, runner: scripts/properties.sh#ci_runner }
   machine: {}
   roles: {}
 "#,
@@ -97671,11 +97691,25 @@ architecture:
         )
         .unwrap();
         let changed_log = fs::read_to_string(root.join(".rms/cache/property-runs.log")).unwrap();
+        let ci = execute_property_realizations(
+            &root.join("implementation.yaml"),
+            PropertyProfile::Ci,
+            false,
+            30,
+        )
+        .unwrap();
 
         fs::remove_dir_all(&root).unwrap();
         assert_eq!(report.commands.len(), 2);
         assert_eq!(resumed.commands.len(), 2);
         assert_eq!(changed.commands.len(), 2);
+        assert_eq!(ci.result, "pass");
+        assert_eq!(ci.commands.len(), 1);
+        assert_eq!(ci.commands[0].property, "ci-only-property");
+        assert!(report
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.check != "property.realization-missing"));
         assert!(report
             .commands
             .iter()
@@ -98108,6 +98142,33 @@ architecture:
                 && command.status == "pass"
         }));
         assert_eq!(replayed, "replayed");
+    }
+
+    #[test]
+    fn property_counterexample_schema_is_public_closed_and_example_valid() {
+        assert!(Cli::try_parse_from(["rms", "property", "replay", "--schema"]).is_ok());
+        assert!(Cli::try_parse_from(["rms", "property", "replay"]).is_err());
+        let schema: JsonValue = serde_json::from_str(property_counterexample_schema()).unwrap();
+        let example = schema
+            .get("examples")
+            .and_then(JsonValue::as_array)
+            .and_then(|examples| examples.first())
+            .cloned()
+            .unwrap();
+        validate_json_against_schema(
+            &example,
+            property_counterexample_schema(),
+            "property counterexample",
+        )
+        .unwrap();
+        let mut unknown = example;
+        unknown["invented"] = json!(true);
+        assert!(validate_json_against_schema(
+            &unknown,
+            property_counterexample_schema(),
+            "property counterexample",
+        )
+        .is_err());
     }
 
     #[test]

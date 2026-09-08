@@ -22,6 +22,7 @@ These JSON Schemas validate the structural shape of RMS 0.1 manifests:
 - `property-analysis.schema.json`
 - `property-analysis-v0.2.schema.json`
 - `property-observation.schema.json`
+- `property-counterexample.schema.json`
 - `invocation-record.schema.json`
 - `test-execution-receipt.schema.json`
 - `compatibility-analysis.schema.json`

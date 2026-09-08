@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Expose the exact `rms/property-counterexample/v0.1` shape through `rms property replay --schema`, including a minimal native-input example, and validate replay artifacts against the embedded schema.
+- Make property-run profiles select only their declared realizations. A smoke run skips CI-only and nightly-only properties, while an entirely empty selected profile still fails with `property.command-missing`.
 - Route an exact owner-scoped canonical proof-support role addition despite unrelated repository validation debt when the typed intent preserves every product semantic fact, public contract, and production behavior. Keep owner-local errors and all candidate and committed gates blocking.
 - Preserve Rust regex-match provenance through `let Ok(regex)` and `let Some(found) = regex.find(...)` destructuring so `Match::start` and `Match::end` remain pure offset queries. Keep `start()` on unknown receivers fail-closed as dynamic dispatch.
 - Keep an exact existing-module task in the implementation-candidate lane when it completes declared role bodies and proof runners while explicitly preserving product semantics. Select the declared owner despite unrelated or task-addressed implementation debt, retain hard intent, ownership, profile, owner-schema, and semantic-revision blockers, and leave candidate and committed gates unchanged.

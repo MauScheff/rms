@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rms.dev/schema/property-counterexample-v0.1.json",
+  "title": "RMS Property Counterexample v0.1",
+  "description": "A replayable native property failure. The replay command receives the canonical artifact path in RMS_COUNTEREXAMPLE and reads the typed input from this document.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec", "property", "proves"],
+  "properties": {
+    "spec": {
+      "const": "rms/property-counterexample/v0.1"
+    },
+    "property": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "proves": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input": {
+      "description": "The minimized binding-native input. Its shape is owned by the declared property runner."
+    },
+    "replay_command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "trace": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "oneOf": [
+    {
+      "required": ["replay_command"],
+      "not": { "required": ["trace"] }
+    },
+    {
+      "required": ["trace"],
+      "not": { "required": ["replay_command"] }
+    }
+  ],
+  "examples": [
+    {
+      "spec": "rms/property-counterexample/v0.1",
+      "property": "example-property",
+      "proves": "example-law",
+      "input": {
+        "raw": "+41446681800",
+        "region": "CH"
+      },
+      "replay_command": "./replay-counterexample.sh \"$RMS_COUNTEREXAMPLE\""
+    }
+  ]
+}

@@ -8,11 +8,13 @@ Promise:
 Command/tool:
 
 - `cargo test --workspace --locked property`
+- `cargo test --manifest-path tooling/rust/rms/Cargo.toml property_run_executes_each_shared_command_realization --no-fail-fast`
 - fixture tests exercise deterministic corpus, deterministic exhaustive, generated-property, and coverage-fuzzer realization metadata independently of binding language.
 
 Expected result:
 
-- missing property/fuzz commands fail with `property.command-missing`;
+- properties that declare only another profile are outside the selected run and do not fail it;
+- a selected profile with no property or fuzz realization fails with `property.command-missing`;
 - selected realization commands run from the implementation directory;
 - fixed corpora cannot satisfy open-ended fuzz claims;
 - the report records property, profile, strategy, command text, status, and exit code;
