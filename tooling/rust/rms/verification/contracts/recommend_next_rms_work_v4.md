@@ -19,6 +19,7 @@ Command/tool:
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml exact_declared_role_completion_routes_with_task_addressed_implementation_debt --no-fail-fast`
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml exact_proof_support_role_addition_routes_despite_unrelated_validation_debt --no-fail-fast`
 - `cargo test --manifest-path tooling/rust/rms/Cargo.toml owner_scoped_adapter_semantics_route_despite_unrelated_module_debt --no-fail-fast`
+- `cargo test --manifest-path tooling/rust/rms/Cargo.toml scaffold_replacement_selects_the_target_instead_of_its_named_provider --no-fail-fast`
 
 Expected result:
 
@@ -31,5 +32,6 @@ Expected result:
 - An exact existing-module request to complete declared implementation and proof roles while preserving semantics stays in the implementation-candidate lane. Unrelated and task-addressed implementation debt remains visible without erasing the owner, while hard route blockers and final gates remain unchanged.
 - An exact existing-module semantic request to add only proof-support roles while preserving public contracts and production behavior reaches its selected owner despite unrelated validation debt. Owner-local errors still block the route, and later candidate gates remain unchanged.
 - A complete existing-module semantic request for native adapter lifecycle reaches its selected owner despite errors in an unrelated module. Owner-local, intent, and root-canonical errors still block the route, and later candidate gates remain unchanged.
+- An exact request to replace one named module scaffold selects that module instead of an also-named provider. Tasks without one exact scaffold replacement target retain ordinary ambiguity behavior.
 
 Source revision: recorded by git commit or strict audit provenance before production use.

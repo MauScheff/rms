@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Select the exact existing module named by `replace [the] [existing] <module> scaffold` as the semantic owner. Treat other exact module names as participants or providers, and retain ambiguity for tasks that do not identify one scaffold replacement target.
 - Make `rms check --environment` report only workbench readiness. Keep canonical validation errors and warnings visible as non-certifying debt without making unrelated product debt block provider-backed inspection or design; canonical design, candidate, and release gates remain unchanged.
 - Keep a selected existing-module semantic route available when its typed intent is complete and validation errors belong only to unrelated modules. Preserve owner-local, intent, and root-canonical blockers, keep unrelated debt visible, and leave candidate and committed gates unchanged.
 - Expose the exact `rms/property-counterexample/v0.1` shape through `rms property replay --schema`, including a minimal native-input example, and validate replay artifacts against the embedded schema.

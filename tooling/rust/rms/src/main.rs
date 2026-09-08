@@ -44128,9 +44128,19 @@ fn explicit_task_existing_owner_modules<'a>(
             });
             scoped
         });
+        let scaffold_replacement = clauses.iter().any(|clause| {
+            [
+                format!("replace-{module_id}-scaffold"),
+                format!("replace-the-{module_id}-scaffold"),
+                format!("replace-existing-{module_id}-scaffold"),
+                format!("replace-the-existing-{module_id}-scaffold"),
+            ]
+            .iter()
+            .any(|prefix| clause == prefix || clause.starts_with(&format!("{prefix}-")))
+        });
         if canonical_owner {
             canonical_matches.push(module);
-        } else if scoped {
+        } else if scoped || scaffold_replacement {
             scoped_matches.push(module);
         }
     }
@@ -97608,6 +97618,56 @@ open_questions: []
         .unwrap();
         assert_eq!(blocked.result, NextResult::Blocked, "{blocked:#?}");
         assert!(!blocked.blockers.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn scaffold_replacement_selects_the_target_instead_of_its_named_provider() {
+        let root = route_capability_fixture("scaffold-replacement-owner");
+        initialize_test_git_repository(&root);
+        let task = "Replace the play-game-boundary scaffold with a thin C ABI contract and proof model. The existing play-game-domain facade owns all game behavior. The boundary owns only foreign input validation, caller-owned output buffers, typed result conversion, and local wrapper calls. Preserve the pure provider.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [play-game-boundary, play-game-domain]
+facts:
+  domain_decisions: {disposition: absent, basis: explicit, source_quote: "The existing play-game-domain facade owns all game behavior.", rationale: The provider retains all domain decisions.}
+  lifecycle: {disposition: absent, basis: inferred, rationale: Each local call is independent.}
+  effects: {disposition: absent, basis: inferred, rationale: Local foreign calls introduce no external effects.}
+  runnable_surface: {disposition: absent, basis: inferred, rationale: The adapter is a library boundary.}
+  reuse: {disposition: required, basis: explicit, source_quote: "Preserve the pure provider.", rationale: The boundary delegates to the existing provider.}
+responsibilities:
+  - {id: foreign-input-boundary, kind: boundary, summary: Declare foreign input and buffer ownership semantics.}
+surface_kinds: []
+binding_preferences: [rust]
+open_questions: []
+"#;
+
+        let report = build_next_report_with_intent(
+            &root,
+            None,
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(report.result, NextResult::Ready, "{report:#?}");
+        assert_eq!(
+            report
+                .owner
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("play-game-boundary")
+        );
+        assert_eq!(report.owner.candidates.len(), 1);
+        assert!(report
+            .owner
+            .reason
+            .contains("explicitly scopes work to one existing canonical module"));
         fs::remove_dir_all(&root).unwrap();
     }
 
