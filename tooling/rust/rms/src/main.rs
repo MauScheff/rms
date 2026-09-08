@@ -41587,6 +41587,15 @@ fn build_next_report_with_optional_program(
                 .to_string(),
         ];
     }
+    let explicit_outside_coverage = task_explicitly_classifies_native_outside_coverage(task);
+    if explicit_outside_coverage {
+        classification.lane = TaskLane::ImplementationCandidate;
+        classification.confidence = "deterministic".to_string();
+        classification.reasons = vec![
+            "caller explicitly classifies the requested native work outside RMS coverage and forbids RMS adoption or canonical mutation"
+                .to_string(),
+        ];
+    }
     let profile_error_keys = profile
         .diagnostics
         .iter()
@@ -41639,7 +41648,16 @@ fn build_next_report_with_optional_program(
         && intent
             .as_ref()
             .is_some_and(|model| model.change_scope == IntentChangeScope::NewModule);
-    let mut owner = if new_owner_design {
+    let mut owner = if explicit_outside_coverage {
+        OwnerResolution::unresolved(
+            UnselectedOwnerStatus::None,
+            "caller explicitly classifies this native work outside RMS coverage; RMS selects no canonical owner"
+                .to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+    } else if new_owner_design {
         OwnerResolution::unresolved(
             UnselectedOwnerStatus::None,
             "typed intent adopts a new canonical module owner; existing module mentions are participant evidence, not owner selection"
@@ -41753,7 +41771,9 @@ fn build_next_report_with_optional_program(
             .iter()
             .filter(|diagnostic| {
                 diagnostic.severity == Severity::Error
-                    && if matches!(owner.status(), OwnerStatus::Ambiguous | OwnerStatus::None) {
+                    && if explicit_outside_coverage {
+                        diagnostic.check.starts_with("intent.")
+                    } else if matches!(owner.status(), OwnerStatus::Ambiguous | OwnerStatus::None) {
                         unresolved_owner_route_hard_blocker(&root, diagnostic)
                     } else if bounded_proof_support_roles {
                         bounded_owner_scoped_semantic_route_hard_blocker(&root, diagnostic, &owner)
@@ -41818,6 +41838,8 @@ fn build_next_report_with_optional_program(
         NextResult::IntentRequired
     } else if !blockers.is_empty() {
         NextResult::Blocked
+    } else if explicit_outside_coverage {
+        NextResult::NoRmsChange
     } else if existing_owner_unresolved {
         NextResult::NeedsOwner
     } else if material_unknown {
@@ -44308,24 +44330,54 @@ fn explicit_task_existing_owner_modules<'a>(
 fn task_explicitly_excludes_module_owner(task: &str, module: &ModuleIndexEntry) -> bool {
     task.split(['.', ';', '\n']).any(|clause| {
         let clause = semantic_id_segment(clause);
-        task_mentions_token(&clause, &module.name)
-            && [
-                "do-not-infer",
-                "do-not-select",
-                "must-not-infer",
-                "must-not-select",
-                "cannot-own",
-                "does-not-own",
-                "is-not-the-owner",
-                "not-an-owner",
-                "not-the-owner",
-            ]
-            .iter()
-            .any(|phrase| clause.contains(phrase))
+        let owner_exclusion = [
+            "do-not-infer",
+            "do-not-select",
+            "must-not-infer",
+            "must-not-select",
+            "cannot-own",
+            "does-not-own",
+            "is-not-the-owner",
+            "not-an-owner",
+            "not-the-owner",
+        ]
+        .iter()
+        .any(|phrase| clause.contains(phrase))
             && (task_mentions_token(&clause, "owner")
                 || task_mentions_token(&clause, "owns")
-                || task_mentions_token(&clause, "ownership"))
+                || task_mentions_token(&clause, "ownership"));
+        let rms_scope_exclusion = task_mentions_token(&clause, "rms-module")
+            && [
+                "do-not-adopt",
+                "do-not-mutate",
+                "do-not-select",
+                "must-not-adopt",
+                "must-not-mutate",
+                "must-not-select",
+            ]
+            .iter()
+            .any(|phrase| clause.contains(phrase));
+        task_mentions_token(&clause, &module.name) && (owner_exclusion || rms_scope_exclusion)
     })
+}
+
+fn task_explicitly_classifies_native_outside_coverage(task: &str) -> bool {
+    let task = semantic_id_segment(task);
+    let outside_rms = task.contains("outside-rms-coverage");
+    let native_scope = ["native", "backend", "project-native", "agent-native"]
+        .iter()
+        .any(|term| task_mentions_token(&task, term));
+    let forbids_rms_authority = [
+        "do-not-adopt",
+        "do-not-mutate",
+        "do-not-select-any-rms-module",
+        "do-not-edit-rms-canonical-artifacts",
+        "no-rms-adoption",
+        "no-rms-mutation",
+    ]
+    .iter()
+    .any(|phrase| task.contains(phrase));
+    outside_rms && native_scope && forbids_rms_authority
 }
 
 fn longest_exact_task_module_mentions<'a>(
@@ -44669,8 +44721,8 @@ fn build_next_steps(
             NextStepGroup {
                 phase: ActionPhase::Inspect,
                 steps: vec![manual_next_step(
-                    "No RMS declaration or implementation workflow is required. Perform the requested repository or tool operation only when task and host policy authorize it.",
-                    Some("Repository, installation, plugin, and Git authority remain host-defined."),
+                    "No RMS declaration or implementation workflow is required. Perform the requested native, outside-coverage, repository, or tool workflow only when project, task, and host policy authorize it.",
+                    Some("Native product, repository, installation, plugin, and Git authority remain project- and host-defined."),
                 )],
             },
             NextStepGroup {
@@ -97863,6 +97915,57 @@ open_questions: [Which existing module owns production contact identity?]
             .any(|step| {
                 step.description
                     .contains("explicitly treat the work as outside RMS coverage")
+            }));
+
+        let outside_task = "Implement the private native backend contact policy as Account Identity work outside RMS coverage. Extend the project-native contract and add pure Rust tests. Do not adopt, mutate, or select any RMS module, including play-game-domain; do not edit RMS canonical artifacts.";
+        let outside_intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [contact-directory-participation, play-game-domain]
+facts:
+  domain_decisions: {disposition: required, basis: explicit, source_quote: "Implement the private native backend contact policy as Account Identity work outside RMS coverage."}
+  lifecycle: {disposition: required, basis: inferred, rationale: The policy correlates verification attempts.}
+  effects: {disposition: absent, basis: inferred, rationale: Pure native policy introduces no external effects.}
+  runnable_surface: {disposition: absent, basis: inferred, rationale: No runnable surface is requested.}
+  reuse: {disposition: absent, basis: inferred, rationale: No reusable RMS package is requested.}
+responsibilities:
+  - {id: contact-directory-participation, kind: decision, summary: Decide verified directory participation.}
+  - {id: contact-verification-lifecycle, kind: workflow, summary: Correlate verification attempts.}
+surface_kinds: []
+binding_preferences: [rust]
+open_questions: []
+"#;
+        let outside = build_next_report_with_intent(
+            &root,
+            None,
+            outside_task,
+            RawIntentInput {
+                yaml: Some(outside_intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+        let receipt: RouteReceipt =
+            serde_json::from_slice(&fs::read(&outside.receipt_path).unwrap()).unwrap();
+
+        assert_eq!(outside.result, NextResult::NoRmsChange, "{outside:#?}");
+        assert_eq!(outside.owner.status(), OwnerStatus::None);
+        assert!(outside.owner.candidates.is_empty());
+        assert!(outside.owner.reason.contains("outside RMS coverage"));
+        assert_eq!(
+            outside.task_classification.lane,
+            TaskLane::ImplementationCandidate
+        );
+        assert!(outside.blockers.is_empty());
+        assert!(receipt.payload.allowed_action_families.is_empty());
+        assert!(outside
+            .steps
+            .iter()
+            .flat_map(|group| &group.steps)
+            .any(|step| {
+                step.description
+                    .contains("requested native, outside-coverage")
             }));
         fs::remove_dir_all(&root).unwrap();
     }
