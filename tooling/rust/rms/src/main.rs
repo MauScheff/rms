@@ -27326,6 +27326,7 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
         symbol: binding.safe_facade,
     })
     .collect();
+    let trusted_external_calls = trusted_pure_dependency_calls(manifest);
     Ok(effect_analysis::analyze(effect_analysis::AnalysisInput {
         binding,
         source_digest: format!("sha256:{}", sha256_bytes(&digest_input)),
@@ -27333,7 +27334,7 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
             "sha256:{}",
             sha256_bytes(
                 format!(
-                    "{RMS_LONG_VERSION}:effect-analysis-v2:{}:{}",
+                    "{RMS_LONG_VERSION}:effect-analysis-v3:{}:{}",
                     effect_analysis::PURE_ALLOWLIST_VERSION,
                     effect_analysis::AUTHORITY_ROOT_VERSION
                 )
@@ -27343,7 +27344,84 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
         sources,
         semantic_functions,
         authority_facades,
+        trusted_external_calls,
     }))
+}
+
+fn trusted_pure_dependency_calls(implementation: &LoadedManifest) -> BTreeSet<String> {
+    let base = implementation
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let Ok(consumer) = load_manifest(&base.join("module.yaml")) else {
+        return BTreeSet::new();
+    };
+    let root = implementation
+        .path
+        .ancestors()
+        .find(|directory| directory.join("system.yaml").is_file())
+        .unwrap_or(base);
+    let mut trusted = BTreeSet::new();
+    for binding in typed_yaml_sequence::<DependencyBehaviorBinding>(
+        &implementation.value,
+        &["architecture", "dependency_behavior_bindings"],
+    ) {
+        if binding.resolution != "module" {
+            continue;
+        }
+        let (Some(provider_name), Some(provider_contract)) = (
+            binding.provider_module.as_deref(),
+            binding.provider_contract.as_deref(),
+        ) else {
+            continue;
+        };
+        let Some(provider) = find_named_provider_module(root, &consumer, provider_name) else {
+            continue;
+        };
+        let provider_base = provider.path.parent().unwrap_or_else(|| Path::new("."));
+        let Ok(provider_implementation) = load_manifest(&provider_base.join("implementation.yaml"))
+        else {
+            continue;
+        };
+        let Some(public_binding) = typed_yaml_sequence::<PublicBehaviorBinding>(
+            &provider_implementation.value,
+            &["architecture", "public_behavior_bindings"],
+        )
+        .into_iter()
+        .find(|candidate| {
+            candidate.public_kind == "capability"
+                && candidate.public_name == binding.capability
+                && candidate.contract == provider_contract
+        }) else {
+            continue;
+        };
+        let Some(function) = semantic_function_items(&provider_implementation)
+            .unwrap_or_default()
+            .iter()
+            .find(|function| {
+                get_str(function, &["id"]) == Some(public_binding.semantic_function.as_str())
+                    && get_str(function, &["purity"]) == Some("pure")
+            })
+        else {
+            continue;
+        };
+        let Some(symbol) = get_str(function, &["symbol"]) else {
+            continue;
+        };
+        let callable = symbol
+            .rsplit_once('#')
+            .map_or(symbol, |(_, callable)| callable)
+            .rsplit("::")
+            .next()
+            .unwrap_or(symbol);
+        let crate_name = get_str(&provider_implementation.value, &["toolchain", "package"])
+            .or_else(|| get_str(&provider.value, &["module", "name"]))
+            .map(canonical_rust_crate_name);
+        if let Some(crate_name) = crate_name {
+            trusted.insert(format!("{crate_name}::{callable}"));
+        }
+    }
+    trusted
 }
 
 fn validate_machine_probe_binding(
@@ -58693,6 +58771,8 @@ fn render_spec_plan_repair_prompt(
             || diagnostic.check == "semantic.law-without-evidence"
             || diagnostic.check == "semantic.contract-without-evidence"
             || diagnostic.check == "machine-change.identifier"
+            || diagnostic.check == "structure.lifecycle-without-state"
+            || diagnostic.check == "machine-change.stateless-justification"
             || diagnostic.check == "schema.validate"
                 && diagnostic.message.contains("`/architecture/roles`")
             || diagnostic.check == "machine-change.state-unreachable"
@@ -58967,6 +59047,18 @@ fn render_spec_plan_repair_prompt(
             "\n\nMachine identifier repair rule: every machine state, input command, event, emitted command, effect, effect result, reply, and rejection is an implementation identifier matching `^[A-Za-z_][A-Za-z0-9_]*$`, for example `ResolvePublicPttSecureMediaGenerationRecovery`. A kebab-case semantic capability name remains unchanged only in `contracts`, `dependency_behavior_bindings.capability`, and other semantic dependency fields. Never copy that kebab-case capability name directly into `machine.commands` or a transition output. Declare and use one stable implementation variant for the emitted dependency command, while the dependency behavior binding maps it to the exact semantic capability.",
         )
         .unwrap_or_default();
+    let machine_mode_repair = diagnostics
+        .iter()
+        .any(|diagnostic| {
+            matches!(
+                diagnostic.check.as_str(),
+                "structure.lifecycle-without-state" | "machine-change.stateless-justification"
+            )
+        })
+        .then_some(
+            "\n\nMachine mode repair rule: machine mode is independent of module shape. If the candidate boundary adapter performs one synchronous decision, retains no pointer, handle, resource, authority, or ordering state between calls, and every transition returns to `Ready`, use `machine.mode: stateless-decision-machine`, `machine.transition_signature: input-only`, one `Ready` state, `Ready -> Ready` transitions, and a concrete `machine.justification` that states why no cross-call lifecycle exists. Do not delete the machine change to repair `structure.lifecycle-without-state`. Do not use `boundary-machine` merely because the module has the `boundary` profile. Preserve the structured boundary declaration while boundary trust obligations remain; never set `declaration.remove_boundary: true` in that case.",
+        )
+        .unwrap_or_default();
     let pure_scaffold_replacement_repair = diagnostics
         .iter()
         .any(|diagnostic| {
@@ -59070,7 +59162,7 @@ fn render_spec_plan_repair_prompt(
         )
         .unwrap_or_default();
     format!(
-        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for transition-backed command or capability behavior or `{{kind: invocation-record, command: trace}}` for stateless query or non-transition boundary behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{contract_proof_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{probe_trace_projection_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{machine_identifier_repair}{pure_scaffold_replacement_repair}{required_role_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
+        "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for transition-backed command or capability behavior or `{{kind: invocation-record, command: trace}}` for stateless query or non-transition boundary behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{contract_proof_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{probe_trace_projection_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{machine_identifier_repair}{machine_mode_repair}{pure_scaffold_replacement_repair}{required_role_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
         truncate_for_prompt(invalid_response, 48_000),
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
@@ -59954,9 +60046,10 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Allowed invariant authorities are exactly: `representation`, `constructor`, `parser`, `transition`, `effect-executor`, and `composition`. `enforced_by` names the declared semantic-function id or symbol that performs that enforcement; transition-authority laws name the pure canonical transition owner, never an effect executor.")?;
     writeln!(out, "Use `semantic_functions.add`, `set`, and `remove` whenever a law's authority owner, public semantic callable, parser, projector, adapter, transformation, or executor binding changes. Do not edit `implementation.yaml.semantic_functions` directly. Function kinds are `constructor`, `parser`, `decision`, `transition`, `projector`, `adapter`, `interpreter`, `transformation`, or `effect-executor`. Purity is `pure` or `effectful`. Trust is `internal` or `boundary`. Every function declares its complete `authorities` row, including an empty row. A canonical `transition` function is pure unless it executes a declared boundary capability. A boundary driver is a distinct `adapter` with `purity: effectful` and `trust: boundary`. An external effect executor uses `purity: effectful`. Privileged, unsafe, or foreign functions list their declared authority ids.")?;
     writeln!(out, "For every machine variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change. `machine.initial_state` names one final declared state. Set it explicitly when replacing the state set. If it is omitted and the replacement removes the previous initial state, RMS deterministically uses the first final declared state.")?;
+    writeln!(out, "Machine mode is independent of module shape. A `boundary-adapter` that performs one synchronous decision, retains no pointer, handle, resource, authority, or ordering state between calls, and always returns to `Ready` uses `machine.mode: stateless-decision-machine`, `machine.transition_signature: input-only`, one `Ready` state, `Ready -> Ready` transitions, and a concrete `machine.justification`. Do not use `boundary-machine` merely because the module has the `boundary` profile. Preserve the structured `declaration.boundary` for untrusted input and output obligations; never use `remove_boundary: true` while the boundary profile or trust boundary remains.")?;
     writeln!(out, "Machine transition items use `from`, `on`, `to`, stable ASCII identifier `case` values such as `valid_example_accepted` (not kebab-case), optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names. Every transition on a declared command also supplies `reply`, `rejection`, or a non-empty `no_reply_justification`; an asynchronous command normally states `effect result is pending` and its effect-result transition supplies the terminal response.")?;
     writeln!(out, "When external observations use a different binding enum from emitted events, set `machine.types.observed_event` to that exact type. Omit it only for an intentional shared event enum; older declarations continue to fall back to `machine.types.event`.")?;
-    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. One role kind cannot repeat the same path. If one implementation executes several private backend operations, model one aggregate boundary effect and one executor role, or use distinct declared effects with distinct executor paths. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. An explicitly effect-free replacement uses `stateful-transition-machine` when lifecycle state remains and omits the driver function and role. A rejection transition must follow one coherent terminal policy; it cannot preserve a declared success terminal while claiming movement to a separate rejection terminal. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use a scalar implementation identifier `resource` matching `^[A-Za-z_][A-Za-z0-9_]*$`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses the same exact `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings use exactly `{{authority, roles, safe_facade, evidence}}`. `roles` is a non-empty list of exact declared role kinds such as `effect_executor`, never method names. `safe_facade` is one exact relative `path#symbol`. `evidence` is always a non-empty list of module-relative paths, even when it contains one path. Role removal items use `kind` and optional `path`. A Swift public API or language library facade is a `public_facade` role, not a runnable surface. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
+    writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. One role kind cannot repeat the same path. If one implementation executes several private backend operations, model one aggregate boundary effect and one executor role, or use distinct declared effects with distinct executor paths. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. An explicitly effect-free replacement uses `stateful-transition-machine` when lifecycle state remains and omits the driver function and role. A rejection transition must follow one coherent terminal policy; it cannot preserve a declared success terminal while claiming movement to a separate rejection terminal. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use a scalar implementation identifier `resource` matching `^[A-Za-z_][A-Za-z0-9_]*$`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses the same exact `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings use exactly `{{authority, roles, safe_facade, evidence}}`. `roles` is a non-empty list of exact declared role kinds such as `effect_executor`, never method names. `safe_facade` is one exact relative `path#symbol`. `evidence` is always a non-empty list of module-relative paths, even when it contains one path. Role removal items use `kind` and optional `path`. A Swift public API or language library facade is a `public_facade` role, not a runnable surface. Role kinds are open stable identifiers for implementation ownership. Use `public_facade` for a maintained C header or language facade, `package_manifest` for `Package.swift` or another native package manifest, and `build_support` for a module-local build or link script. Declare each exact path through `roles.add` or `roles.set` before editing it. These files are not runnable product surfaces. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically. `set` is a complete replacement. Use `add` only for ids absent from the current complete set. If an existing dependency remains sufficient, leave this section unchanged; do not add it again.")?;
     writeln!(out, "Each `authorities.add[]` or `.set[]` item is exactly `{{id, kind, capabilities, rationale}}`. `id` is a unique stable kebab-case id. `kind` is exactly `privileged`, `unsafe`, or `foreign`; resource is not an authority kind. `capabilities` is a non-empty string list. `rationale` is non-empty. Add an authority only when a declared function needs it; then bind it through the exact authority-binding shape.")?;
     writeln!(out, "`dependency_behavior_bindings.add[]` and `.set[]` use exactly these fields: `id`, `capability`, optional `contract`, `consumer`, `resolution`, optional `provider_module`, optional `provider_contract`, and optional `probe_bridge`. `consumer` is the exact declared implementation `path#symbol`; `resolution` is exactly `module` or `external`. A module resolution requires `provider_module` and `provider_contract`; an external resolution omits them. `probe_bridge` uses the declared `{{request, outcomes}}` shape. Never use legacy fields such as `dependency_kind`, `dependency_name`, `semantic_function`, `machine_inputs`, `machine_outputs`, or `observation_source` in this section. The exact set grammar is:")?;
@@ -112345,6 +112438,41 @@ machine:
         assert!(prompt.contains("machine:\n  mode:"));
         assert!(prompt.contains("  initial_state:"));
         assert!(prompt.contains("Set it explicitly when replacing the state set"));
+    }
+
+    #[test]
+    fn semantic_plan_teaches_stateless_boundary_and_native_artifact_roles() {
+        let root = route_capability_fixture("semantic-stateless-boundary-prompt");
+        let context =
+            load_spec_target(&root.join("modules/play-game-boundary/module.yaml")).unwrap();
+
+        let prompt = render_spec_plan_prompt(
+            &context,
+            &root,
+            "Replace the boundary scaffold with one synchronous native call.",
+        )
+        .unwrap();
+        let repair = render_spec_plan_repair_prompt(
+            &prompt,
+            "spec: rms/semantic-change/v0.1\nmachine:\n  mode: boundary-machine\n",
+            &[error_diagnostic(
+                "structure.lifecycle-without-state",
+                Path::new("implementation.yaml"),
+                "boundary-machine requires at least one meaningful non-Ready state",
+            )],
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+        assert!(prompt.contains("Machine mode is independent of module shape"));
+        assert!(prompt.contains("`boundary-adapter`"));
+        assert!(prompt.contains("`machine.mode: stateless-decision-machine`"));
+        assert!(prompt.contains("never use `remove_boundary: true`"));
+        assert!(prompt.contains("Use `public_facade` for a maintained C header"));
+        assert!(prompt.contains("`package_manifest` for `Package.swift`"));
+        assert!(prompt.contains("`build_support`"));
+        assert!(repair.contains("Machine mode repair rule"));
+        assert!(repair.contains("Do not delete the machine change"));
+        assert!(repair.contains("Original bounded schema context"));
     }
 
     #[test]

@@ -8,8 +8,8 @@ use syn::{
 use tree_sitter::{Language, Node, Parser};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
-pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.1";
-pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.1";
+pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.2";
+pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.2";
 
 #[derive(Clone, Debug)]
 pub(crate) struct SemanticFunctionExpectation {
@@ -33,6 +33,7 @@ pub(crate) struct AnalysisInput {
     pub(crate) sources: BTreeMap<String, String>,
     pub(crate) semantic_functions: Vec<SemanticFunctionExpectation>,
     pub(crate) authority_facades: Vec<AuthorityFacade>,
+    pub(crate) trusted_external_calls: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -83,6 +84,7 @@ struct FunctionNode {
     name: String,
     qualified_name: String,
     calls: BTreeSet<String>,
+    rust_unsafe_calls: BTreeSet<String>,
     direct_authorities: BTreeSet<String>,
     rust_regex_match_names: BTreeSet<String>,
     swift_standard_value_names: BTreeSet<String>,
@@ -164,6 +166,7 @@ pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
             &nodes,
             &facades,
             &authority_memberships,
+            &input.trusted_external_calls,
         ));
     }
     functions.sort_by(|left, right| left.id.cmp(&right.id));
@@ -220,6 +223,7 @@ fn analyze_function(
     nodes: &[FunctionNode],
     facades: &BTreeMap<String, String>,
     authority_memberships: &BTreeMap<usize, BTreeSet<String>>,
+    trusted_external_calls: &BTreeSet<String>,
 ) -> FunctionAnalysis {
     let candidates = symbol_candidates(&expectation.symbol, nodes);
     if candidates.len() != 1 {
@@ -256,6 +260,7 @@ fn analyze_function(
         &mut resolved,
         &mut unresolved,
         &mut transitive_authorities,
+        trusted_external_calls,
     );
     let memberships = authority_memberships
         .get(&root)
@@ -426,6 +431,7 @@ fn collect_closure(
     resolved: &mut BTreeSet<String>,
     unresolved: &mut BTreeSet<String>,
     authorities: &mut BTreeSet<String>,
+    trusted_external_calls: &BTreeSet<String>,
 ) {
     if !visited.insert(index) {
         return;
@@ -444,6 +450,7 @@ fn collect_closure(
                 resolved,
                 unresolved,
                 authorities,
+                trusted_external_calls,
             );
             continue;
         }
@@ -451,6 +458,15 @@ fn collect_closure(
             .or_else(|| facades.get(symbol_name(call)).cloned())
         {
             authorities.insert(authority);
+            continue;
+        }
+        if node.rust_unsafe_calls.contains(call) {
+            authorities.insert("unsafe".to_string());
+            resolved.insert(call.clone());
+            continue;
+        }
+        if trusted_external_calls.contains(call) {
+            resolved.insert(call.clone());
             continue;
         }
         if known_pure_call(call)
@@ -469,6 +485,7 @@ fn collect_closure(
                 resolved,
                 unresolved,
                 authorities,
+                trusted_external_calls,
             );
         } else if call_is_constructor(call) {
             continue;
@@ -786,6 +803,7 @@ fn known_pure_call(call: &str) -> bool {
             | "as_object"
             | "as_object_mut"
             | "as_os_str"
+            | "as_ptr"
             | "as_ref"
             | "as_sequence"
             | "as_sequence_mut"
@@ -818,6 +836,7 @@ fn known_pure_call(call: &str) -> bool {
             | "components"
             | "contains"
             | "contains_key"
+            | "copy_from_slice"
             | "context"
             | "copied"
             | "count"
@@ -861,6 +880,9 @@ fn known_pure_call(call: &str) -> bool {
             | "from_str_radix"
             | "from_utf8"
             | "from_utf8_lossy"
+            | "align_of"
+            | "size_of"
+            | "catch_unwind"
             | "fullmatch"
             | "get"
             | "get_mut"
@@ -945,6 +967,7 @@ fn known_pure_call(call: &str) -> bool {
             | "ok_or"
             | "ok_or_else"
             | "once"
+            | "null"
             | "or"
             | "or_default"
             | "or_else"
@@ -1049,6 +1072,7 @@ fn known_pure_call(call: &str) -> bool {
             | "with_capacity"
             | "with_context"
             | "with_extension"
+            | "cast"
             | "wrapping_add"
             | "zip"
     ) || call.starts_with("serde_json::to_")
@@ -1128,11 +1152,13 @@ fn normalized_path_matches(actual: &str, expected: &str) -> bool {
 #[derive(Default)]
 struct RustCallCollector {
     calls: BTreeSet<String>,
+    unsafe_calls: BTreeSet<String>,
     authorities: BTreeSet<String>,
     dynamic_symbols: BTreeSet<String>,
     local_closures: BTreeSet<String>,
     regex_names: BTreeSet<String>,
     regex_match_names: BTreeSet<String>,
+    unsafe_depth: usize,
 }
 
 impl<'ast> Visit<'ast> for RustCallCollector {
@@ -1157,6 +1183,9 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             }
             if let Some(authority) = authority_for_call("rust", &call) {
                 self.authorities.insert(authority);
+            }
+            if self.unsafe_depth > 0 {
+                self.unsafe_calls.insert(call.clone());
             }
             self.calls.insert(call);
         } else {
@@ -1183,8 +1212,18 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         if let Some(authority) = authority_for_call("rust", &call) {
             self.authorities.insert(authority);
         }
+        if self.unsafe_depth > 0 {
+            self.unsafe_calls.insert(call.clone());
+        }
         self.calls.insert(call);
         visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_expr_unsafe(&mut self, node: &'ast syn::ExprUnsafe) {
+        self.authorities.insert("unsafe".to_string());
+        self.unsafe_depth += 1;
+        visit::visit_block(self, &node.block);
+        self.unsafe_depth -= 1;
     }
 
     fn visit_expr_macro(&mut self, node: &'ast ExprMacro) {
@@ -1399,6 +1438,9 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             dynamic_symbols: rust_dynamic_parameters(node.sig.inputs.iter()),
             ..RustCallCollector::default()
         };
+        if node.sig.unsafety.is_some() {
+            calls.authorities.insert("unsafe".to_string());
+        }
         calls.visit_block(&node.block);
         let name = node.sig.ident.to_string();
         self.nodes.push(FunctionNode {
@@ -1407,6 +1449,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             qualified_name: qualified_rust_name(&self.owner, &name),
             name,
             calls: calls.calls,
+            rust_unsafe_calls: calls.unsafe_calls,
             direct_authorities: calls.authorities,
             rust_regex_match_names: calls.regex_match_names,
             swift_standard_value_names: BTreeSet::new(),
@@ -1421,6 +1464,9 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             dynamic_symbols: rust_dynamic_parameters(node.sig.inputs.iter()),
             ..RustCallCollector::default()
         };
+        if node.sig.unsafety.is_some() {
+            calls.authorities.insert("unsafe".to_string());
+        }
         calls.visit_block(&node.block);
         let name = node.sig.ident.to_string();
         self.nodes.push(FunctionNode {
@@ -1429,6 +1475,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             qualified_name: qualified_rust_name(&self.owner, &name),
             name,
             calls: calls.calls,
+            rust_unsafe_calls: calls.unsafe_calls,
             direct_authorities: calls.authorities,
             rust_regex_match_names: calls.regex_match_names,
             swift_standard_value_names: BTreeSet::new(),
@@ -1498,6 +1545,11 @@ fn extract_rust_functions(path: &str, source: &str) -> Vec<FunctionNode> {
     for node in &mut collector.nodes {
         node.calls = node
             .calls
+            .iter()
+            .map(|call| resolve_call_alias(call, &aliases))
+            .collect();
+        node.rust_unsafe_calls = node
+            .rust_unsafe_calls
             .iter()
             .map(|call| resolve_call_alias(call, &aliases))
             .collect();
@@ -1646,6 +1698,7 @@ fn extract_tree_sitter_functions(
                 name,
                 qualified_name,
                 calls,
+                rust_unsafe_calls: BTreeSet::new(),
                 direct_authorities,
                 rust_regex_match_names: BTreeSet::new(),
                 swift_standard_value_names,
@@ -2302,6 +2355,7 @@ mod tests {
             sources: BTreeMap::from([(path.to_string(), source.to_string())]),
             semantic_functions: vec![expectation],
             authority_facades: Vec::new(),
+            trusted_external_calls: BTreeSet::new(),
         })
     }
 
@@ -2366,6 +2420,64 @@ mod tests {
             expectation("inspect", "effectful", &["filesystem"]),
         );
         assert_eq!(filesystem.result, AnalysisResult::Pass, "{filesystem:#?}");
+    }
+
+    #[test]
+    fn rust_native_memory_primitives_and_declared_pure_dependency_are_classified_exactly() {
+        let result = analyze(AnalysisInput {
+            binding: "rust".to_string(),
+            source_digest: "source".to_string(),
+            tool_digest: "tool".to_string(),
+            sources: BTreeMap::from([
+                (
+                    "src/adapter.rs".to_string(),
+                    "fn normalize(bytes: &mut [u8]) { bytes.copy_from_slice(&[1]); phone_number_normalization::normalize_phone_number(); }".to_string(),
+                ),
+                (
+                    "src/ffi.rs".to_string(),
+                    "pub unsafe extern \"C\" fn invoke(output: *mut u8) { let _ = std::mem::align_of::<u8>(); let _ = std::mem::size_of::<u8>(); let _ = std::panic::catch_unwind(|| unsafe { let _ = std::slice::from_raw_parts(output, 1); output.write(1); }); }".to_string(),
+                ),
+            ]),
+            semantic_functions: vec![
+                expectation("src/adapter.rs#normalize", "pure", &[]),
+                SemanticFunctionExpectation {
+                    id: "ffi".to_string(),
+                    symbol: "src/ffi.rs#invoke".to_string(),
+                    purity: "effectful".to_string(),
+                    authorities: BTreeSet::from(["foreign-memory".to_string()]),
+                },
+            ],
+            authority_facades: vec![AuthorityFacade {
+                authority: "foreign-memory".to_string(),
+                symbol: "src/ffi.rs#invoke".to_string(),
+            }],
+            trusted_external_calls: BTreeSet::from([
+                "phone_number_normalization::normalize_phone_number".to_string(),
+            ]),
+        });
+
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result
+            .functions
+            .iter()
+            .all(|function| function.unresolved_calls.is_empty()));
+        assert_eq!(
+            result
+                .functions
+                .iter()
+                .find(|function| function.id == "ffi")
+                .unwrap()
+                .transitive_authorities,
+            vec!["foreign-memory"]
+        );
+
+        let unknown = report(
+            "rust",
+            "src/adapter.rs",
+            "fn normalize() { unbound_crate::normalize_phone_number(); }",
+            expectation("normalize", "pure", &[]),
+        );
+        assert_eq!(unknown.result, AnalysisResult::Fail, "{unknown:#?}");
     }
 
     #[test]
@@ -2530,6 +2642,7 @@ mod tests {
                 },
             ],
             authority_facades: Vec::new(),
+            trusted_external_calls: BTreeSet::new(),
         });
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         assert_eq!(result.functions.len(), 2);
@@ -2575,6 +2688,7 @@ mod tests {
                 authority: "operator".to_string(),
                 symbol: "scripts/driver.py#drive".to_string(),
             }],
+            trusted_external_calls: BTreeSet::new(),
         });
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         assert!(result
@@ -2667,6 +2781,7 @@ mod tests {
                 authority: "provider".to_string(),
                 symbol: "complete".to_string(),
             }],
+            trusted_external_calls: BTreeSet::new(),
         });
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         assert_eq!(result.functions[0].transitive_authorities, vec!["provider"]);
