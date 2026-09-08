@@ -440,6 +440,24 @@ fn collect_closure(
     authorities.extend(authorities_for_node(index, nodes, facades));
     for call in &node.calls {
         let candidates = resolve_local_call(index, call, nodes);
+        if node.binding == "rust"
+            && (candidates.len() == 1 || (call.contains('.') && !candidates.is_empty()))
+        {
+            for candidate in candidates {
+                resolved.insert(nodes[candidate].qualified_name.clone());
+                collect_closure(
+                    candidate,
+                    nodes,
+                    facades,
+                    visited,
+                    resolved,
+                    unresolved,
+                    authorities,
+                    trusted_external_calls,
+                );
+            }
+            continue;
+        }
         if node.binding == "shell" && candidates.len() == 1 {
             resolved.insert(nodes[candidates[0]].qualified_name.clone());
             collect_closure(
@@ -476,17 +494,19 @@ fn collect_closure(
             continue;
         }
         if candidates.len() == 1 {
-            resolved.insert(nodes[candidates[0]].qualified_name.clone());
-            collect_closure(
-                candidates[0],
-                nodes,
-                facades,
-                visited,
-                resolved,
-                unresolved,
-                authorities,
-                trusted_external_calls,
-            );
+            for candidate in candidates {
+                resolved.insert(nodes[candidate].qualified_name.clone());
+                collect_closure(
+                    candidate,
+                    nodes,
+                    facades,
+                    visited,
+                    resolved,
+                    unresolved,
+                    authorities,
+                    trusted_external_calls,
+                );
+            }
         } else if call_is_constructor(call) {
             continue;
         } else if node.binding == "shell" {
@@ -547,6 +567,14 @@ fn resolve_local_call(index: usize, call: &str, nodes: &[FunctionNode]) -> Vec<u
     if exact.len() == 1 {
         return exact;
     }
+    let module_qualified = direct
+        .iter()
+        .copied()
+        .filter(|candidate| rust_qualified_call_matches(&requested_qualified, &nodes[*candidate]))
+        .collect::<Vec<_>>();
+    if module_qualified.len() == 1 {
+        return module_qualified;
+    }
     let free = direct
         .iter()
         .copied()
@@ -578,7 +606,19 @@ fn resolve_local_call(index: usize, call: &str, nodes: &[FunctionNode]) -> Vec<u
             return factories;
         }
     }
+    if call.contains('.') {
+        return direct;
+    }
     Vec::new()
+}
+
+fn rust_qualified_call_matches(requested: &str, candidate: &FunctionNode) -> bool {
+    let suffix = format!("::{}", candidate.qualified_name);
+    let Some(prefix) = requested.strip_suffix(&suffix) else {
+        return false;
+    };
+    let requested_module = prefix.rsplit("::").next().unwrap_or(prefix);
+    rust_source_module_name(&candidate.path) == Some(requested_module)
 }
 
 fn rust_source_module_name(path: &str) -> Option<&str> {
@@ -603,7 +643,12 @@ fn authorities_for_node(
         node.direct_authorities.clone()
     };
     for call in &node.calls {
-        if node.binding == "shell" && resolve_local_call(index, call, nodes).len() == 1 {
+        let local_candidates = resolve_local_call(index, call, nodes);
+        if (node.binding == "shell" && local_candidates.len() == 1)
+            || (node.binding == "rust"
+                && (local_candidates.len() == 1
+                    || (call.contains('.') && !local_candidates.is_empty())))
+        {
             continue;
         }
         if let Some(authority) = authority_for_call(&node.binding, call)
@@ -812,6 +857,7 @@ fn known_pure_call(call: &str) -> bool {
             | "as_u64"
             | "at"
             | "bool"
+            | "binary_search_by"
             | "borrow"
             | "borrow_mut"
             | "byte_range"
@@ -957,6 +1003,7 @@ fn known_pure_call(call: &str) -> bool {
             | "matches"
             | "max"
             | "min"
+            | "min_by"
             | "min_by_key"
             | "named_child"
             | "named_children"
@@ -1181,9 +1228,6 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 visit::visit_expr_call(self, node);
                 return;
             }
-            if let Some(authority) = authority_for_call("rust", &call) {
-                self.authorities.insert(authority);
-            }
             if self.unsafe_depth > 0 {
                 self.unsafe_calls.insert(call.clone());
             }
@@ -1208,9 +1252,6 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             self.calls.insert("<dynamic-call>".to_string());
             visit::visit_expr_method_call(self, node);
             return;
-        }
-        if let Some(authority) = authority_for_call("rust", &call) {
-            self.authorities.insert(authority);
         }
         if self.unsafe_depth > 0 {
             self.unsafe_calls.insert(call.clone());
@@ -2381,6 +2422,178 @@ mod tests {
         );
         assert_eq!(result.result, AnalysisResult::Fail);
         assert!(result.functions[0].reasons[0].contains("filesystem"));
+    }
+
+    #[test]
+    fn rust_module_qualified_associated_calls_resolve_exactly() {
+        let result = analyze(AnalysisInput {
+            binding: "rust".to_string(),
+            source_digest: "source".to_string(),
+            tool_digest: "tool".to_string(),
+            sources: BTreeMap::from([
+                (
+                    "src/transition.rs".to_string(),
+                    r#"
+                        use crate::representation::{Choice, Decision};
+                        fn select() { Choice::from_parts(); Decision::from_parts(); }
+                    "#
+                    .to_string(),
+                ),
+                (
+                    "src/representation.rs".to_string(),
+                    r#"
+                        struct Choice;
+                        impl Choice { fn from_parts() {} }
+                        struct Decision;
+                        impl Decision { fn from_parts() {} }
+                    "#
+                    .to_string(),
+                ),
+            ]),
+            semantic_functions: vec![expectation("src/transition.rs#select", "pure", &[])],
+            authority_facades: Vec::new(),
+            trusted_external_calls: BTreeSet::new(),
+        });
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert_eq!(
+            result.functions[0].resolved_callees,
+            vec!["Choice::from_parts", "Decision::from_parts"]
+        );
+        assert!(result.functions[0].unresolved_calls.is_empty());
+    }
+
+    #[test]
+    fn rust_module_qualified_associated_calls_do_not_cross_modules() {
+        let result = analyze(AnalysisInput {
+            binding: "rust".to_string(),
+            source_digest: "source".to_string(),
+            tool_digest: "tool".to_string(),
+            sources: BTreeMap::from([
+                (
+                    "src/transition.rs".to_string(),
+                    "fn select() { crate::missing::Choice::from_parts(); }".to_string(),
+                ),
+                (
+                    "src/representation.rs".to_string(),
+                    "struct Choice; impl Choice { fn from_parts() {} }".to_string(),
+                ),
+                (
+                    "src/other.rs".to_string(),
+                    "struct Choice; impl Choice { fn from_parts() {} }".to_string(),
+                ),
+            ]),
+            semantic_functions: vec![expectation("src/transition.rs#select", "pure", &[])],
+            authority_facades: Vec::new(),
+            trusted_external_calls: BTreeSet::new(),
+        });
+        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+        assert_eq!(
+            result.functions[0].unresolved_calls,
+            vec!["crate::missing::Choice::from_parts"]
+        );
+    }
+
+    #[test]
+    fn rust_ordering_combinators_are_pure_while_their_comparators_are_traversed() {
+        let pure = report(
+            "rust",
+            "src/transition.rs",
+            r#"
+                fn select(values: &[u8]) {
+                    values.iter().min_by(|left, right| left.cmp(right));
+                    values.binary_search_by(|candidate| candidate.cmp(&0));
+                }
+            "#,
+            expectation("select", "pure", &[]),
+        );
+        assert_eq!(pure.result, AnalysisResult::Pass, "{pure:#?}");
+
+        let effectful_comparator = report(
+            "rust",
+            "src/transition.rs",
+            r#"
+                fn select(values: &[u8]) {
+                    values.iter().min_by(|left, right| {
+                        std::fs::read_to_string("comparison-order").ok();
+                        left.cmp(right)
+                    });
+                    values.binary_search_by(|candidate| {
+                        std::fs::read_to_string("binary-search-order").ok();
+                        candidate.cmp(&0)
+                    });
+                }
+            "#,
+            expectation("select", "pure", &[]),
+        );
+        assert_eq!(effectful_comparator.result, AnalysisResult::Fail);
+        assert_eq!(
+            effectful_comparator.functions[0].transitive_authorities,
+            vec!["filesystem"]
+        );
+    }
+
+    #[test]
+    fn rust_ambiguous_local_methods_traverse_every_candidate_conservatively() {
+        let result = report(
+            "rust",
+            "src/transition.rs",
+            r#"
+                struct Pure;
+                impl Pure { fn evaluate_candidate(&self) {} }
+                struct Effectful;
+                impl Effectful {
+                    fn evaluate_candidate(&self) { std::fs::read_to_string("evidence").ok(); }
+                }
+                fn select(value: &Pure) { value.evaluate_candidate(); }
+            "#,
+            expectation("select", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+        assert_eq!(
+            result.functions[0].transitive_authorities,
+            vec!["filesystem"]
+        );
+        assert_eq!(
+            result.functions[0].resolved_callees,
+            vec!["Effectful::evaluate_candidate", "Pure::evaluate_candidate"]
+        );
+    }
+
+    #[test]
+    fn rust_local_definitions_precede_external_call_heuristics() {
+        let local_transport = report(
+            "rust",
+            "src/representation.rs",
+            "struct Observation; impl Observation { fn tcp(&self) {} } fn select(value: &Observation) { value.tcp(); }",
+            expectation("select", "pure", &[]),
+        );
+        assert_eq!(
+            local_transport.result,
+            AnalysisResult::Pass,
+            "{local_transport:#?}"
+        );
+
+        let local_known_name = report(
+            "rust",
+            "src/adapter.rs",
+            r#"
+                struct Adapter;
+                impl Adapter {
+                    fn inspect(&self) { std::fs::read_to_string("evidence").ok(); }
+                }
+                fn select(value: &Adapter) { value.inspect(); }
+            "#,
+            expectation("select", "pure", &[]),
+        );
+        assert_eq!(
+            local_known_name.result,
+            AnalysisResult::Fail,
+            "{local_known_name:#?}"
+        );
+        assert_eq!(
+            local_known_name.functions[0].transitive_authorities,
+            vec!["filesystem"]
+        );
     }
 
     #[test]
