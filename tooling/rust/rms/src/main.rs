@@ -41601,6 +41601,8 @@ fn build_next_report_with_optional_program(
     let bounded_existing_implementation = classification.lane == TaskLane::ImplementationCandidate
         && task_requests_declared_role_implementation_completion(task)
         && owner.status() == OwnerStatus::Selected;
+    let bounded_proof_support_roles =
+        exact_owner_scoped_proof_support_role_change_ready(task, intent.as_ref(), &owner);
     let skill_sources = detect_skill_sources(&root, home_dir().ok().as_deref());
     let mut warnings = if classification.lane == TaskLane::RepositoryOperation {
         Vec::new()
@@ -41635,6 +41637,9 @@ fn build_next_report_with_optional_program(
     if bounded_existing_implementation {
         warnings.push("The exact existing module is eligible for bounded implementation and declared-proof completion without canonical mutation authority. Unrelated and task-addressed validation debt remains visible and must still pass the candidate and committed gates.".to_string());
     }
+    if bounded_proof_support_roles {
+        warnings.push("The exact existing module is eligible for a bounded canonical proof-support role addition. Unrelated validation debt remains visible and must still pass the candidate and committed gates.".to_string());
+    }
     warnings.sort();
     warnings.dedup();
 
@@ -41646,12 +41651,16 @@ fn build_next_report_with_optional_program(
             .iter()
             .filter(|diagnostic| {
                 diagnostic.severity == Severity::Error
-                    && (!(bounded_observation_source_repair || bounded_existing_implementation)
-                        || bounded_existing_owner_route_hard_blocker(
-                            diagnostic,
-                            &owner,
-                            &profile_error_keys,
-                        ))
+                    && if bounded_proof_support_roles {
+                        bounded_owner_scoped_semantic_route_hard_blocker(&root, diagnostic, &owner)
+                    } else {
+                        !(bounded_observation_source_repair || bounded_existing_implementation)
+                            || bounded_existing_owner_route_hard_blocker(
+                                diagnostic,
+                                &owner,
+                                &profile_error_keys,
+                            )
+                    }
             })
             .map(|diagnostic| {
                 format!(
@@ -42422,6 +42431,90 @@ fn task_requests_declared_role_implementation_completion(task: &str) -> bool {
     preserves_semantics && requests_implementation && !requests_canonical_mutation
 }
 
+fn exact_owner_scoped_proof_support_role_change_ready(
+    task: &str,
+    intent: Option<&IntentModel>,
+    owner: &OwnerResolution,
+) -> bool {
+    let Some(intent) = intent else {
+        return false;
+    };
+    if owner.status() != OwnerStatus::Selected
+        || intent.operation != IntentOperation::SemanticChange
+        || intent.change_scope != IntentChangeScope::ExistingModule
+        || intent.responsibilities.is_empty()
+        || intent
+            .responsibilities
+            .iter()
+            .any(|responsibility| responsibility.kind != ResponsibilityKind::Monitor)
+        || !intent.surface_kinds.is_empty()
+        || !intent.open_questions.is_empty()
+        || [
+            &intent.facts.domain_decisions,
+            &intent.facts.lifecycle,
+            &intent.facts.effects,
+            &intent.facts.runnable_surface,
+            &intent.facts.reuse,
+        ]
+        .iter()
+        .any(|fact| fact.disposition != IntentDisposition::Absent)
+    {
+        return false;
+    }
+
+    let normalized = task.to_ascii_lowercase();
+    let declares_role = ["declare", "add"]
+        .iter()
+        .any(|verb| task_mentions_token(task, verb))
+        && task_mentions_token(task, "role");
+    let proof_support = [
+        "property_oracle",
+        "property oracle",
+        "oracle build",
+        "proof support",
+        "test support",
+    ]
+    .iter()
+    .any(|term| normalized.contains(term));
+    let preserves_public_contracts = [
+        "preserve all public contracts",
+        "preserve public contracts",
+        "without changing public contracts",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+    let preserves_production_behavior = [
+        "preserve all public contracts and production behavior",
+        "preserve all production behavior",
+        "preserve production behavior",
+        "without changing production behavior",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+    let requests_product_semantics = [
+        "change the contract",
+        "evolve the contract",
+        "add a contract",
+        "change the law",
+        "add a law",
+        "change the invariant",
+        "add an invariant",
+        "change the transition",
+        "add a transition",
+        "change semantics",
+        "evolve semantics",
+        "new semantics",
+    ]
+    .iter()
+    .any(|phrase| normalized.contains(phrase));
+
+    declares_role
+        && proof_support
+        && preserves_public_contracts
+        && preserves_production_behavior
+        && !requests_product_semantics
+}
+
 fn provider_task_adopts_new_canonical_owner(
     normalized_task: &str,
     model: &IntentModel,
@@ -42542,6 +42635,30 @@ fn bounded_existing_owner_route_hard_blocker(
     diagnostic_path.starts_with(owner_dir)
         && (diagnostic.check == "schema.validate"
             || diagnostic.check.starts_with("semantic.revision"))
+}
+
+fn bounded_owner_scoped_semantic_route_hard_blocker(
+    root: &Path,
+    diagnostic: &Diagnostic,
+    owner: &OwnerResolution,
+) -> bool {
+    if diagnostic.check.starts_with("intent.") {
+        return true;
+    }
+    let Some(selected) = owner.selected_module() else {
+        return true;
+    };
+    let owner_dir = Path::new(&selected.path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let diagnostic_path = Path::new(&diagnostic.path);
+    let diagnostic_path = if diagnostic_path.is_absolute() {
+        diagnostic_path.to_path_buf()
+    } else {
+        root.join(diagnostic_path)
+    };
+    let diagnostic_path = fs::canonicalize(&diagnostic_path).unwrap_or(diagnostic_path);
+    diagnostic_path.starts_with(owner_dir)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97282,6 +97399,89 @@ fn produce_transition_trace() {
             .warnings
             .iter()
             .any(|warning| { warning.contains("bounded observation-source repair") }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn exact_proof_support_role_addition_routes_despite_unrelated_validation_debt() {
+        let root = route_capability_fixture("proof-support-role-route");
+        let unrelated_path = root.join("modules/play-game-boundary/implementation.yaml");
+        let mut unrelated = load_manifest(&unrelated_path).unwrap();
+        set_yaml_string_path(&mut unrelated.value, &["spec"], "rms/implementation/v9");
+        write_yaml_manifest(&unrelated).unwrap();
+        initialize_test_git_repository(&root);
+        let task = "Add only development oracle support to the existing play-game-domain module: declare tests/reference.cpp as a property_oracle support role and tests/build_reference.sh as a development oracle build support role. Preserve all public contracts and production behavior. The existing proof runner will use this pinned reference for its already declared boundary and differential properties. No production dependencies, consumers, or runnable surfaces.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [play-game-domain]
+facts:
+  domain_decisions: {disposition: absent, basis: inferred, rationale: Existing decisions remain unchanged.}
+  lifecycle: {disposition: absent, basis: explicit, source_quote: "Preserve all public contracts and production behavior.", rationale: Existing lifecycle remains unchanged.}
+  effects: {disposition: absent, basis: inferred, rationale: Development proof support has no production effects.}
+  runnable_surface: {disposition: absent, basis: explicit, source_quote: "No production dependencies, consumers, or runnable surfaces.", rationale: No product surface is requested.}
+  reuse: {disposition: absent, basis: explicit, source_quote: "No production dependencies, consumers, or runnable surfaces.", rationale: No production consumer is requested.}
+responsibilities:
+  - {id: development-oracle-support, kind: monitor, summary: Declare development oracle support roles for existing properties.}
+surface_kinds: []
+binding_preferences: [rust]
+open_questions: []
+"#;
+
+        let report = build_next_report_with_intent(
+            &root,
+            None,
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(report.result, NextResult::Ready, "{report:#?}");
+        assert_eq!(report.task_classification.lane, TaskLane::Semantic);
+        assert_eq!(
+            report
+                .owner
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("play-game-domain")
+        );
+        assert!(report.blockers.is_empty());
+        assert_eq!(report.validation.status, "fail");
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("proof-support role addition")));
+        assert!(bounded_owner_scoped_semantic_route_hard_blocker(
+            &root,
+            &error(
+                "semantic.owner-local",
+                Path::new("modules/play-game-domain/module.yaml"),
+                "relative owner-local error"
+            ),
+            &report.owner,
+        ));
+
+        let owner_path = root.join("modules/play-game-domain/implementation.yaml");
+        let mut owner = load_manifest(&owner_path).unwrap();
+        set_yaml_string_path(&mut owner.value, &["spec"], "rms/implementation/v9");
+        write_yaml_manifest(&owner).unwrap();
+        let blocked = build_next_report_with_intent(
+            &root,
+            None,
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(blocked.result, NextResult::Blocked, "{blocked:#?}");
+        assert!(!blocked.blockers.is_empty());
         fs::remove_dir_all(&root).unwrap();
     }
 
