@@ -40821,20 +40821,27 @@ fn build_module_scoped_check_report_with_audit(
         ));
     }
     let scoped_audit = if matches!(mode, CheckMode::Changes | CheckMode::Committed) {
+        let execute_scoped_proofs = mode == CheckMode::Committed && shared_audit.is_none();
         let audit = match (mode, shared_audit) {
             (_, Some(audit)) => audit.clone(),
-            (CheckMode::Committed, None) => execute_audit_with_proof_cache(
-                root,
-                true,
-                false,
-                false,
-                DEFAULT_PROOF_TIMEOUT_SECONDS,
-                proof_cache,
-            )?,
+            (CheckMode::Committed, None) => build_audit_report_with_scope(root, true, false)?,
             (CheckMode::Changes, None) => build_audit_report_with_scope(root, true, false)?,
             _ => unreachable!("only changes and committed modes build a scoped audit"),
         };
-        let audit = restrict_audit_to_module_closure(root, audit, &closure_roots);
+        let mut audit = restrict_audit_to_module_closure(root, audit, &closure_roots);
+        if execute_scoped_proofs {
+            append_executable_proof_audit_checks_with_cache_builder(
+                root,
+                false,
+                false,
+                DEFAULT_PROOF_TIMEOUT_SECONDS,
+                &mut audit.checks,
+                proof_cache,
+                Some(&closure_roots),
+                proof_cache_for_root,
+            );
+            audit.result = audit_result(&audit.checks);
+        }
         failures.extend(
             audit
                 .checks
@@ -49122,6 +49129,7 @@ fn execute_audit_with_proof_cache(
             proof_timeout_seconds,
             &mut report.checks,
             proof_cache,
+            None,
             proof_cache_for_root,
         );
         report.result = audit_result(&report.checks);
@@ -49153,6 +49161,7 @@ fn append_executable_proof_audit_checks(
         timeout_seconds,
         checks,
         None,
+        None,
         proof_cache_for_root,
     );
 }
@@ -49164,14 +49173,24 @@ fn append_executable_proof_audit_checks_with_cache_builder<F>(
     timeout_seconds: u64,
     checks: &mut Vec<AuditCheck>,
     provided_proof_cache: Option<&verification::ProofCache>,
+    scope_roots: Option<&[PathBuf]>,
     build_proof_cache: F,
 ) where
     F: FnOnce(&Path) -> Result<verification::ProofCache>,
 {
     let root = normalize_empty_path(root.to_path_buf());
     let before = production_file_digests(&root, include_examples).unwrap_or_default();
-    let implementations =
-        discover_implementation_manifests(&root, include_examples).unwrap_or_default();
+    let implementations = discover_implementation_manifests(&root, include_examples)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|implementation| {
+            scope_roots.is_none_or(|roots| {
+                roots
+                    .iter()
+                    .any(|scope_root| implementation.path.starts_with(scope_root))
+            })
+        })
+        .collect::<Vec<_>>();
     let owned_proof_cache = if provided_proof_cache.is_none()
         && !dry_run
         && implementations
@@ -49361,7 +49380,7 @@ fn append_executable_proof_audit_checks_with_cache_builder<F>(
             }
         }
     }
-    append_package_regeneration_audit_checks(&root, include_examples, dry_run, checks);
+    append_package_regeneration_audit_checks(&root, include_examples, dry_run, checks, scope_roots);
     if dry_run {
         checks.push(audit_check(
             "proof.dry-run-not-production-proof",
@@ -49467,10 +49486,16 @@ fn append_package_regeneration_audit_checks(
     include_examples: bool,
     dry_run: bool,
     checks: &mut Vec<AuditCheck>,
+    scope_roots: Option<&[PathBuf]>,
 ) {
     let modules = discover_module_manifests(root).unwrap_or_default();
     for module in modules {
         if !audit_path_in_scope(root, &module.path, include_examples)
+            || scope_roots.is_some_and(|roots| {
+                !roots
+                    .iter()
+                    .any(|scope_root| module.path.starts_with(scope_root))
+            })
             || !module_declares_reusable_intent(&module)
         {
             continue;
@@ -99155,6 +99180,7 @@ architecture:
             30,
             &mut checks,
             None,
+            None,
             |project_root| {
                 cache_builds.set(cache_builds.get() + 1);
                 verification::ProofCache::new(project_root, "fixture-source", "fixture-tools", None)
@@ -99182,6 +99208,7 @@ architecture:
             30,
             &mut reused_checks,
             Some(&provided_cache),
+            None,
             |_| {
                 redundant_builds.set(redundant_builds.get() + 1);
                 bail!("provided proof cache must suppress identity reconstruction")
@@ -99198,6 +99225,88 @@ architecture:
         assert!(!reused_checks.iter().any(|check| check.result == "fail"));
 
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn scoped_strict_audit_executes_only_closure_proofs() {
+        let root = unique_test_dir("scoped-strict-proof-execution");
+        for (name, command) in [("selected", "exit 0"), ("unrelated", "exit 42")] {
+            let module_root = root.join(name);
+            fs::create_dir_all(module_root.join("scripts")).unwrap();
+            fs::create_dir_all(module_root.join("verification/properties")).unwrap();
+            fs::write(
+                module_root.join("scripts/property.sh"),
+                format!("#!/bin/sh\nset -eu\n{command}\n"),
+            )
+            .unwrap();
+            fs::write(
+                module_root.join("verification/properties/proof.md"),
+                "# Proof\n\nCommand/tool: fixture\n\nObserved result: pass.\n\nSource revision: git:test\n",
+            )
+            .unwrap();
+            fs::write(
+                module_root.join("implementation.yaml"),
+                format!(
+                    r#"spec: rms/implementation/v0.1
+module: {name}
+binding: executable
+source: {{ root: ., public_entrypoint: scripts/property.sh }}
+commands:
+  build: sh -n scripts/property.sh
+  verify: sh -n scripts/property.sh
+  properties: sh scripts/property.sh
+toolchain: {{ runner: shell }}
+architecture:
+  shape: domain-engine
+  reliability:
+    properties:
+      - id: {name}-proof
+        proves: scoped-strict-execution
+        input_space: one deterministic fixture
+        oracle: [command exits successfully]
+        evidence: verification/properties/proof.md
+        realizations:
+          - {{ profile: smoke, strategy: deterministic-corpus, command: properties, runner: scripts/property.sh#run_property }}
+  machine: {{}}
+  roles: {{}}
+"#
+                ),
+            )
+            .unwrap();
+        }
+        let cache =
+            verification::ProofCache::new(&root, "fixture-source", "fixture-tools", None).unwrap();
+        let selected_root = root.join("selected");
+        let scope_roots = vec![selected_root.clone()];
+        let mut checks = Vec::new();
+
+        append_executable_proof_audit_checks_with_cache_builder(
+            &root,
+            false,
+            false,
+            30,
+            &mut checks,
+            Some(&cache),
+            Some(&scope_roots),
+            |_| bail!("provided proof cache must suppress identity reconstruction"),
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            checks
+                .iter()
+                .filter(|check| check.id == "property.execution-proof")
+                .count(),
+            1
+        );
+        assert!(checks.iter().any(|check| {
+            check.id == "property.execution-proof"
+                && Path::new(&check.evidence).starts_with(&selected_root)
+        }));
+        assert!(
+            !checks.iter().any(|check| check.result == "fail"),
+            "{checks:#?}"
+        );
     }
 
     #[test]
@@ -108633,7 +108742,7 @@ roles:
         .unwrap();
         let mut checks = Vec::new();
 
-        append_package_regeneration_audit_checks(&root, false, false, &mut checks);
+        append_package_regeneration_audit_checks(&root, false, false, &mut checks, None);
 
         fs::remove_dir_all(&root).unwrap();
         assert!(checks
