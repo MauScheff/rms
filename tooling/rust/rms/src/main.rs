@@ -41792,6 +41792,8 @@ fn build_next_report_with_optional_program(
                         )
                     } else if owner_scoped_existing_semantic_change {
                         bounded_owner_scoped_semantic_route_hard_blocker(&root, diagnostic, &owner)
+                    } else if owner.status() == OwnerStatus::Selected {
+                        bounded_owner_scoped_semantic_route_hard_blocker(&root, diagnostic, &owner)
                     } else {
                         true
                     }
@@ -97965,6 +97967,65 @@ open_questions: []
         .unwrap();
         assert_eq!(blocked.result, NextResult::Blocked, "{blocked:#?}");
         assert!(!blocked.blockers.is_empty());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn selected_owner_clarification_ignores_unrelated_module_debt() {
+        let root = route_capability_fixture("selected-owner-clarification-debt");
+        let unrelated_path = root.join("modules/play-game-boundary/implementation.yaml");
+        let mut unrelated = load_manifest(&unrelated_path).unwrap();
+        set_yaml_string_path(&mut unrelated.value, &["spec"], "rms/implementation/v9");
+        write_yaml_manifest(&unrelated).unwrap();
+        initialize_test_git_repository(&root);
+        let task = "In play-game-domain, define private move discovery with one serving owner and race proof before exposing a public route.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: unknown
+subjects: [move-discovery, serving-owner]
+facts:
+  domain_decisions: {disposition: required, basis: inferred, rationale: One owner decides whether discovery is served.}
+  lifecycle: {disposition: required, basis: inferred, rationale: Race ordering constrains discovery.}
+  effects: {disposition: unknown, basis: inferred, rationale: External operations are unspecified.}
+  runnable_surface: {disposition: absent, basis: inferred, rationale: The route remains private.}
+  reuse: {disposition: unknown, basis: inferred, rationale: Consumers are unspecified.}
+responsibilities:
+  - {id: move-discovery, kind: decision, summary: Decide private move discovery.}
+  - {id: serving-owner, kind: workflow, summary: Keep one serving owner during races.}
+surface_kinds: []
+binding_preferences: []
+open_questions: [Does discovery perform external operations?]
+"#;
+
+        let report = build_next_report_with_intent(
+            &root,
+            None,
+            task,
+            RawIntentInput {
+                yaml: Some(intent.to_string()),
+                ..RawIntentInput::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.result,
+            NextResult::ClarificationRequired,
+            "{report:#?}"
+        );
+        assert!(report.blockers.is_empty(), "{:#?}", report.blockers);
+        assert!(report.owner.selected_module().is_none());
+        assert!(report
+            .owner
+            .candidates
+            .iter()
+            .any(|candidate| { candidate.module.name == "play-game-domain" }));
+        assert!(report.warnings.iter().any(|warning| {
+            warning.contains("non-blocking canonical debt")
+                && warning.contains("modules/play-game-boundary/implementation.yaml")
+        }));
+
         fs::remove_dir_all(&root).unwrap();
     }
 
