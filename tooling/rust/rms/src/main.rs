@@ -36795,7 +36795,8 @@ fn validate_swift_machine_execution_path(
         .and_then(|signature| signature.return_type)
         .as_deref()
         != machine_types.transition_record.as_deref()
-        || !textual_driver_preserves_transition_record(driver_source, transition_record)
+        || !(textual_driver_preserves_transition_record(driver_source, transition_record)
+            || swift_bounded_driver_preserves_records(implementation, driver_source, transition_record))
     {
         diagnostics.push(error(
             "structure.machine-driver-transition-record-not-preserved",
@@ -36947,6 +36948,87 @@ fn textual_driver_preserves_transition_record(source: &str, function: &str) -> b
     .iter()
     .any(|marker| source.contains(marker));
     state_after && effects && retained
+}
+
+// This is a bounded structural realization, not a proof that native transition
+// code conforms to the declared machine. Native transition/evidence gates remain.
+fn swift_bounded_driver_preserves_records(
+    implementation: &LoadedManifest,
+    source: &str,
+    transition_record: &str,
+) -> bool {
+    let transitions = existing_machine_transitions(implementation);
+    let results = get_string_array(&implementation.value, &["architecture", "machine", "effect_results"]);
+    if transitions.is_empty() || results.is_empty()
+        || transitions.iter().any(|transition| transition.effects.len() > 1)
+        || results.iter().any(|result| !transitions.iter().any(|transition| transition_input_variant(&transition.on) == *result))
+        || transitions.iter().any(|transition| results.contains(&transition_input_variant(&transition.on)) && !transition.effects.is_empty())
+    {
+        return false;
+    }
+    swift_bounded_record_return_shape(source, transition_record, &existing_effect_protocols(implementation))
+}
+
+fn swift_bounded_record_return_shape(source: &str, transition: &str, protocols: &[MachineEffectProtocol]) -> bool {
+    fn identifier(value: &str) -> bool {
+        swift_identifier(value) == Some(value) && !value.is_empty()
+    }
+    fn compact(value: &str) -> String {
+        value.chars().filter(|character| !character.is_whitespace()).collect()
+    }
+    fn binding(line: &str) -> Option<(&str, &str)> {
+        let (name, expression) = line.trim().strip_prefix("let ")?.split_once('=')?;
+        let name = name.trim();
+        identifier(name).then_some((name, expression.trim()))
+    }
+    let Some((signature, body)) = source.split_once('{') else { return false; };
+    let Some(body) = body.trim().strip_suffix('}') else { return false; };
+    let lines = body.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>();
+    // Reject extra statements, branches, hidden closures, and partial returns.
+    if lines.len() != 4 { return false; }
+    let Some((record, initial)) = binding(lines[0]) else { return false; };
+    let Some((_, parameters)) = signature.split_once('(') else { return false; };
+    let Some((parameters, _)) = parameters.split_once(')') else { return false; };
+    let parameters = parameters.split(',').filter_map(|parameter| {
+        parameter.split_once(':')?.0.split_whitespace().next_back()
+    }).collect::<Vec<_>>();
+    if parameters.len() < 2 || parameters.iter().any(|name| !identifier(name)) || parameters.contains(&record)
+        || parameters.contains(&transition) || record == transition
+    {
+        return false;
+    }
+    if compact(initial) != format!("{transition}({},{})", parameters[0], parameters[1]) { return false; }
+    let Some(guard) = lines[1].strip_prefix("guard let ") else { return false; };
+    let Some((effect, _)) = guard.split_once('=') else { return false; };
+    let effect = effect.trim();
+    if !identifier(effect) || effect == record || effect == transition || parameters.contains(&effect)
+        || compact(lines[1]) != format!("guardlet{effect}={record}.output.effects.firstelse{{return[{record}]}}")
+    { return false; }
+    let Some((result, execution)) = binding(lines[2]) else { return false; };
+    if result == effect || result == record || result == transition || parameters.contains(&result) { return false; }
+    let Some(execution) = execution.strip_prefix("await ") else { return false; };
+    let execution = compact(execution);
+    let Some((executor, arguments)) = execution.split_once('(') else { return false; };
+    if !identifier(executor) || [record, effect, result].contains(&executor) || parameters.contains(&executor)
+    { return false; }
+    let Some(arguments) = arguments.strip_suffix(')') else { return false; };
+    let arguments = arguments.split(',').collect::<Vec<_>>();
+    let labels = arguments.iter().map(|argument| argument.split_once(':').map_or("_", |(label, _)| label)).collect::<Vec<_>>();
+    // An exact selector must distinguish the operation overload from a same-name
+    // rejection stub. Bare-name call presence cannot establish that identity.
+    if !protocols.iter().any(|protocol| protocol.executor_symbol.as_deref().is_some_and(|symbol| {
+        let Some((name, selector)) = semantic_symbol_name(symbol).split_once('(') else { return false; };
+        let Some(selector) = selector.strip_suffix(')') else { return false; };
+        name == executor && selector.split(',').map(|parameter| parameter.split_once(':').map(|(label, _)| label)).collect::<Option<Vec<_>>>().as_deref() == Some(labels.as_slice())
+    })) { return false; }
+    if arguments.first().copied() != Some(effect) || arguments[1..].iter().any(|argument| {
+        let value = if let Some((label, value)) = argument.split_once(':') {
+            if !identifier(label) { return true; }
+            value
+        } else { argument };
+        !parameters[2..].contains(&value)
+    }) { return false; }
+    compact(lines[3]) == format!("return[{record},{transition}({record}.stateAfter,.effectResult({result}))]")
 }
 
 fn validate_textual_surface_driver_paths<'a>(
@@ -88588,6 +88670,38 @@ public enum OtherState {
         assert_eq!(signature.return_type.as_deref(), Some("Accepted"));
         assert!(swift_function_source(source, "Facade.send").is_none());
         assert!(swift_binding_symbol_exists("struct Facade { func submit() {} }", "Facade.submit"));
+    }
+
+    #[test]
+    fn swift_bounded_driver_requires_complete_records_and_declared_effect_bound() {
+        let source = "func drive(initial: State, input: Input, operation: Operation) async -> [Record] {\nlet first = transitionRecord(initial, input)\nguard let effect = first.output.effects.first else { return [first] }\nlet result = await execute(effect, using: operation)\nreturn [first, transitionRecord(first.stateAfter, .effectResult(result))]\n}";
+        let yaml = "architecture:\n  machine:\n    effect_results: [Done, Failed]\n    effect_protocols:\n    - effect: Send\n      results: [Done, Failed]\n      executor_symbol: Sources/Executor.swift#execute(_:Effect,using:Operation)\n      atomicity: one-request-one-result\n    transitions:\n    - {from: Ready, on: Start, to: Waiting, effects: [Send]}\n    - {from: Waiting, on: Done, to: Ready, effects: []}\n    - {from: Waiting, on: Failed, to: Ready, effects: []}\n";
+        let manifest = |yaml: &str| LoadedManifest { path: PathBuf::from("implementation.yaml"), value: serde_yaml::from_str(yaml).unwrap() };
+        assert!(swift_bounded_driver_preserves_records(&manifest(yaml), source, "transitionRecord"));
+        for changed in [
+            source.replace("return [first]", "return []"),
+            source.replace("return [first,", "return ["),
+            source.replace("first.stateAfter", "initial"),
+            source.replace(".effectResult(result)", ".effectResult(other)"),
+            source.replace("execute(effect,", "execute(other,"),
+            source.replace("execute(effect,", "unknown(effect,"),
+            source.replace("using: operation", "using: unknown()"),
+            source.replace(", using: operation", ""),
+            source.replace("using: operation", "with: operation"),
+            source.replace("operation: Operation", "transitionRecord: Operation"),
+            source.replace("return [first,", "sideEffect()\nreturn [first,"),
+            source.replace("let first =", "var first ="),
+        ] {
+            assert!(!swift_bounded_driver_preserves_records(&manifest(yaml), &changed, "transitionRecord"), "{changed}");
+        }
+        for changed in [
+            yaml.replace("effects: [Send]", "effects: [Send, Send]"),
+            yaml.replace("on: Done, to: Ready, effects: []", "on: Done, to: Ready, effects: [Send]"),
+            yaml.replace("effect_results: [Done, Failed]", "effect_results: [Done, Failed, Missing]"),
+            yaml.replace("effect_results: [Done, Failed]", "effect_results: []"),
+        ] {
+            assert!(!swift_bounded_driver_preserves_records(&manifest(&changed), source, "transitionRecord"), "{changed}");
+        }
     }
 
     #[test]
