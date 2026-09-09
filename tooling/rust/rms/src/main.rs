@@ -42812,7 +42812,7 @@ fn exact_public_observation_source_repair_ready(task: &str, owner: &OwnerResolut
                 .is_some_and(|source| source.kind == "invocation-record")
     })
     .count()
-        == 1
+        > 0
 }
 
 fn bounded_existing_owner_route_hard_blocker(
@@ -97830,6 +97830,55 @@ fn produce_transition_trace() {
         initialize_test_git_repository(&root);
         let task = format!(
             "Correct only the existing play-game-domain {binding_id} public behavior binding observation_source.kind from invocation-record to transition-record. Preserve the complete existing binding and all product semantics."
+        );
+
+        let report = build_next_report(&root, None, &task).unwrap();
+
+        assert_eq!(report.result, NextResult::Ready, "{report:#?}");
+        assert_eq!(
+            report
+                .owner
+                .selected_module()
+                .map(|module| module.name.as_str()),
+            Some("play-game-domain")
+        );
+        assert!(report.blockers.is_empty());
+        assert_eq!(report.validation.status, "fail");
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| { warning.contains("bounded observation-source repair") }));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn exact_multi_binding_observation_source_repair_routes_as_one_owner_change() {
+        let root = route_capability_fixture("multi-observation-source-repair-route");
+        let implementation_path = root.join("modules/play-game-domain/implementation.yaml");
+        let mut implementation = load_manifest(&implementation_path).unwrap();
+        let mut bindings = typed_yaml_sequence::<PublicBehaviorBinding>(
+            &implementation.value,
+            &["architecture", "public_behavior_bindings"],
+        );
+        let first = bindings.first_mut().expect("generated public binding");
+        first.observation_source = Some(BehaviorObservationSource {
+            kind: "invocation-record".to_string(),
+            command: "trace".to_string(),
+        });
+        let first_id = first.id.clone();
+        let mut second = first.clone();
+        second.id = "play-game-secondary-public".to_string();
+        let second_id = second.id.clone();
+        bindings.push(second);
+        set_yaml_sequence_path(
+            &mut implementation.value,
+            &["architecture", "public_behavior_bindings"],
+            bindings.iter().map(public_behavior_binding_yaml).collect(),
+        );
+        write_yaml_manifest(&implementation).unwrap();
+        initialize_test_git_repository(&root);
+        let task = format!(
+            "Correct only the existing play-game-domain {first_id} and {second_id} public behavior binding observation_source.kind values from invocation-record to transition-record. Preserve the complete existing bindings and all product semantics."
         );
 
         let report = build_next_report(&root, None, &task).unwrap();
