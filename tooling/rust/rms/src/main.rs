@@ -41998,6 +41998,22 @@ fn build_next_report_with_optional_program(
         exact_owner_scoped_proof_support_role_change_ready(task, intent.as_ref(), &owner);
     let owner_scoped_existing_semantic_change =
         owner_scoped_existing_semantic_change_ready(intent.as_ref(), &owner);
+    let symbol_repairs = if owner_scoped_existing_semantic_change {
+        owner
+            .selected_module()
+            .and_then(|selected| {
+                load_manifest(
+                    &Path::new(&selected.path)
+                        .parent()?
+                        .join("implementation.yaml"),
+                )
+                .ok()
+            })
+            .map(|manifest| proven_symbol_qualification_repairs(task, &manifest))
+            .unwrap_or_default()
+    } else {
+        BTreeSet::new()
+    };
     let skill_sources = detect_skill_sources(&root, home_dir().ok().as_deref());
     let mut warnings = if classification.lane == TaskLane::RepositoryOperation {
         Vec::new()
@@ -42052,6 +42068,9 @@ fn build_next_report_with_optional_program(
             .iter()
             .filter(|diagnostic| {
                 diagnostic.severity == Severity::Error
+                    && !(diagnostic.check == "effects.transitive-purity"
+                        && symbol_repairs
+                            .contains(&(diagnostic.path.clone(), diagnostic.message.clone())))
                     && if explicit_outside_coverage {
                         diagnostic.check.starts_with("intent.")
                     } else if matches!(owner.status(), OwnerStatus::Ambiguous | OwnerStatus::None) {
@@ -42970,6 +42989,78 @@ fn owner_scoped_existing_semantic_change_ready(
         ]
         .iter()
         .all(|fact| fact.disposition != IntentDisposition::Unknown)
+}
+
+fn proven_symbol_qualification_repairs(
+    task: &str,
+    manifest: &LoadedManifest,
+) -> BTreeSet<(String, String)> {
+    let mut repairs = BTreeSet::new();
+    let replacements = task
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| matches!(c, '`' | '\'' | '"' | ',' | ';')))
+        .map(|word| word.trim_end_matches('.'))
+        .filter(|word| binding_reference_parts(word).is_some())
+        .collect::<BTreeSet<_>>();
+    let Ok(before) = build_effect_analysis(manifest) else {
+        return repairs;
+    };
+    for failed in before.functions.iter().filter(|function| {
+        function.verdict == effect_analysis::FunctionVerdict::Fail
+            && function.reasons.len() == 1
+            && function.reasons[0].starts_with("semantic symbol resolved to ")
+            && !function.symbol.contains('#')
+            && task_mentions_token(task, &function.id)
+    }) {
+        let matching = replacements
+            .iter()
+            .filter(|replacement| {
+                binding_reference_parts(replacement)
+                    .is_some_and(|(_, symbol)| symbol == failed.symbol)
+            })
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            continue;
+        }
+        let mut candidate = manifest.clone();
+        let Some(functions) = candidate
+            .value
+            .as_mapping_mut()
+            .and_then(|value| value.get_mut(yaml_key("semantic_functions")))
+            .and_then(YamlValue::as_sequence_mut)
+        else {
+            continue;
+        };
+        let Some(function) = functions
+            .iter_mut()
+            .find(|function| get_str(function, &["id"]) == Some(failed.id.as_str()))
+        else {
+            continue;
+        };
+        let Some(function) = function.as_mapping_mut() else {
+            continue;
+        };
+        function.insert(
+            yaml_key("symbol"),
+            YamlValue::String((**matching[0]).to_string()),
+        );
+        if build_effect_analysis(&candidate).is_ok_and(|after| {
+            after.functions.iter().any(|function| {
+                function.id == failed.id
+                    && function.verdict == effect_analysis::FunctionVerdict::Pass
+            })
+        }) {
+            repairs.insert((
+                manifest.path.display().to_string(),
+                format!(
+                    "semantic function `{}` failed effect analysis: {}",
+                    failed.id,
+                    failed.reasons.join("; ")
+                ),
+            ));
+        }
+    }
+    repairs
 }
 
 fn provider_task_adopts_new_canonical_owner(
@@ -88364,6 +88455,46 @@ public enum OtherState {
         );
         assert!(binding_reference_parts("Sources/Facade.swift#Facade.send(_ envelope)").is_none());
         assert!(binding_reference_parts("Sources/Facade.swift#Facade.send(_:)").is_none());
+    }
+
+    #[test]
+    fn symbol_qualification_repair_requires_one_passing_exact_candidate() {
+        let root = unique_test_dir("symbol-qualification-repair");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/one.rs"), "fn transition() {}\n").unwrap();
+        fs::write(
+            root.join("src/two.rs"),
+            "fn transition() { std::fs::read_to_string(\"file\").ok(); }\n",
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: root.join("implementation.yaml"),
+            value: serde_yaml::from_str("spec: rms/implementation/v0.2\nbinding: rust\nsource: {root: src}\nsemantic_functions:\n- id: transition-model\n  symbol: transition\n  kind: transition\n  purity: pure\n  authorities: []\n").unwrap(),
+        };
+        assert_eq!(
+            proven_symbol_qualification_repairs(
+                "Qualify transition-model as src/one.rs#transition",
+                &manifest
+            )
+            .len(),
+            1
+        );
+        for task in [
+            "Qualify transition-model as src/two.rs#transition",
+            "Qualify transition-model as src/missing.rs#transition",
+            "Qualify another-function as src/one.rs#transition",
+            "Qualify transition-model as src/one.rs#transition or src/two.rs#transition",
+        ] {
+            assert!(
+                proven_symbol_qualification_repairs(task, &manifest).is_empty(),
+                "{task}"
+            );
+        }
+        assert_eq!(
+            get_str(&manifest.value["semantic_functions"][0], &["symbol"]),
+            Some("transition")
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
