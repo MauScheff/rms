@@ -157,16 +157,10 @@ pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
         }
         nodes.append(&mut extracted);
     }
-    let facades = input
-        .authority_facades
-        .iter()
-        .map(|facade| {
-            (
-                symbol_name(&facade.symbol).to_string(),
-                facade.authority.clone(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let mut facades = BTreeMap::<String, BTreeSet<String>>::new();
+    for facade in &input.authority_facades {
+        facades.entry(symbol_name(&facade.symbol).to_string()).or_default().insert(facade.authority.clone());
+    }
     let authority_memberships = authority_memberships(&nodes, &input.authority_facades);
     let mut functions = Vec::new();
     for expectation in input.semantic_functions {
@@ -230,7 +224,7 @@ fn source_binding(path: &str) -> Option<&'static str> {
 fn analyze_function(
     expectation: &SemanticFunctionExpectation,
     nodes: &[FunctionNode],
-    facades: &BTreeMap<String, String>,
+    facades: &BTreeMap<String, BTreeSet<String>>,
     authority_memberships: &BTreeMap<usize, BTreeSet<String>>,
     trusted_external_calls: &BTreeSet<String>,
 ) -> FunctionAnalysis {
@@ -275,14 +269,15 @@ fn analyze_function(
         .get(&root)
         .cloned()
         .unwrap_or_default();
-    if memberships.len() == 1 {
-        let authority = memberships.iter().next().cloned().unwrap_or_default();
+    let ambient_memberships = memberships.iter().filter(|authority| authority.as_str() != "dynamic-dispatch").collect::<Vec<_>>();
+    if ambient_memberships.len() == 1 && !is_raw_authority(ambient_memberships[0]) {
+        let authority = ambient_memberships[0];
         direct_authorities = bind_ambient_authorities(direct_authorities, &authority);
         transitive_authorities = bind_ambient_authorities(transitive_authorities, &authority);
     }
 
     let mut reasons = Vec::new();
-    if memberships.len() > 1 {
+    if ambient_memberships.len() > 1 && ambient_memberships.iter().any(|authority| !is_raw_authority(authority)) {
         reasons.push(format!(
             "semantic function is contained by multiple authority facades [{}]",
             memberships.into_iter().collect::<Vec<_>>().join(", ")
@@ -480,11 +475,15 @@ fn bind_ambient_authorities(
     bound
 }
 
+fn is_raw_authority(authority: &str) -> bool {
+    matches!(authority, "filesystem" | "process" | "clock" | "randomness" | "environment" | "network" | "git" | "unsafe" | "dynamic-dispatch")
+}
+
 #[allow(clippy::too_many_arguments)]
 fn collect_closure(
     index: usize,
     nodes: &[FunctionNode],
-    facades: &BTreeMap<String, String>,
+    facades: &BTreeMap<String, BTreeSet<String>>,
     visited: &mut BTreeSet<usize>,
     resolved: &mut BTreeSet<String>,
     unresolved: &mut BTreeSet<String>,
@@ -537,8 +536,8 @@ fn collect_closure(
             authorities.insert(authority);
             continue;
         }
-        if let Some(authority) = facades.get(symbol_name(call)) {
-            authorities.insert(authority.clone());
+        if let Some(required) = facades.get(symbol_name(call)) {
+            authorities.extend(required.iter().cloned());
             // A named facade contains ambient IO. It does not erase open
             // dispatch or unresolved calls in an inspectable implementation.
             let mut contained = BTreeSet::new();
@@ -548,7 +547,8 @@ fn collect_closure(
                 collect_closure(candidate, nodes, facades, &mut facade_visited,
                     resolved, unresolved, &mut contained, trusted_external_calls);
             }
-            authorities.extend(contained.into_iter().filter(|authority| authority == "dynamic-dispatch"));
+            let raw_only = required.iter().all(|authority| is_raw_authority(authority));
+            authorities.extend(contained.into_iter().filter(|authority| raw_only || authority == "dynamic-dispatch"));
             continue;
         }
         if node.rust_unsafe_calls.contains(call) {
@@ -756,7 +756,7 @@ fn rust_source_module_name(path: &str) -> Option<&str> {
 fn authorities_for_node(
     index: usize,
     nodes: &[FunctionNode],
-    facades: &BTreeMap<String, String>,
+    facades: &BTreeMap<String, BTreeSet<String>>,
 ) -> BTreeSet<String> {
     let node = &nodes[index];
     let mut authorities = if node.binding == "shell" {
@@ -773,10 +773,10 @@ fn authorities_for_node(
         {
             continue;
         }
-        if let Some(authority) = authority_for_call(&node.binding, call)
-            .or_else(|| facades.get(symbol_name(call)).cloned())
-        {
+        if let Some(authority) = authority_for_call(&node.binding, call) {
             authorities.insert(authority);
+        } else if let Some(required) = facades.get(symbol_name(call)) {
+            authorities.extend(required.iter().cloned());
         }
     }
     authorities
@@ -5427,6 +5427,46 @@ mod tests {
         let source = "class Completion { private let deliver: @Sendable () -> Void; func execute() { let deliver = missing; deliver() } }";
         let result = report("swift", "Executor.swift", source, expectation("execute", "effectful", &["dynamic-dispatch"]));
         assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+    }
+
+    #[test]
+    fn raw_authority_facades_preserve_categories_and_migrate_with_exact_containment() {
+        let result = analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+            sources: BTreeMap::from([("src/io.rs".into(), "fn execute() { std::fs::read_to_string(\"x\").ok(); std::env::var(\"X\").ok(); }".into())]),
+            semantic_functions: vec![expectation("src/io.rs#execute", "effectful", &["environment", "filesystem"])],
+            authority_facades: ["environment", "filesystem"].into_iter().map(|authority| AuthorityFacade { authority: authority.into(), symbol: "src/io.rs#execute".into() }).collect(),
+            trusted_external_calls: BTreeSet::new(),
+        });
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        let binding = serde_yaml::from_str("spec: rms/implementation/v0.1\narchitecture:\n  authority_bindings:\n  - {authority: filesystem, safe_facade: 'src/io.rs#execute'}\n  - {authority: environment, safe_facade: 'src/io.rs#execute'}\nsemantic_functions:\n- {id: subject, kind: effect-executor, symbol: 'src/io.rs#execute', purity: effectful}\n").unwrap();
+        assert!(crate::binding_migration::plan(&binding, &result, "v0.2").is_ok());
+    }
+
+    #[test]
+    fn named_facade_and_dynamic_witness_are_not_competing_remappings() {
+        for secondary in ["dynamic-dispatch", "other-device", "filesystem"] {
+            let result = analyze(AnalysisInput {
+                binding: "swift".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+                sources: BTreeMap::from([("Executor.swift".into(), "func execute(using operation: Operation) { operation() }".into())]),
+                semantic_functions: vec![expectation("execute", "effectful", &["dynamic-dispatch"])],
+                authority_facades: ["device", secondary].into_iter().map(|authority| AuthorityFacade { authority: authority.into(), symbol: "Executor.swift#execute(using:Operation)".into() }).collect(),
+                trusted_external_calls: BTreeSet::new(),
+            });
+            assert_eq!(result.result, if secondary == "dynamic-dispatch" { AnalysisResult::Pass } else { AnalysisResult::Fail }, "{result:#?}");
+            if secondary == "dynamic-dispatch" {
+                let binding = serde_yaml::from_str("spec: rms/implementation/v0.1\narchitecture:\n  authority_bindings:\n  - {authority: device, safe_facade: 'Executor.swift#execute(using:Operation)'}\n  - {authority: dynamic-dispatch, safe_facade: 'Executor.swift#execute(using:Operation)'}\nsemantic_functions:\n- {id: subject, kind: effect-executor, symbol: 'Executor.swift#execute(using:Operation)', purity: effectful}\n").unwrap();
+                assert!(crate::binding_migration::plan(&binding, &result, "v0.2").is_ok());
+            }
+        }
+        let result = analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+            sources: BTreeMap::from([("src/io.rs".into(), "fn execute() { reqwest::get(\"url\"); }".into())]),
+            semantic_functions: vec![expectation("execute", "effectful", &["filesystem"])],
+            authority_facades: vec![AuthorityFacade { authority: "filesystem".into(), symbol: "src/io.rs#execute".into() }],
+            trusted_external_calls: BTreeSet::new(),
+        });
+        assert_eq!(result.result, AnalysisResult::Fail, "raw filesystem must not rename network: {result:#?}");
     }
     #[test]
     fn swift_defer_keyword_is_not_a_call_but_its_body_is_traversed() {

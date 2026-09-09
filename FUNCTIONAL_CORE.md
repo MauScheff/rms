@@ -32,11 +32,13 @@ Each semantic function declares:
 
 Each declared authority resolves through one exact `path#symbol` safe facade. `rms structure`, `rms verify`, audit, change checks, and committed checks run transitive effect analysis for Rust, Swift, Python, JavaScript, and shell.
 
+Raw effect categories (`filesystem`, `process`, `clock`, `randomness`, `environment`, `network`, `git`, `unsafe`, and `dynamic-dispatch`) retain their inferred identities. Their exact facade bindings witness containment; they do not rename effects. Several raw categories may bind the same exact callable. A named domain facade may bind the same callable as `dynamic-dispatch`; the named facade contains ambient effects, while open dispatch remains explicit. Other overlaps between named remapping and raw ambient categories remain ambiguous.
+
 The analyzer resolves local calls, imports, aliases, closed Python dispatch tables, recursion, and strongly connected call groups. It ignores comments and string literals. A pure closure fails when it reaches ambient authority, an unresolved call, or unresolved dynamic dispatch. An effectful function fails when its inferred authority row differs from its declaration. Creating an effect value is pure; executing the effect requires authority.
 
 An executable binding can keep its command runner while its semantic functions use inspectable `path#symbol` references. RMS selects the analyzer from each symbol path. A successful migration changes `architecture.static_inspection` from `opaque` to `transitive-effects`. It records a route-receipt-bound candidate seal under `x-rms.binding_migration`. The seal preserves the prior authorized semantic revision for this schema-only change. A later metadata change invalidates the candidate seal.
 
-Shell analysis resolves exact local functions and a small closed set of shell built-ins. An unknown command, a dynamic command name, an unresolved local call, or multiple authority facades produces no migration candidate.
+Shell analysis resolves exact local functions and a small closed set of shell built-ins. An unknown command, a dynamic command name, an unresolved local call, or competing authority remappings produces no migration candidate.
 
 Migration is receipt-gated because it changes canonical implementation metadata:
 
@@ -51,7 +53,7 @@ rms binding migrate path/to/implementation.yaml \
   --route-receipt .rms/runs/<run-id>/route-receipt.json
 ```
 
-Migration infers trust only from unambiguous parser or boundary roles. It infers authorities only from exact authority bindings and static analysis. One safe facade can bind the ambient effects in its statically resolved closure. Multiple matching facades are ambiguous. Ambiguity produces no write. Repeating a successful migration is idempotent.
+Migration infers trust only from unambiguous parser or boundary roles. It infers authorities only from exact authority bindings and static analysis. One named safe facade can bind the ambient effects in its statically resolved closure. Competing named remappings are ambiguous. Missing exact containment for any inferred authority still blocks migration. Ambiguity produces no write. Repeating a successful migration is idempotent.
 
 ## Schema-Derived Properties
 
