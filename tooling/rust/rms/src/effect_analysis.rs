@@ -1109,6 +1109,7 @@ fn known_pure_call(call: &str) -> bool {
             | "unwrap_or_default"
             | "unwrap_or_else"
             | "utf8_text"
+            | "urlsplit"
             | "urlsafe_b64decode"
             | "values"
             | "vec"
@@ -1144,7 +1145,8 @@ fn swift_standard_value_method(call: &str, standard_value_names: &BTreeSet<Strin
     let method = symbol_name(call);
     if !matches!(
         method,
-        "dropFirst"
+        "addingReportingOverflow"
+            | "dropFirst"
             | "firstIndex"
             | "flatMap"
             | "formUnion"
@@ -1933,7 +1935,9 @@ fn tree_sitter_import_aliases(
             else {
                 continue;
             };
-            let resolved = normalized_import_path(path, &module.replace('.', "/"));
+            let pure_stdlib_module = matches!(module, "urllib.parse");
+            let resolved = (!pure_stdlib_module)
+                .then(|| normalized_import_path(path, &module.replace('.', "/")));
             for item in imported.split(',') {
                 let parts = item.split_whitespace().collect::<Vec<_>>();
                 let Some(original) = parts.first().copied() else {
@@ -1944,7 +1948,11 @@ fn tree_sitter_import_aliases(
                 } else {
                     original
                 };
-                aliases.insert(alias.to_string(), format!("{resolved}.py#{original}"));
+                let target = resolved
+                    .as_ref()
+                    .map(|resolved| format!("{resolved}.py#{original}"))
+                    .unwrap_or_else(|| format!("{module}.{original}"));
+                aliases.insert(alias.to_string(), target);
             }
         }
     }
@@ -2102,6 +2110,18 @@ fn collect_call_nodes(
         {
             // This exact standard-library ordering predicate has no open
             // callback. Other higher-order calls remain fail-closed.
+        } else if binding == "swift"
+            && swift_call_is_standard_literal_collection_operation(
+                node,
+                source,
+                swift_collection_names,
+            )
+        {
+            // Literal closures are traversed below, so their effects remain
+            // visible. Only the standard collection dispatch itself is closed.
+        } else if binding == "swift" && swift_call_is_boolean_negation(node, callee, source) {
+            // Tree-sitter models parenthesized boolean negation as a call with
+            // the prefix operator as callee.
         } else if let Some(call) = call {
             calls.insert(call);
         } else {
@@ -2112,6 +2132,40 @@ fn collect_call_nodes(
     for child in node.children(&mut cursor) {
         collect_call_nodes(binding, child, source, swift_collection_names, calls, false);
     }
+}
+
+fn swift_call_is_boolean_negation(node: Node<'_>, callee: Option<Node<'_>>, source: &str) -> bool {
+    callee
+        .and_then(|callee| callee.utf8_text(source.as_bytes()).ok())
+        .is_some_and(|callee| callee.trim() == "!")
+        && node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .is_some_and(|text| text.trim_start().starts_with("!("))
+}
+
+fn swift_call_is_standard_literal_collection_operation(
+    node: Node<'_>,
+    source: &str,
+    standard_collection_names: &BTreeSet<String>,
+) -> bool {
+    let Ok(text) = node.utf8_text(source.as_bytes()) else {
+        return false;
+    };
+    let compact = text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    if compact.starts_with('[') && compact.contains("].joined(") {
+        return true;
+    }
+    let Some((receiver, arguments)) = compact.split_once(".allSatisfy(") else {
+        return false;
+    };
+    let receiver = receiver.rsplit(['.', ':']).next().unwrap_or(receiver);
+    standard_collection_names.contains(receiver)
+        && arguments.ends_with(')')
+        && (arguments.starts_with('{') || arguments.starts_with("({"))
 }
 
 fn swift_call_is_standard_zip_order_check(
@@ -2279,6 +2333,23 @@ fn swift_standard_collection_names(
         let Some(value) = declaration.child_by_field_name("value") else {
             continue;
         };
+        let value_text = value
+            .utf8_text(source.as_bytes())
+            .unwrap_or_default()
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        if value_text.starts_with('[') || value_text.starts_with("Array(") {
+            standard.insert(name.clone());
+            continue;
+        }
+        if let Some(receiver) = value_text.strip_suffix(".sorted()") {
+            let receiver = receiver.rsplit(['.', ':']).next().unwrap_or(receiver);
+            if standard.contains(receiver) {
+                standard.insert(name.clone());
+                continue;
+            }
+        }
         if let Some(source_name) = last_simple_identifier(value, source) {
             aliases.push((name, source_name));
         }
@@ -2364,7 +2435,7 @@ fn has_standard_collection_type(node: Node<'_>, source: &str) -> bool {
     let Ok(text) = node.utf8_text(source.as_bytes()) else {
         return false;
     };
-    text.contains("Array<") || text.contains("Dictionary<")
+    text.contains("Array<") || text.contains("Dictionary<") || text.contains("Set<")
 }
 
 fn has_standard_value_type(node: Node<'_>, source: &str) -> bool {
@@ -2374,7 +2445,17 @@ fn has_standard_value_type(node: Node<'_>, source: &str) -> bool {
     let Ok(text) = node.utf8_text(source.as_bytes()) else {
         return false;
     };
-    text.contains("Set<") || text.contains("Optional<")
+    text.contains("Set<")
+        || text.contains("Optional<")
+        || [
+            "Bool", "Int", "Int8", "Int16", "Int32", "Int64", "String", "UInt", "UInt8", "UInt16",
+            "UInt32", "UInt64",
+        ]
+        .iter()
+        .any(|name| {
+            text.split(|character: char| !character.is_ascii_alphanumeric())
+                .any(|part| part == *name)
+        })
 }
 
 fn node_has_kind(node: Node<'_>, kind: &str) -> bool {
@@ -2902,6 +2983,20 @@ mod tests {
     }
 
     #[test]
+    fn python_urllib_parse_import_resolves_as_pure_stdlib() {
+        let source = "from urllib.parse import urlsplit\ndef decide(value):\n    return urlsplit(value).scheme\n";
+        let result = report(
+            "python",
+            "src/package/transition.py",
+            source,
+            expectation("decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].transitive_authorities.is_empty());
+        assert!(result.functions[0].unresolved_calls.is_empty());
+    }
+
+    #[test]
     fn shell_local_call_closure_stays_pure() {
         let result = report(
             "shell",
@@ -3283,6 +3378,43 @@ mod tests {
             result.functions[0].transitive_authorities,
             vec!["dynamic-dispatch"]
         );
+    }
+
+    #[test]
+    fn swift_literal_collection_closures_and_join_stay_pure() {
+        let source = r#"
+            func decide(_ first: String, _ second: String) -> Bool {
+                let values = [first, second].map { $0.trimmingCharacters(in: .whitespaces) }
+                let trace = [String(describing: first), second].joined(separator: "|")
+                return values.allSatisfy({ !$0.isEmpty }) && !trace.isEmpty
+            }
+        "#;
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            source,
+            expectation("Sources/App.swift#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+    }
+
+    #[test]
+    fn swift_standard_numeric_overflow_and_sorted_drop_first_stay_pure() {
+        let source = r#"
+            func decide(_ lhs: UInt64, _ rhs: UInt64, frames: Set<UInt64>) -> UInt64 {
+                let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+                let ordered = frames.sorted()
+                for frame in ordered.dropFirst() { _ = frame }
+                return overflow ? UInt64.max : sum
+            }
+        "#;
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            source,
+            expectation("Sources/App.swift#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
     }
 
     #[test]
