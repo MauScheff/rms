@@ -83,6 +83,7 @@ struct FunctionNode {
     path: String,
     name: String,
     qualified_name: String,
+    callable_selector: Option<String>,
     calls: BTreeSet<String>,
     rust_unsafe_calls: BTreeSet<String>,
     direct_authorities: BTreeSet<String>,
@@ -347,6 +348,7 @@ fn analyze_function(
 fn symbol_candidates(symbol: &str, nodes: &[FunctionNode]) -> Vec<usize> {
     let expected_name = symbol_name(symbol);
     let expected_qualified = symbol_qualified_name(symbol);
+    let expected_selector = symbol_callable_selector(symbol);
     let expected_path = symbol_path(symbol);
     let mut candidates = nodes
         .iter()
@@ -355,6 +357,8 @@ fn symbol_candidates(symbol: &str, nodes: &[FunctionNode]) -> Vec<usize> {
             node.name == expected_name
                 && expected_path.is_none_or(|path| normalized_path_matches(&node.path, path))
                 && (!expected_qualified.contains("::") || node.qualified_name == expected_qualified)
+                && expected_selector
+                    .is_none_or(|selector| node.callable_selector.as_deref() == Some(selector))
         })
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
@@ -381,6 +385,13 @@ fn symbol_candidates(symbol: &str, nodes: &[FunctionNode]) -> Vec<usize> {
         }
     }
     candidates
+}
+
+pub(crate) fn swift_symbol_resolves_exactly(source: &str, symbol: &str) -> bool {
+    let path = symbol_path(symbol).unwrap_or("selector.swift");
+    let nodes =
+        extract_tree_sitter_functions("swift", path, source, &SwiftStandardNames::default());
+    symbol_candidates(symbol, &nodes).len() == 1
 }
 
 fn authority_memberships(
@@ -1213,9 +1224,10 @@ fn call_is_constructor(call: &str) -> bool {
 }
 
 fn symbol_name(symbol: &str) -> &str {
-    symbol
-        .rsplit_once('#')
-        .map_or(symbol, |(_, name)| name)
+    let callable = symbol.rsplit_once('#').map_or(symbol, |(_, name)| {
+        name.split_once('(').map_or(name, |(name, _)| name)
+    });
+    callable
         .rsplit([':', '.'])
         .find(|part| !part.is_empty())
         .unwrap_or(symbol)
@@ -1229,8 +1241,15 @@ fn symbol_path(symbol: &str) -> Option<&str> {
 fn symbol_qualified_name(symbol: &str) -> String {
     symbol
         .split_once('#')
-        .map_or(symbol, |(_, name)| name)
+        .map_or(symbol, |(_, name)| {
+            name.split_once('(').map_or(name, |(name, _)| name)
+        })
         .replace('.', "::")
+}
+
+fn symbol_callable_selector(symbol: &str) -> Option<&str> {
+    let callable = symbol.split_once('#').map_or(symbol, |(_, name)| name);
+    callable.find('(').map(|start| &callable[start..])
 }
 
 fn normalized_path_matches(actual: &str, expected: &str) -> bool {
@@ -1576,6 +1595,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             binding: "rust".to_string(),
             path: self.path.clone(),
             qualified_name: qualified_rust_name(&self.owner, &name),
+            callable_selector: None,
             name,
             calls: calls.calls,
             rust_unsafe_calls: calls.unsafe_calls,
@@ -1603,6 +1623,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             binding: "rust".to_string(),
             path: self.path.clone(),
             qualified_name: qualified_rust_name(&self.owner, &name),
+            callable_selector: None,
             name,
             calls: calls.calls,
             rust_unsafe_calls: calls.unsafe_calls,
@@ -1827,6 +1848,9 @@ fn extract_tree_sitter_functions(
                 path: path.to_string(),
                 name,
                 qualified_name,
+                callable_selector: (binding == "swift")
+                    .then(|| swift_callable_selector(node, source))
+                    .flatten(),
                 calls,
                 rust_unsafe_calls: BTreeSet::new(),
                 direct_authorities,
@@ -2143,6 +2167,84 @@ fn tree_sitter_qualified_name(node: Node<'_>, source: &str, name: &str) -> Strin
     } else {
         format!("{}::{name}", owners.join("::"))
     }
+}
+
+fn swift_callable_selector(node: Node<'_>, source: &str) -> Option<String> {
+    let declaration = node.utf8_text(source.as_bytes()).ok()?;
+    let start = declaration.find('(')?;
+    let end = matching_delimiter(declaration, start, '(', ')')?;
+    let parameters = &declaration[start + 1..end];
+    let mut selectors = Vec::new();
+    for parameter in split_top_level(parameters, ',') {
+        let parameter = parameter.trim();
+        if parameter.is_empty() {
+            continue;
+        }
+        let colon = top_level_delimiter(parameter, ':')?;
+        let names = parameter[..colon].split_whitespace().collect::<Vec<_>>();
+        let label = *names.first()?;
+        let type_end = top_level_delimiter(&parameter[colon + 1..], '=')
+            .map(|index| colon + 1 + index)
+            .unwrap_or(parameter.len());
+        let parameter_type = parameter[colon + 1..type_end]
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        if parameter_type.is_empty() {
+            return None;
+        }
+        selectors.push(format!("{label}:{parameter_type}"));
+    }
+    Some(format!("({})", selectors.join(",")))
+}
+
+fn matching_delimiter(source: &str, start: usize, open: char, close: char) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, character) in source[start..].char_indices() {
+        if character == open {
+            depth += 1;
+        } else if character == close {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                return Some(start + offset);
+            }
+        }
+    }
+    None
+}
+
+fn top_level_delimiter(source: &str, delimiter: char) -> Option<usize> {
+    let mut depths = [0usize; 4];
+    for (index, character) in source.char_indices() {
+        match character {
+            '(' => depths[0] += 1,
+            ')' => depths[0] = depths[0].saturating_sub(1),
+            '[' => depths[1] += 1,
+            ']' => depths[1] = depths[1].saturating_sub(1),
+            '<' => depths[2] += 1,
+            '>' => depths[2] = depths[2].saturating_sub(1),
+            '{' => depths[3] += 1,
+            '}' => depths[3] = depths[3].saturating_sub(1),
+            _ if character == delimiter && depths.iter().all(|depth| *depth == 0) => {
+                return Some(index);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level(source: &str, delimiter: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut remainder = source;
+    while let Some(index) = top_level_delimiter(remainder, delimiter) {
+        parts.push(&source[start..start + index]);
+        start += index + delimiter.len_utf8();
+        remainder = &source[start..];
+    }
+    parts.push(&source[start..]);
+    parts
 }
 
 fn collect_call_nodes(
@@ -3664,5 +3766,38 @@ mod tests {
             expectation("Sources/Example/Transition.swift#transition", "pure", &[]),
         );
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+    }
+
+    #[test]
+    fn swift_callable_selector_resolves_one_exact_overload() {
+        let source = r#"
+            public actor Facade {
+                public func send(_ command: Command) async -> Result { Result() }
+                public func send(_ envelope: Envelope) async -> Result { Result() }
+            }
+        "#;
+        let selected = report(
+            "swift",
+            "Sources/Facade.swift",
+            source,
+            expectation("Sources/Facade.swift#Facade.send(_:Envelope)", "pure", &[]),
+        );
+        assert_eq!(selected.result, AnalysisResult::Pass, "{selected:#?}");
+
+        let ambiguous = report(
+            "swift",
+            "Sources/Facade.swift",
+            source,
+            expectation("Sources/Facade.swift#Facade.send", "pure", &[]),
+        );
+        assert_eq!(ambiguous.result, AnalysisResult::Fail, "{ambiguous:#?}");
+
+        let missing = report(
+            "swift",
+            "Sources/Facade.swift",
+            source,
+            expectation("Sources/Facade.swift#Facade.send(_:Missing)", "pure", &[]),
+        );
+        assert_eq!(missing.result, AnalysisResult::Fail, "{missing:#?}");
     }
 }

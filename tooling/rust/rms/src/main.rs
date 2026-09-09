@@ -21213,6 +21213,9 @@ fn binding_symbol_reference_parts_exist(
 }
 
 fn swift_binding_symbol_exists(source: &str, symbol: &str) -> bool {
+    if symbol.contains('(') {
+        return effect_analysis::swift_symbol_resolves_exactly(source, symbol);
+    }
     if swift_function_signature(source, symbol).is_some() {
         return true;
     }
@@ -27386,7 +27389,7 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
             "sha256:{}",
             sha256_bytes(
                 format!(
-                    "{RMS_LONG_VERSION}:effect-analysis-v4:{}:{}",
+                    "{RMS_LONG_VERSION}:effect-analysis-v5:{}:{}",
                     effect_analysis::PURE_ALLOWLIST_VERSION,
                     effect_analysis::AUTHORITY_ROOT_VERSION
                 )
@@ -66401,8 +66404,38 @@ fn binding_reference_parts_syntax(reference: &str) -> Option<(&str, &str)> {
     (!path.is_empty()
         && !Path::new(path).is_absolute()
         && !symbol.is_empty()
-        && symbol.split('.').all(is_stable_identifier))
+        && binding_symbol_syntax_is_valid(symbol))
     .then_some((path, symbol))
+}
+
+fn binding_symbol_syntax_is_valid(symbol: &str) -> bool {
+    let Some(selector_start) = symbol.find('(') else {
+        return symbol.split('.').all(is_stable_identifier);
+    };
+    let base = &symbol[..selector_start];
+    let selector = &symbol[selector_start..];
+    if !base.split('.').all(is_stable_identifier)
+        || !selector.ends_with(')')
+        || selector[..selector.len() - 1].contains(')')
+    {
+        return false;
+    }
+    let parameters = &selector[1..selector.len() - 1];
+    parameters.is_empty()
+        || parameters.split(',').all(|parameter| {
+            let Some((label, parameter_type)) = parameter.split_once(':') else {
+                return false;
+            };
+            (label == "_" || is_stable_identifier(label))
+                && !parameter_type.is_empty()
+                && parameter_type.chars().all(|character| {
+                    character.is_ascii_alphanumeric()
+                        || matches!(
+                            character,
+                            '_' | '.' | '?' | '!' | '[' | ']' | '<' | '>' | ':'
+                        )
+                })
+        })
 }
 
 fn binding_reference_parts_in_workspace<'a>(
@@ -88320,6 +88353,17 @@ public enum OtherState {
             "SecureMediaSessionWorkflowState.missing"
         ));
         assert!(!swift_binding_symbol_exists(source, "MissingPort"));
+    }
+
+    #[test]
+    fn swift_binding_reference_accepts_exact_callable_selector() {
+        let reference = "Sources/Facade.swift#Facade.send(_:CommandEnvelope)";
+        assert_eq!(
+            binding_reference_parts(reference),
+            Some(("Sources/Facade.swift", "Facade.send(_:CommandEnvelope)"))
+        );
+        assert!(binding_reference_parts("Sources/Facade.swift#Facade.send(_ envelope)").is_none());
+        assert!(binding_reference_parts("Sources/Facade.swift#Facade.send(_:)").is_none());
     }
 
     #[test]
