@@ -21220,6 +21220,11 @@ fn swift_binding_symbol_exists(source: &str, symbol: &str) -> bool {
     if symbol.contains('(') {
         return effect_analysis::swift_symbol_resolves_exactly(source, symbol);
     }
+    if (symbol.contains('.') || symbol.contains("::"))
+        && effect_analysis::swift_symbol_resolves_exactly(source, symbol)
+    {
+        return true;
+    }
     if swift_function_signature(source, symbol).is_some() {
         return true;
     }
@@ -36225,6 +36230,11 @@ struct SwiftFunctionSignature {
 }
 
 fn swift_function_signature(source: &str, function: &str) -> Option<SwiftFunctionSignature> {
+    if function.contains('(') || function.contains('.') || function.contains("::") {
+        let selected = effect_analysis::swift_exact_callable_source(source, function)?;
+        let name = function.split('(').next()?.rsplit(['.', ':']).next()?;
+        return swift_function_signature(selected, name);
+    }
     let marker = format!("func {function}(");
     let start = source.find(&marker)? + marker.len();
     let rest = &source[start..];
@@ -36741,13 +36751,17 @@ fn validate_swift_machine_execution_path(
         ));
         return;
     };
+    let machine_types = machine_types_from_value(&implementation.value);
     if swift_function_signature(driver_source, driver)
-        .is_none_or(|signature| signature.parameter_types.len() != 2)
+        .is_none_or(|signature| {
+            signature.parameter_types.first().map(String::as_str) != machine_types.state.as_deref()
+                || signature.parameter_types.get(1).map(String::as_str) != machine_types.input.as_deref()
+        })
     {
         diagnostics.push(error(
             "structure.machine-driver-signature-mismatch",
             &implementation.path,
-            format!("Swift machine driver `{driver}` must accept initial state and input"),
+            format!("Swift machine driver `{driver}` must accept declared initial state and input as its first two parameters; explicit resource parameters may follow"),
         ));
     }
     let Some(transition_record_symbol) = get_str(
@@ -36800,7 +36814,18 @@ fn validate_swift_machine_execution_path(
             continue;
         };
         let executor = semantic_symbol_name(executor_symbol);
-        if !summary.functions.contains(executor) {
+        let executor_role = protocol.executor_role.as_deref().unwrap_or("effect_executor");
+        let executor_role_source = declared_role_source(implementation, executor_role);
+        let executor_exists = if executor_symbol.contains('#') {
+            binding_symbol_reference_exists(
+                implementation.path.parent().unwrap_or(Path::new(".")),
+                implementation,
+                executor_symbol,
+            )
+        } else {
+            effect_analysis::swift_symbol_resolves_exactly(&executor_role_source, executor)
+        };
+        if !executor_exists {
             diagnostics.push(error(
                 "structure.effect-protocol-executor-symbol-missing",
                 &implementation.path,
@@ -36811,11 +36836,6 @@ fn validate_swift_machine_execution_path(
             ));
             continue;
         }
-        let executor_role = protocol
-            .executor_role
-            .as_deref()
-            .unwrap_or("effect_executor");
-        let executor_role_source = declared_role_source(implementation, executor_role);
         let Some(executor_source) = swift_function_source(&executor_role_source, executor) else {
             diagnostics.push(error(
                 "structure.effect-protocol-executor-role-mismatch",
@@ -36831,8 +36851,7 @@ fn validate_swift_machine_execution_path(
         let expected_output = machine_types.effect_result.as_deref();
         let executor_signature = swift_function_signature(executor_source, executor);
         if executor_signature.as_ref().is_none_or(|signature| {
-            signature.parameter_types.len() != 1
-                || signature.parameter_types.first().map(String::as_str) != expected_input
+            signature.parameter_types.first().map(String::as_str) != expected_input
                 || signature.return_type.as_deref() != expected_output
         }) {
             diagnostics.push(error(
@@ -36894,6 +36913,7 @@ fn declared_role_source(implementation: &LoadedManifest, role: &str) -> String {
 
 fn source_calls_symbol(source: &str, symbol: &str) -> bool {
     let symbol = semantic_symbol_name(symbol);
+    let symbol = symbol.split_once('(').map_or(symbol, |(name, _)| name);
     source.contains(&format!("{symbol}(")) || source.contains(&format!("{symbol} ("))
 }
 
@@ -37022,6 +37042,9 @@ fn braced_source_from_open(source: &str, open: usize) -> Option<&str> {
 fn swift_function_source<'a>(source: &'a str, function_name: &str) -> Option<&'a str> {
     #[cfg(test)]
     SWIFT_FUNCTION_SOURCE_CALLS.with(|count| count.set(count.get() + 1));
+    if function_name.contains('(') || function_name.contains('.') || function_name.contains("::") {
+        return effect_analysis::swift_exact_callable_source(source, function_name);
+    }
     let marker = format!("func {function_name}(");
     source.match_indices(&marker).find_map(|(start, _)| {
         let before_is_identifier = source[..start]
@@ -88547,6 +88570,24 @@ public enum OtherState {
         );
         assert!(binding_reference_parts("Sources/Facade.swift#Facade.send(_ envelope)").is_none());
         assert!(binding_reference_parts("Sources/Facade.swift#Facade.send(_:)").is_none());
+    }
+
+    #[test]
+    fn swift_validators_select_exact_qualified_callable_body() {
+        let source = "struct Facade { func send(_ value: Command) -> Rejected { Rejected() } func send(_ value: Envelope, using operation: Operation) async -> Accepted { operation(value) } }";
+        let selector = "Facade.send(_:Envelope,using:Operation)";
+        assert!(swift_binding_symbol_exists(source, selector));
+        assert!(!swift_binding_symbol_exists(source, "Facade.send"));
+        assert!(!swift_binding_symbol_exists(source, "Other.send(_:Envelope,using:Operation)"));
+        assert!(!swift_binding_symbol_exists(source, "Facade.send(_:Missing)"));
+        let body = swift_function_source(source, selector).unwrap();
+        assert!(body.contains("operation(value)"));
+        assert!(!body.contains("Rejected"));
+        let signature = swift_function_signature(source, selector).unwrap();
+        assert_eq!(signature.parameter_types, vec!["Envelope", "Operation"]);
+        assert_eq!(signature.return_type.as_deref(), Some("Accepted"));
+        assert!(swift_function_source(source, "Facade.send").is_none());
+        assert!(swift_binding_symbol_exists("struct Facade { func submit() {} }", "Facade.submit"));
     }
 
     #[test]
