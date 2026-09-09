@@ -147,6 +147,9 @@ pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
         } else {
             extract_tree_sitter_functions(source_binding, path, source, &swift_global_names)
         };
+        if source_binding == "python" {
+            refine_python_stdlib_calls(path, source, &input.sources, &mut extracted);
+        }
         nodes.append(&mut extracted);
     }
     let facades = input
@@ -721,6 +724,15 @@ fn authorities_for_node(
 }
 
 fn authority_for_call(binding: &str, call: &str) -> Option<String> {
+    if binding == "python" {
+        match call {
+            "python-stdlib.time.sleep" => return Some("clock".to_string()),
+            "python-stdlib.shutil.copy2" | "python-stdlib.Path.stat" => {
+                return Some("filesystem".to_string());
+            }
+            _ => {}
+        }
+    }
     let compact = call.replace(' ', "");
     let lower = compact.to_ascii_lowercase();
     let authority = if [
@@ -1910,6 +1922,250 @@ fn extract_tree_sitter_functions(
             })
         })
         .collect()
+}
+
+fn refine_python_stdlib_calls(
+    path: &str,
+    source: &str,
+    sources: &BTreeMap<String, String>,
+    functions: &mut [FunctionNode],
+) {
+    let mut parser = Parser::new();
+    if parser
+        .set_language(&tree_sitter_python::LANGUAGE.into())
+        .is_err()
+    {
+        return;
+    }
+    let Some(tree) = parser.parse(source, None) else {
+        return;
+    };
+    let root = tree.root_node();
+    let mut shadowed = BTreeSet::new();
+    let mut other_bindings = BTreeSet::new();
+    for kind in [
+        "assignment",
+        "augmented_assignment",
+        "for_statement",
+        "named_expression",
+    ] {
+        let mut nodes = Vec::new();
+        collect_nodes_of_kind(root, kind, &mut nodes);
+        for node in nodes {
+            if let Some(left) = node
+                .child_by_field_name("left")
+                .or_else(|| node.child_by_field_name("name"))
+            {
+                let mut identifiers = Vec::new();
+                collect_nodes_of_kind(left, "identifier", &mut identifiers);
+                for identifier in identifiers {
+                    if let Ok(name) = identifier.utf8_text(source.as_bytes()) {
+                        shadowed.insert(name.to_string());
+                        if kind != "assignment" {
+                            other_bindings.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut definitions = Vec::new();
+    collect_function_nodes(root, &mut definitions);
+    let mut binding_definitions = definitions.clone();
+    collect_nodes_of_kind(root, "lambda", &mut binding_definitions);
+    collect_nodes_of_kind(root, "class_definition", &mut binding_definitions);
+    for definition in &binding_definitions {
+        if let Some(name) = function_node_name(*definition, source) {
+            shadowed.insert(name);
+        }
+        if let Some(parameters) = definition.child_by_field_name("parameters") {
+            let mut cursor = parameters.walk();
+            for parameter in parameters.named_children(&mut cursor) {
+                let Some(identifier) = (if parameter.kind() == "identifier" {
+                    Some(parameter)
+                } else {
+                    parameter
+                        .child_by_field_name("name")
+                        .or_else(|| parameter.named_child(0))
+                }) else {
+                    continue;
+                };
+                if let Ok(name) = identifier.utf8_text(source.as_bytes()) {
+                    shadowed.insert(name.to_string());
+                    other_bindings.insert(name.to_string());
+                }
+            }
+        }
+    }
+    let mut imports = BTreeMap::<String, Vec<(String, String)>>::new();
+    let mut statements = Vec::new();
+    collect_nodes_of_kind(root, "import_statement", &mut statements);
+    collect_nodes_of_kind(root, "import_from_statement", &mut statements);
+    for statement in statements {
+        let Ok(line) = statement.utf8_text(source.as_bytes()) else {
+            continue;
+        };
+        let words = line.split_whitespace().collect::<Vec<_>>();
+        let (module, member, alias) = match words.as_slice() {
+            ["import", module] => (*module, "", *module),
+            ["import", module, "as", alias] => (*module, "", *alias),
+            ["from", module, "import", member] => (*module, *member, *member),
+            ["from", module, "import", member, "as", alias] => (*module, *member, *alias),
+            _ => continue,
+        };
+        if statement.parent() != Some(root) {
+            shadowed.insert(alias.to_string());
+            continue;
+        }
+        imports
+            .entry(alias.to_string())
+            .or_default()
+            .push((module.to_string(), member.to_string()));
+    }
+    let mut recognized = BTreeMap::new();
+    for (alias, imported) in imports {
+        if imported.len() != 1 || shadowed.contains(&alias) {
+            continue;
+        }
+        let (module, member) = &imported[0];
+        if !matches!(module.as_str(), "time" | "shutil" | "pathlib") {
+            continue;
+        }
+        if sources.keys().any(|path| {
+            path.ends_with(&format!("/{module}.py"))
+                || path == &format!("{module}.py")
+                || path.ends_with(&format!("/{module}/__init__.py"))
+        }) {
+            continue;
+        }
+        recognized.insert(alias, (module.clone(), member.clone()));
+    }
+    for function in functions {
+        let candidates = definitions
+            .iter()
+            .filter(|node| {
+                function_node_name(**node, source).as_deref() == Some(function.name.as_str())
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            continue;
+        }
+        let definition = *candidates[0];
+        let mut assignments = Vec::new();
+        collect_nodes_of_kind(definition, "assignment", &mut assignments);
+        let mut values = BTreeMap::<String, Vec<Node<'_>>>::new();
+        for assignment in assignments {
+            let (Some(left), Some(right)) = (
+                assignment.child_by_field_name("left"),
+                assignment.child_by_field_name("right"),
+            ) else {
+                continue;
+            };
+            if left.kind() != "identifier" {
+                continue;
+            }
+            if let Ok(name) = left.utf8_text(source.as_bytes()) {
+                values.entry(name.to_string()).or_default().push(right);
+            }
+        }
+        let mut paths = BTreeSet::new();
+        loop {
+            let mut changed = false;
+            for (name, values) in &values {
+                if values.len() == 1
+                    && !other_bindings.contains(name)
+                    && python_is_path_value(values[0], source, &recognized, &paths)
+                {
+                    changed |= paths.insert(name.clone());
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        function.calls = function
+            .calls
+            .iter()
+            .map(|call| {
+                if let Some(receiver) = call.strip_suffix(".stat") {
+                    if paths.contains(receiver) {
+                        return "python-stdlib.Path.stat".to_string();
+                    }
+                }
+                for (alias, (module, member)) in &recognized {
+                    for (operation, target) in [
+                        ("sleep", "python-stdlib.time.sleep"),
+                        ("copy2", "python-stdlib.shutil.copy2"),
+                        ("Path", "PythonStdlibPath"),
+                    ] {
+                        if !matches!(
+                            (module.as_str(), operation),
+                            ("time", "sleep") | ("shutil", "copy2") | ("pathlib", "Path")
+                        ) {
+                            continue;
+                        }
+                        let expected = if member.is_empty() {
+                            format!("{alias}.{operation}")
+                        } else {
+                            if member != operation {
+                                continue;
+                            }
+                            format!("{}.py#{member}", normalized_import_path(path, module))
+                        };
+                        if call == &expected {
+                            return target.to_string();
+                        }
+                    }
+                }
+                call.clone()
+            })
+            .collect();
+        function.direct_authorities = function
+            .calls
+            .iter()
+            .filter_map(|call| authority_for_call("python", call))
+            .collect();
+    }
+}
+
+fn python_is_path_value(
+    node: Node<'_>,
+    source: &str,
+    imports: &BTreeMap<String, (String, String)>,
+    paths: &BTreeSet<String>,
+) -> bool {
+    if node.kind() == "identifier" {
+        return node
+            .utf8_text(source.as_bytes())
+            .is_ok_and(|name| paths.contains(name));
+    }
+    if node.kind() == "binary_operator"
+        && node
+            .child_by_field_name("operator")
+            .and_then(|operator| operator.utf8_text(source.as_bytes()).ok())
+            == Some("/")
+    {
+        return node
+            .child_by_field_name("right")
+            .is_some_and(|right| right.kind() == "string")
+            && node
+                .child_by_field_name("left")
+                .is_some_and(|left| python_is_path_value(left, source, imports, paths));
+    }
+    if node.kind() != "call" {
+        return false;
+    }
+    let Some(callee) = node
+        .child_by_field_name("function")
+        .and_then(|callee| callee.utf8_text(source.as_bytes()).ok())
+    else {
+        return false;
+    };
+    imports.iter().any(|(alias, (module, member))| {
+        module == "pathlib"
+            && ((member == "Path" && callee == alias)
+                || (member.is_empty() && callee == format!("{alias}.Path")))
+    })
 }
 
 fn python_static_dispatches(
@@ -3331,6 +3587,50 @@ mod tests {
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         assert!(result.functions[0].transitive_authorities.is_empty());
         assert!(result.functions[0].unresolved_calls.is_empty());
+    }
+
+    #[test]
+    fn python_stdlib_effects_resolve_exact_imports_and_path_division() {
+        for (source, authority) in [
+            ("import time\ndef run():\n    time.sleep(1)\n", "clock"),
+            ("import shutil\ndef run():\n    shutil.copy2('a', 'b')\n", "filesystem"),
+            ("from pathlib import Path\ndef run():\n    root = Path('dir')\n    child = root / 'file'\n    return child.stat()\n", "filesystem"),
+        ] {
+            let result = report("python", "scripts/main.py", source, expectation("run", "effectful", &[authority]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+    }
+
+    #[test]
+    fn python_stdlib_refinement_preserves_unknown_and_shadowed_receivers() {
+        for source in [
+            "import time\ndef run(time):\n    time.sleep(1)\n",
+            "import time\ndef run():\n    import custom as time\n    time.sleep(1)\n",
+            "import shutil\ndef run(shutil):\n    shutil.copy2('a', 'b')\n",
+            "from pathlib import Path\ndef run(Path):\n    root = Path('dir')\n    return root.stat()\n",
+            "def run(root):\n    return root.stat()\n",
+            "from pathlib import Path\ndef run(other):\n    root = Path('dir')\n    root = other\n    return root.stat()\n",
+            "from pathlib import Path\ndef run():\n    root = Path('dir')\n    return lambda root: root.stat()\n",
+            "from pathlib import Path\ndef run(other):\n    root = Path('dir') / other\n    return root.stat()\n",
+        ] {
+            let result = report("python", "scripts/main.py", source, expectation("run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+            assert!(result.functions[0].transitive_authorities.contains(&"dynamic-dispatch".to_string()), "{result:#?}");
+        }
+        let mut nodes = extract_tree_sitter_functions(
+            "python",
+            "scripts/main.py",
+            "import time\ndef run():\n    time.sleep(1)\n",
+            &SwiftStandardNames::default(),
+        );
+        let sources = BTreeMap::from([("scripts/time.py".to_string(), "".to_string())]);
+        refine_python_stdlib_calls(
+            "scripts/main.py",
+            "import time\ndef run():\n    time.sleep(1)\n",
+            &sources,
+            &mut nodes,
+        );
+        assert!(!nodes[0].calls.contains("python-stdlib.time.sleep"));
     }
 
     #[test]
