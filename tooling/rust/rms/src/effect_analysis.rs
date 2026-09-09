@@ -638,7 +638,7 @@ fn resolve_local_call(index: usize, call: &str, nodes: &[FunctionNode]) -> Vec<u
     if direct.len() == 1 {
         return direct;
     }
-    let requested_qualified = call.replace('.', "::");
+    let requested_qualified = symbol_qualified_name(call);
     let exact = direct
         .iter()
         .copied()
@@ -2205,6 +2205,19 @@ fn rust_exact_function_reference(
     sources: &BTreeMap<String, String>,
     depth: usize,
 ) -> Option<String> {
+    if let Some((owner_reference, method)) = reference.rsplit_once("::") {
+        if let Some(owner) = rust_exact_item_reference(path, owner_reference, sources, depth) {
+            let (owner_path, owner_name) = owner.split_once('#')?;
+            let file = syn::parse_file(sources.get(owner_path)?).ok()?;
+            let methods = file.items.iter().filter_map(|item| match item {
+                syn::Item::Impl(item) if item.trait_.is_none() && matches!(item.self_ty.as_ref(), Type::Path(owner) if owner.path.get_ident().is_some_and(|name| name == owner_name)) => Some(item),
+                _ => None,
+            }).flat_map(|item| item.items.iter()).filter(|item| matches!(item, syn::ImplItem::Fn(function) if function.sig.ident == method)).count();
+            if methods == 1 {
+                return Some(format!("{owner_path}#{owner_name}::{method}"));
+            }
+        }
+    }
     let exact = rust_exact_item_reference(path, reference, sources, depth)?;
     let (path, name) = exact.split_once('#')?;
     let file = syn::parse_file(sources.get(path)?).ok()?;
@@ -3922,6 +3935,26 @@ mod tests {
             expectation("decide", "pure", &[]),
         );
         assert_eq!(unknown.result, AnalysisResult::Fail);
+    }
+
+    #[test]
+    fn rust_verified_dependency_associated_methods_keep_exact_owner_identity() {
+        for (method_body, expected) in [
+            ("", AnalysisResult::Pass),
+            ("std::fs::read_to_string(\"x\").ok();", AnalysisResult::Fail),
+        ] {
+            let result = analyze(AnalysisInput {
+                binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+                sources: BTreeMap::from([
+                    ("src/lib.rs".into(), "use decisions::Leaf; fn decide(value: &Leaf) { value.evaluate(); }".into()),
+                    ("dependencies/decisions/src/lib.rs".into(), "pub use crate::values::Leaf;".into()),
+                    ("dependencies/decisions/src/values.rs".into(), format!("pub struct Leaf; impl Leaf {{ pub fn evaluate(&self) {{ {method_body} }} }} struct Unrelated; impl Unrelated {{ fn evaluate(&self) {{}} }}")),
+                    ("rms-metadata/rust-crate-alias/decisions".into(), "dependencies/decisions".into()),
+                ]),
+                semantic_functions: vec![expectation("src/lib.rs#decide", "pure", &[])], authority_facades: Vec::new(), trusted_external_calls: BTreeSet::new(),
+            });
+            assert_eq!(result.result, expected, "{result:#?}");
+        }
     }
 
     #[test]
