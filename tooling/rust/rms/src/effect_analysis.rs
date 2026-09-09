@@ -475,7 +475,7 @@ fn bind_ambient_authorities(
     bound
 }
 
-fn is_raw_authority(authority: &str) -> bool {
+pub(crate) fn is_raw_authority(authority: &str) -> bool {
     matches!(authority, "filesystem" | "process" | "clock" | "randomness" | "environment" | "network" | "git" | "unsafe" | "dynamic-dispatch")
 }
 
@@ -3210,7 +3210,7 @@ fn collect_function_nodes<'tree>(node: Node<'tree>, result: &mut Vec<Node<'tree>
     }
 }
 
-fn function_node_name(node: Node<'_>, source: &str) -> Option<String> {
+pub(crate) fn function_node_name(node: Node<'_>, source: &str) -> Option<String> {
     if node.kind() == "init_declaration" {
         return Some("init".to_string());
     }
@@ -3228,7 +3228,7 @@ fn function_node_name(node: Node<'_>, source: &str) -> Option<String> {
         })
 }
 
-fn tree_sitter_qualified_name(node: Node<'_>, source: &str, name: &str) -> String {
+pub(crate) fn tree_sitter_qualified_name(node: Node<'_>, source: &str, name: &str) -> String {
     let mut owners = Vec::new();
     let mut parent = node.parent();
     while let Some(candidate) = parent {
@@ -3308,7 +3308,7 @@ fn swift_direct_callable_parameters(node: Node<'_>, source: &str) -> BTreeSet<St
     }).collect()
 }
 
-fn swift_callable_selector(node: Node<'_>, source: &str) -> Option<String> {
+pub(crate) fn swift_callable_selector(node: Node<'_>, source: &str) -> Option<String> {
     let declaration = node.utf8_text(source.as_bytes()).ok()?;
     let start = declaration.find('(')?;
     let end = matching_delimiter(declaration, start, '(', ')')?;
@@ -3337,7 +3337,7 @@ fn swift_callable_selector(node: Node<'_>, source: &str) -> Option<String> {
     Some(format!("({})", selectors.join(",")))
 }
 
-fn matching_delimiter(source: &str, start: usize, open: char, close: char) -> Option<usize> {
+pub(crate) fn matching_delimiter(source: &str, start: usize, open: char, close: char) -> Option<usize> {
     let mut depth = 0usize;
     for (offset, character) in source[start..].char_indices() {
         if character == open {
@@ -3373,7 +3373,7 @@ fn top_level_delimiter(source: &str, delimiter: char) -> Option<usize> {
     None
 }
 
-fn split_top_level(source: &str, delimiter: char) -> Vec<&str> {
+pub(crate) fn split_top_level(source: &str, delimiter: char) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut start = 0usize;
     let mut remainder = source;

@@ -39,6 +39,7 @@ mod proof_certificate;
 mod property;
 mod schema_generator;
 mod semantic_graph;
+mod swift_proof_calls;
 mod verification;
 mod viewer;
 mod viewer_request;
@@ -3217,6 +3218,12 @@ fn final_authority_bindings(
         &change.add,
         |item| item.authority.as_str(),
     )
+}
+
+fn authority_binding_change_key(binding: &AuthorityBinding) -> String {
+    if effect_analysis::is_raw_authority(&binding.authority) {
+        format!("{}@{}", binding.authority, binding.safe_facade)
+    } else { binding.authority.clone() }
 }
 
 fn public_behavior_bindings_change_has_operations(change: &PublicBehaviorBindingsChange) -> bool {
@@ -21356,6 +21363,8 @@ struct SwiftFunctionIndex {
     base: PathBuf,
     functions: BTreeMap<(PathBuf, String), String>,
     paths_by_name: BTreeMap<String, Vec<PathBuf>>,
+    exact: OnceLock<swift_proof_calls::Index>,
+    sources: Vec<(PathBuf, String)>,
 }
 
 impl SwiftFunctionIndex {
@@ -21364,6 +21373,8 @@ impl SwiftFunctionIndex {
             base: base.to_path_buf(),
             functions: BTreeMap::new(),
             paths_by_name: BTreeMap::new(),
+            exact: OnceLock::new(),
+            sources: Vec::new(),
         };
         let mut files = WalkDir::new(base)
             .follow_links(false)
@@ -21386,7 +21397,7 @@ impl SwiftFunctionIndex {
             })
             .collect::<Vec<_>>();
         files.sort_by(|left, right| left.0.cmp(&right.0));
-        for (path, source) in files {
+        for (path, source) in &files {
             for (name, function) in swift_function_sources(&source) {
                 let key = (path.clone(), name.clone());
                 if index.functions.contains_key(&key) {
@@ -21400,6 +21411,7 @@ impl SwiftFunctionIndex {
                     .push(path.clone());
             }
         }
+        index.sources = files;
         index
     }
 
@@ -21413,6 +21425,10 @@ impl SwiftFunctionIndex {
         start_symbol: &str,
         target_symbol: &str,
     ) -> bool {
+        if target_symbol.contains('(') {
+            let (path, target) = target_symbol.split_once('#').map_or((None, target_symbol), |(path, target)| (Some(self.base.join(path)), target));
+            return self.exact.get_or_init(|| swift_proof_calls::Index::new(&self.sources)).reaches(start_path, start_symbol, path.as_deref(), target);
+        }
         let target_leaf = semantic_symbol_name(target_symbol)
             .rsplit('.')
             .next()
@@ -22018,7 +22034,7 @@ fn property_runner_calls_operation_with_swift_index(
                 base,
                 implementation,
                 runner,
-                symbol,
+                if get_str(&implementation.value, &["binding"]) == Some("swift") { &reference } else { symbol },
                 swift_index,
             )
     })
@@ -28331,16 +28347,20 @@ fn validate_implementation_universal_bindings(
         &["architecture", "authority_bindings"],
     );
     let mut bound_authorities = BTreeSet::new();
+    let mut bound_authority_facades = BTreeSet::new();
     let mut authority_role_paths = BTreeSet::new();
     for binding in &authority_bindings {
+        let first = bound_authorities.insert(binding.authority.clone());
+        let distinct = bound_authority_facades.insert((binding.authority.clone(), binding.safe_facade.clone()));
         if !authority_ids.contains(&binding.authority)
-            || !bound_authorities.insert(binding.authority.clone())
+            || !distinct
+            || (!first && !effect_analysis::is_raw_authority(&binding.authority))
         {
             diagnostics.push(error(
                 "semantic.authority-binding-invalid",
                 &implementation.path,
                 format!(
-                    "authority binding `{}` must reference one unique module authority",
+                    "authority binding `{}` must reference a declared module authority and a distinct exact facade; named authorities require one facade",
                     binding.authority
                 ),
             ));
@@ -67768,13 +67788,18 @@ fn validate_authority_bindings(
         .into_iter()
         .flat_map(|mapping| mapping.keys().filter_map(YamlValue::as_str))
         .collect::<BTreeSet<_>>();
-    let existing = typed_yaml_sequence::<AuthorityBinding>(
+    let existing_bindings = typed_yaml_sequence::<AuthorityBinding>(
         &implementation.value,
         &["architecture", "authority_bindings"],
-    )
-    .into_iter()
-    .map(|item| item.authority)
-    .collect::<BTreeSet<_>>();
+    );
+    let existing = existing_bindings.iter().map(authority_binding_change_key).collect::<BTreeSet<_>>();
+    let base = request.replace.as_ref().unwrap_or(&existing_bindings);
+    // `remove` retains its authority-level meaning: it removes every witness
+    // for that category. Use a complete `set` to remove only one raw witness.
+    let removed = request.remove.iter().flat_map(|authority| {
+        let keys = base.iter().filter(|binding| &binding.authority == authority).map(authority_binding_change_key).collect::<Vec<_>>();
+        if keys.is_empty() { vec![authority.clone()] } else { keys }
+    }).collect::<Vec<_>>();
     validate_change_keys(
         &context.target,
         "authority-binding",
@@ -67782,23 +67807,28 @@ fn validate_authority_bindings(
         request
             .replace
             .as_ref()
-            .map(|items| items.iter().map(|item| item.authority.clone()).collect()),
+            .map(|items| items.iter().map(authority_binding_change_key).collect()),
         &request
             .add
             .iter()
-            .map(|item| item.authority.clone())
+            .map(authority_binding_change_key)
             .collect::<Vec<_>>(),
-        &request.remove,
+        &removed,
         diagnostics,
     );
     let mut seen = BTreeSet::new();
+    let mut witnesses = BTreeSet::new();
     for binding in final_authority_bindings(&implementation.value, request) {
-        if !authorities.contains(&binding.authority) || !seen.insert(binding.authority.clone()) {
+        let first = seen.insert(binding.authority.clone());
+        if !authorities.contains(&binding.authority)
+            || !witnesses.insert((binding.authority.clone(), binding.safe_facade.clone()))
+            || (!first && !effect_analysis::is_raw_authority(&binding.authority))
+        {
             diagnostics.push(error(
                 "semantic.authority-binding-invalid",
                 &context.target,
                 format!(
-                    "authority binding `{}` must reference one unique declared authority",
+                    "authority binding `{}` requires a declared authority and distinct exact facade; named authorities require one facade",
                     binding.authority
                 ),
             ));
@@ -98241,6 +98271,20 @@ architecture:
     }
 
     #[test]
+    fn swift_property_operation_keeps_exact_target_path_and_overload() {
+        let root = unique_test_dir("swift-exact-property-operation");
+        fs::create_dir_all(root.join("Sources")).unwrap();
+        fs::create_dir_all(root.join("Tests")).unwrap();
+        fs::write(root.join("Sources/Parser.swift"), "func parse(_ value: Int) {}\nfunc parse(_ value: String) {}\n").unwrap();
+        fs::write(root.join("Tests/Proof.swift"), "func bridge(_ value: Int) { parse(value) }\nfunc proof() { bridge(1) }\n").unwrap();
+        for (symbol, expected) in [("Sources/Parser.swift#parse(_:Int)", true), ("Sources/Parser.swift#parse(_:String)", false), ("Sources/Missing.swift#parse(_:Int)", false)] {
+            let manifest = LoadedManifest { path: root.join("implementation.yaml"), value: serde_yaml::from_str(&format!("spec: rms/implementation/v0.1\nbinding: swift\nsemantic_functions:\n- id: parser\n  kind: parser\n  purity: pure\n  symbol: '{symbol}'\n")).unwrap() };
+            assert_eq!(property_runner_calls_operation(&root, &manifest, "Tests/Proof.swift#proof", None, None), expected, "{symbol}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn production_trace_bundle_requires_a_smoke_producer() {
         let root = unique_test_dir("trace-producer-missing");
         run_add_module(
@@ -118451,6 +118495,38 @@ architecture:
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.check == "structure.privileged-operation-outside-authority-role"
         }));
+    }
+
+    #[test]
+    fn semantic_raw_authority_witnesses_support_set_add_and_group_remove() {
+        let witness = |facade: &str| AuthorityBinding { authority: "dynamic-dispatch".into(), roles: vec!["adapter".into()], safe_facade: facade.into(), evidence: vec!["verification/callbacks.md".into()] };
+        let initial = witness("src/adapter.py#handle");
+        let mut implementation: YamlValue = serde_yaml::from_str("spec: rms/implementation/v0.1\nbinding: python\narchitecture:\n  roles: {adapter: [src/adapter.py, src/probe.py]}\n").unwrap();
+        implementation["architecture"]["authority_bindings"] = serde_yaml::to_value(vec![initial.clone()]).unwrap();
+        let context = SpecTargetContext {
+            target: PathBuf::from("implementation.yaml"),
+            implementation: Some(LoadedManifest { path: PathBuf::from("implementation.yaml"), value: implementation.clone() }),
+            module: Some(LoadedManifest { path: PathBuf::from("module.yaml"), value: serde_yaml::from_str("spec: rms/module/v0.1\nauthorities:\n- {id: dynamic-dispatch, kind: privileged, capabilities: [invoke-callback], rationale: Invoke caller-supplied callbacks.}\n").unwrap() }),
+        };
+        for request in [
+            AuthorityBindingsChange { replace: Some(vec![initial.clone(), witness("src/probe.py#probe")]), ..AuthorityBindingsChange::default() },
+            AuthorityBindingsChange { add: vec![witness("src/probe.py#probe")], ..AuthorityBindingsChange::default() },
+            AuthorityBindingsChange { remove: vec!["dynamic-dispatch".into()], ..AuthorityBindingsChange::default() },
+        ] {
+            let mut change: SemanticChange = serde_yaml::from_str("spec: rms/semantic-change/v0.1").unwrap();
+            change.authority_bindings = Some(request);
+            let mut diagnostics = Vec::new();
+            validate_authority_bindings(&context, &change, &mut diagnostics);
+            assert_no_error_diagnostics(&diagnostics);
+        }
+        let mut change: SemanticChange = serde_yaml::from_str("spec: rms/semantic-change/v0.1").unwrap();
+        change.authority_bindings = Some(AuthorityBindingsChange { replace: Some(vec![initial.clone(), initial]), ..AuthorityBindingsChange::default() });
+        let mut diagnostics = Vec::new();
+        validate_authority_bindings(&context, &change, &mut diagnostics);
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic.check == "semantic.authority-binding-duplicate"));
+        let mut multiple = implementation;
+        multiple["architecture"]["authority_bindings"] = serde_yaml::to_value(vec![witness("src/adapter.py#handle"), witness("src/probe.py#probe")]).unwrap();
+        assert!(final_authority_bindings(&multiple, &AuthorityBindingsChange { remove: vec!["dynamic-dispatch".into()], ..AuthorityBindingsChange::default() }).is_empty());
     }
 
     #[test]

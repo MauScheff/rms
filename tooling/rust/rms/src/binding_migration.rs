@@ -165,7 +165,7 @@ fn infer_trust(kind: &str) -> Result<&'static str> {
 }
 
 fn authority_facades(candidate: &Value) -> Result<BTreeSet<String>> {
-    let mut counts = BTreeMap::<String, usize>::new();
+    let mut witnesses = BTreeMap::<String, BTreeSet<String>>::new();
     let bindings = sequence(candidate, &["architecture", "authority_bindings"])
         .map(Vec::as_slice)
         .unwrap_or(&[]);
@@ -177,12 +177,14 @@ fn authority_facades(candidate: &Value) -> Result<BTreeSet<String>> {
         if facade.matches('#').count() != 1 || facade.starts_with('#') || facade.ends_with('#') {
             bail!("authority binding `{authority}` does not use an exact path#symbol facade");
         }
-        *counts.entry(authority.to_string()).or_default() += 1;
+        if !witnesses.entry(authority.to_string()).or_default().insert(facade.to_string()) {
+            bail!("authority `{authority}` repeats exact facade `{facade}`");
+        }
     }
-    if let Some((authority, count)) = counts.iter().find(|(_, count)| **count != 1) {
-        bail!("authority `{authority}` resolves through {count} facades; expected exactly one");
+    if let Some((authority, facades)) = witnesses.iter().find(|(authority, facades)| !crate::effect_analysis::is_raw_authority(authority) && facades.len() != 1) {
+        bail!("named authority `{authority}` resolves through {} facades; expected exactly one", facades.len());
     }
-    Ok(counts.into_keys().collect())
+    Ok(witnesses.into_keys().collect())
 }
 
 fn key(value: &str) -> Value {
@@ -338,6 +340,19 @@ semantic_functions:
             .unwrap()[&key("authority_bindings")] = Value::Sequence(Vec::new());
         let error = plan(&input, &analysis(&["filesystem"], &[]), "v0.2").unwrap_err();
         assert!(error.to_string().contains("safe facade"));
+    }
+
+    #[test]
+    fn distinct_raw_witnesses_migrate_but_duplicates_and_named_splits_refuse() {
+        for (authority, second, expected) in [
+            ("filesystem", "src/public.rs#read", true),
+            ("dynamic-dispatch", "src/public.rs#read", true),
+            ("filesystem", "src/io.rs#read", false),
+            ("operator", "src/public.rs#read", false),
+        ] {
+            let candidate: Value = serde_yaml::from_str(&format!("spec: rms/implementation/v0.1\narchitecture:\n  authority_bindings:\n  - {{authority: {authority}, safe_facade: 'src/io.rs#read'}}\n  - {{authority: {authority}, safe_facade: '{second}'}}\nsemantic_functions:\n- {{id: read, kind: adapter, symbol: 'src/io.rs#read', purity: effectful}}\n")).unwrap();
+            assert_eq!(plan(&candidate, &analysis(&[authority], &[]), "v0.2").is_ok(), expected, "{authority}: {second}");
+        }
     }
 
     #[test]

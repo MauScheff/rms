@@ -30,9 +30,11 @@ Each semantic function declares:
 - `trust: internal|boundary`;
 - `authorities: []` or the exact inferred authority row.
 
-Each declared authority resolves through one exact `path#symbol` safe facade. `rms structure`, `rms verify`, audit, change checks, and committed checks run transitive effect analysis for Rust, Swift, Python, JavaScript, and shell.
+Each declared authority resolves through exact `path#symbol` safe facades. A named authority has one facade. A raw category has one or more distinct exact witnesses when it is available through independently public boundaries. Each witness has its own roles and containment evidence. Repeating the same authority/facade pair is invalid. `rms structure`, `rms verify`, audit, change checks, and committed checks run transitive effect analysis for Rust, Swift, Python, JavaScript, and shell.
 
 Raw effect categories (`filesystem`, `process`, `clock`, `randomness`, `environment`, `network`, `git`, `unsafe`, and `dynamic-dispatch`) retain their inferred identities. Their exact facade bindings witness containment; they do not rename effects. Several raw categories may bind the same exact callable. A named domain facade may bind the same callable as `dynamic-dispatch`; the named facade contains ambient effects, while open dispatch remains explicit. Other overlaps between named remapping and raw ambient categories remain ambiguous.
+
+For raw categories, `authority_bindings.add` adds a distinct authority/facade pair. `authority_bindings.remove` still removes every binding for the named authority. Use a complete `authority_bindings.set` to replace the witness set or remove one witness while preserving the others.
 
 The analyzer resolves local calls, imports, aliases, closed Python dispatch tables, recursion, and strongly connected call groups. It ignores comments and string literals. A pure closure fails when it reaches ambient authority, an unresolved call, or unresolved dynamic dispatch. An effectful function fails when its inferred authority row differs from its declaration. Creating an effect value is pure; executing the effect requires authority.
 
