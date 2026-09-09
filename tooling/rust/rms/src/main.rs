@@ -27302,6 +27302,7 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
             }
         }
     }
+    append_verified_dependency_sources(manifest, &binding, extensions, &mut sources);
     let digest_input = sources
         .iter()
         .flat_map(|(path, source)| [path.as_bytes(), b"\0", source.as_bytes(), b"\0"])
@@ -27343,7 +27344,7 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
             "sha256:{}",
             sha256_bytes(
                 format!(
-                    "{RMS_LONG_VERSION}:effect-analysis-v3:{}:{}",
+                    "{RMS_LONG_VERSION}:effect-analysis-v4:{}:{}",
                     effect_analysis::PURE_ALLOWLIST_VERSION,
                     effect_analysis::AUTHORITY_ROOT_VERSION
                 )
@@ -27355,6 +27356,175 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
         authority_facades,
         trusted_external_calls,
     }))
+}
+
+fn append_verified_dependency_sources(
+    implementation: &LoadedManifest,
+    binding: &str,
+    extensions: &[&str],
+    sources: &mut BTreeMap<String, String>,
+) {
+    let base = implementation
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let Ok(consumer) = load_manifest(&base.join("module.yaml")) else {
+        return;
+    };
+    let root = implementation
+        .path
+        .ancestors()
+        .find(|directory| directory.join("system.yaml").is_file())
+        .unwrap_or(base);
+    for dependency in typed_yaml_sequence::<DependencyBehaviorBinding>(
+        &implementation.value,
+        &["architecture", "dependency_behavior_bindings"],
+    ) {
+        if dependency.resolution != "module" {
+            continue;
+        }
+        let Some(provider_name) = dependency.provider_module.as_deref() else {
+            continue;
+        };
+        let Some(provider_contract) = dependency.provider_contract.as_deref() else {
+            continue;
+        };
+        let Some(provider) = find_named_provider_module(root, &consumer, provider_name) else {
+            continue;
+        };
+        let provider_base = provider.path.parent().unwrap_or_else(|| Path::new("."));
+        let Ok(provider_implementation) = load_manifest(&provider_base.join("implementation.yaml"))
+        else {
+            continue;
+        };
+        if get_str(&provider_implementation.value, &["binding"]) != Some(binding)
+            || !semantic_revision_is_current_and_sealed(Some(&provider), &provider_implementation)
+        {
+            continue;
+        }
+        let Some(public_binding) = typed_yaml_sequence::<PublicBehaviorBinding>(
+            &provider_implementation.value,
+            &["architecture", "public_behavior_bindings"],
+        )
+        .into_iter()
+        .find(|candidate| {
+            candidate.public_kind == "capability"
+                && candidate.public_name == dependency.capability
+                && candidate.contract == provider_contract
+        }) else {
+            continue;
+        };
+        if !semantic_function_items(&provider_implementation)
+            .unwrap_or_default()
+            .iter()
+            .any(|function| {
+                get_str(function, &["id"]) == Some(public_binding.semantic_function.as_str())
+                    && get_str(function, &["purity"]) == Some("pure")
+            })
+        {
+            continue;
+        }
+        let source_root = get_str(&provider_implementation.value, &["source", "root"])
+            .map(|path| provider_base.join(path))
+            .unwrap_or_else(|| provider_base.to_path_buf());
+        if !source_root.is_dir() {
+            continue;
+        }
+        for entry in WalkDir::new(&source_root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| {
+                !entry.file_type().is_dir()
+                    || !matches!(
+                        entry.file_name().to_string_lossy().as_ref(),
+                        ".git" | "target" | ".build"
+                    )
+            })
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+        {
+            if !entry
+                .path()
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| extensions.contains(&value))
+            {
+                continue;
+            }
+            if let Ok(source) = fs::read_to_string(entry.path()) {
+                let relative = display_relative(provider_base, entry.path());
+                sources.insert(format!("dependencies/{provider_name}/{relative}"), source);
+            }
+        }
+    }
+}
+
+fn semantic_revision_is_current_and_sealed(
+    module: Option<&LoadedManifest>,
+    implementation: &LoadedManifest,
+) -> bool {
+    let Some(digest) = get_str(
+        &implementation.value,
+        &["x-rms", "semantic_revision", "digest"],
+    ) else {
+        return false;
+    };
+    let Some(record) = get_str(
+        &implementation.value,
+        &["x-rms", "semantic_revision", "change_record"],
+    ) else {
+        return false;
+    };
+    let Some(record_digest) = get_str(
+        &implementation.value,
+        &["x-rms", "semantic_revision", "change_record_digest"],
+    ) else {
+        return false;
+    };
+    let Some(applied_by) = get_str(
+        &implementation.value,
+        &["x-rms", "semantic_revision", "applied_by"],
+    ) else {
+        return false;
+    };
+    if SemanticRevisionAuthority::parse(applied_by).is_none() {
+        return false;
+    }
+    let base = implementation
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let record_path = base.join(record);
+    if !is_safe_relative_artifact_path(record)
+        || sha256_file(&record_path)
+            .ok()
+            .map(|value| format!("sha256:{value}"))
+            != Some(record_digest.to_string())
+    {
+        return false;
+    }
+    if let Some(module) = module {
+        for field in [
+            "digest",
+            "change_record",
+            "change_record_digest",
+            "applied_by",
+        ] {
+            if get_str(&module.value, &["x-rms", "semantic_revision", field])
+                != get_str(
+                    &implementation.value,
+                    &["x-rms", "semantic_revision", field],
+                )
+            {
+                return false;
+            }
+        }
+    }
+    semantic_revision_digest(module, Some(implementation))
+        .ok()
+        .is_some_and(|current| digest == format!("sha256:{current}"))
+        || binding_migration_semantic_integrity(Some(implementation), digest)
+            .is_ok_and(|note| note.is_some())
 }
 
 fn trusted_pure_dependency_calls(implementation: &LoadedManifest) -> BTreeSet<String> {

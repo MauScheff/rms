@@ -358,6 +358,18 @@ fn symbol_candidates(symbol: &str, nodes: &[FunctionNode]) -> Vec<usize> {
         })
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
+    if let Some(expected_path) = expected_path {
+        let exact_path = candidates
+            .iter()
+            .copied()
+            .filter(|index| {
+                nodes[*index].path.replace('\\', "/") == expected_path.replace('\\', "/")
+            })
+            .collect::<Vec<_>>();
+        if !exact_path.is_empty() {
+            candidates = exact_path;
+        }
+    }
     if !expected_qualified.contains("::") {
         let free = candidates
             .iter()
@@ -514,7 +526,16 @@ fn collect_closure(
             continue;
         } else if node.binding == "shell" {
             unresolved.insert(call.clone());
-        } else if call == "<dynamic-call>" || call.contains('.') {
+        } else if call == "<dynamic-call>"
+            || call.contains('.')
+            || (call.contains("::")
+                && call
+                    .split("::")
+                    .next()
+                    .and_then(|root| root.chars().next())
+                    .is_some_and(char::is_uppercase)
+                && !call_is_constructor(call))
+        {
             authorities.insert("dynamic-dispatch".to_string());
             resolved.insert(call.clone());
         } else {
@@ -565,7 +586,10 @@ fn resolve_local_call(index: usize, call: &str, nodes: &[FunctionNode]) -> Vec<u
     let exact = direct
         .iter()
         .copied()
-        .filter(|candidate| nodes[*candidate].qualified_name == requested_qualified)
+        .filter(|candidate| {
+            requested_qualified == nodes[*candidate].qualified_name
+                || requested_qualified.ends_with(&format!("::{}", nodes[*candidate].qualified_name))
+        })
         .collect::<Vec<_>>();
     if exact.len() == 1 {
         return exact;
@@ -830,302 +854,309 @@ fn call_leaf(call: &str) -> &str {
 
 fn known_pure_call(call: &str) -> bool {
     let name = symbol_name(call).trim_end_matches('!');
-    matches!(
-        name,
-        "add"
-            | "all"
-            | "and_then"
-            | "any"
-            | "append"
-            | "as_array"
-            | "as_bool"
-            | "as_bytes"
-            | "as_deref"
-            | "as_i64"
-            | "as_mapping"
-            | "as_mapping_mut"
-            | "as_mut"
-            | "as_object"
-            | "as_object_mut"
-            | "as_os_str"
-            | "as_ptr"
-            | "as_ref"
-            | "as_sequence"
-            | "as_sequence_mut"
-            | "as_slice"
-            | "as_str"
-            | "as_u64"
-            | "at"
-            | "bool"
-            | "binary_search_by"
-            | "borrow"
-            | "borrow_mut"
-            | "byte_range"
-            | "bytes"
-            | "chain"
-            | "char_indices"
-            | "chars"
-            | "captures"
-            | "checked_add"
-            | "checked_mul"
-            | "checked_neg"
-            | "checked_pow"
-            | "checked_sub"
-            | "child_by_field_name"
-            | "children"
-            | "clamp"
-            | "clear"
-            | "clone"
-            | "cloned"
-            | "cmp"
-            | "collect"
-            | "components"
-            | "contains"
-            | "contains_key"
-            | "copy_from_slice"
-            | "context"
-            | "copied"
-            | "count"
-            | "dedup"
-            | "dedup_by"
-            | "decode"
-            | "default"
-            | "dict"
-            | "display"
-            | "description"
-            | "drop"
-            | "emit"
-            | "end"
-            | "ends_with"
-            | "endswith"
-            | "enumerate"
-            | "eq"
-            | "entry"
-            | "extend"
-            | "extend_from_slice"
-            | "extension"
-            | "filter"
-            | "filter_entry"
-            | "filter_map"
-            | "file_name"
-            | "file_stem"
-            | "find"
-            | "find_map"
-            | "first"
-            | "flatten"
-            | "flat_map"
-            | "fold"
-            | "freeze"
-            | "format"
-            | "from"
-            | "from_iter"
-            | "from_f64"
-            | "from_millis"
-            | "from_ref"
-            | "from_secs"
-            | "from_str_radix"
-            | "from_utf8"
-            | "from_utf8_lossy"
-            | "align_of"
-            | "size_of"
-            | "catch_unwind"
-            | "fullmatch"
-            | "get"
-            | "get_mut"
-            | "get_or_init"
-            | "get_or_insert"
-            | "group"
-            | "hexdigest"
-            | "ip_address"
-            | "insert"
-            | "int"
-            | "inspect"
-            | "into"
-            | "into_iter"
-            | "into_bytes"
-            | "into_keys"
-            | "into_path"
-            | "into_values"
-            | "items"
-            | "is_absolute"
-            | "is_alphanumeric"
-            | "is_ascii_alphabetic"
-            | "is_ascii_alphanumeric"
-            | "is_ascii_digit"
-            | "is_ascii_lowercase"
-            | "is_ascii_uppercase"
-            | "is_ascii_whitespace"
-            | "is_boolean"
-            | "is_disjoint"
-            | "is_empty"
-            | "is_err"
-            | "is_finite"
-            | "is_i64"
-            | "is_ident"
-            | "is_mapping"
-            | "is_match"
-            | "is_multiple_of"
-            | "is_none"
-            | "is_none_or"
-            | "is_ok"
-            | "is_ok_and"
-            | "is_sequence"
-            | "is_some"
-            | "is_some_and"
-            | "is_string"
-            | "is_null"
-            | "is_object"
-            | "is_u64"
-            | "is_valid"
-            | "is_whitespace"
-            | "isInteger"
-            | "isinstance"
-            | "iter"
-            | "iter_errors"
-            | "iter_mut"
-            | "join"
-            | "key"
-            | "keys"
-            | "label"
-            | "last"
-            | "len"
-            | "len_utf8"
-            | "lines"
-            | "list"
-            | "loads"
-            | "dumps"
-            | "lower"
-            | "map"
-            | "map_err"
-            | "map_or"
-            | "map_or_else"
-            | "match"
-            | "match_indices"
-            | "matches"
-            | "max"
-            | "min"
-            | "min_by"
-            | "min_by_key"
-            | "named_child"
-            | "named_children"
-            | "new"
-            | "next"
-            | "next_back"
-            | "ok"
-            | "ok_or"
-            | "ok_or_else"
-            | "once"
-            | "null"
-            | "or"
-            | "or_default"
-            | "or_else"
-            | "or_insert_with"
-            | "parent"
-            | "parse"
-            | "path"
-            | "peek"
-            | "peekable"
-            | "pointer"
-            | "pop"
-            | "pop_front"
-            | "position"
-            | "printf"
-            | "push"
-            | "push_back"
-            | "push_str"
-            | "range"
-            | "remove"
-            | "replace"
-            | "replace_range"
-            | "replacen"
-            | "rpartition"
-            | "rev"
-            | "reverse"
-            | "reversed"
-            | "retain"
-            | "return"
-            | "root_node"
-            | "rsplit"
-            | "rsplit_once"
-            | "saturating_add"
-            | "saturating_mul"
-            | "saturating_sub"
-            | "search"
-            | "set"
-            | "set_language"
-            | "sha256"
-            | "shift"
-            | "sort"
-            | "sort_by"
-            | "sort_by_key"
-            | "sorted"
-            | "split"
-            | "split_at"
-            | "split_last"
-            | "split_once"
-            | "splitlines"
-            | "split_whitespace"
-            | "skip"
-            | "starts_with"
-            | "startswith"
-            | "strip"
-            | "strip_prefix"
-            | "strip_suffix"
-            | "strings"
-            | "str"
-            | "structural_types"
-            | "take"
-            | "take_while"
-            | "test"
-            | "then"
-            | "then_some"
-            | "then_with"
-            | "to_ascii_lowercase"
-            | "to_digit"
-            | "to_le_bytes"
-            | "to_lowercase"
-            | "toLowerCase"
-            | "to_os_string"
-            | "to_owned"
-            | "to_path_buf"
-            | "to_string"
-            | "to_string_lossy"
-            | "to_str"
-            | "to_uppercase"
-            | "to_vec"
-            | "trim"
-            | "trim_end_matches"
-            | "trim_matches"
-            | "trim_start"
-            | "trim_start_matches"
-            | "trimmingCharacters"
-            | "truncate"
-            | "transpose"
-            | "tuple"
-            | "union"
-            | "unset"
-            | "update"
-            | "unwrap_or"
-            | "unwrap_or_default"
-            | "unwrap_or_else"
-            | "utf8_text"
-            | "urlsplit"
-            | "urlsafe_b64decode"
-            | "values"
-            | "vec"
-            | "visit_block"
-            | "visit_file"
-            | "walk"
-            | "windows"
-            | "with"
-            | "with_capacity"
-            | "with_context"
-            | "with_extension"
-            | "cast"
-            | "wrapping_add"
-            | "wrapping_mul"
-            | "zip"
-    ) || call.starts_with("serde_json::to_")
+    (name == "try_from"
+        && [
+            "u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize",
+        ]
+        .iter()
+        .any(|primitive| call == format!("{primitive}::try_from")))
+        || matches!(
+            name,
+            "add"
+                | "all"
+                | "and_then"
+                | "any"
+                | "append"
+                | "as_array"
+                | "as_bool"
+                | "as_bytes"
+                | "as_deref"
+                | "as_i64"
+                | "as_mapping"
+                | "as_mapping_mut"
+                | "as_mut"
+                | "as_object"
+                | "as_object_mut"
+                | "as_os_str"
+                | "as_ptr"
+                | "as_ref"
+                | "as_sequence"
+                | "as_sequence_mut"
+                | "as_slice"
+                | "as_str"
+                | "as_u64"
+                | "at"
+                | "bool"
+                | "binary_search_by"
+                | "borrow"
+                | "borrow_mut"
+                | "byte_range"
+                | "bytes"
+                | "chain"
+                | "char_indices"
+                | "chars"
+                | "captures"
+                | "checked_add"
+                | "checked_mul"
+                | "checked_neg"
+                | "checked_pow"
+                | "checked_sub"
+                | "child_by_field_name"
+                | "children"
+                | "clamp"
+                | "clear"
+                | "clone"
+                | "cloned"
+                | "cmp"
+                | "collect"
+                | "components"
+                | "contains"
+                | "contains_key"
+                | "copy_from_slice"
+                | "context"
+                | "copied"
+                | "count"
+                | "dedup"
+                | "dedup_by"
+                | "decode"
+                | "default"
+                | "dict"
+                | "display"
+                | "description"
+                | "drop"
+                | "emit"
+                | "end"
+                | "ends_with"
+                | "endswith"
+                | "enumerate"
+                | "eq"
+                | "entry"
+                | "extend"
+                | "extend_from_slice"
+                | "extension"
+                | "filter"
+                | "filter_entry"
+                | "filter_map"
+                | "file_name"
+                | "file_stem"
+                | "find"
+                | "find_map"
+                | "first"
+                | "flatten"
+                | "flat_map"
+                | "fold"
+                | "freeze"
+                | "format"
+                | "from"
+                | "from_iter"
+                | "from_f64"
+                | "from_millis"
+                | "from_ref"
+                | "from_secs"
+                | "from_str_radix"
+                | "from_utf8"
+                | "from_utf8_lossy"
+                | "align_of"
+                | "size_of"
+                | "catch_unwind"
+                | "fullmatch"
+                | "get"
+                | "get_mut"
+                | "get_or_init"
+                | "get_or_insert"
+                | "group"
+                | "hexdigest"
+                | "ip_address"
+                | "insert"
+                | "int"
+                | "inspect"
+                | "into"
+                | "into_iter"
+                | "into_bytes"
+                | "into_keys"
+                | "into_path"
+                | "into_values"
+                | "items"
+                | "is_absolute"
+                | "is_alphanumeric"
+                | "is_ascii_alphabetic"
+                | "is_ascii_alphanumeric"
+                | "is_ascii_digit"
+                | "is_ascii_lowercase"
+                | "is_ascii_uppercase"
+                | "is_ascii_whitespace"
+                | "is_boolean"
+                | "is_disjoint"
+                | "is_empty"
+                | "is_err"
+                | "is_finite"
+                | "is_i64"
+                | "is_ident"
+                | "is_mapping"
+                | "is_match"
+                | "is_multiple_of"
+                | "is_none"
+                | "is_none_or"
+                | "is_ok"
+                | "is_ok_and"
+                | "is_sequence"
+                | "is_some"
+                | "is_some_and"
+                | "is_string"
+                | "is_null"
+                | "is_object"
+                | "is_u64"
+                | "is_valid"
+                | "is_whitespace"
+                | "isInteger"
+                | "isinstance"
+                | "iter"
+                | "iter_errors"
+                | "iter_mut"
+                | "join"
+                | "key"
+                | "keys"
+                | "label"
+                | "last"
+                | "len"
+                | "len_utf8"
+                | "lines"
+                | "list"
+                | "loads"
+                | "dumps"
+                | "lower"
+                | "map"
+                | "map_err"
+                | "map_or"
+                | "map_or_else"
+                | "match"
+                | "match_indices"
+                | "matches"
+                | "max"
+                | "min"
+                | "min_by"
+                | "min_by_key"
+                | "named_child"
+                | "named_children"
+                | "new"
+                | "next"
+                | "next_back"
+                | "ok"
+                | "ok_or"
+                | "ok_or_else"
+                | "once"
+                | "null"
+                | "or"
+                | "or_default"
+                | "or_else"
+                | "or_insert_with"
+                | "parent"
+                | "parse"
+                | "path"
+                | "peek"
+                | "peekable"
+                | "pointer"
+                | "pop"
+                | "pop_front"
+                | "position"
+                | "printf"
+                | "push"
+                | "push_back"
+                | "push_str"
+                | "range"
+                | "remove"
+                | "replace"
+                | "replace_range"
+                | "replacen"
+                | "rpartition"
+                | "rev"
+                | "reverse"
+                | "reversed"
+                | "retain"
+                | "return"
+                | "root_node"
+                | "rsplit"
+                | "rsplit_once"
+                | "saturating_add"
+                | "saturating_mul"
+                | "saturating_sub"
+                | "search"
+                | "set"
+                | "set_language"
+                | "sha256"
+                | "shift"
+                | "sort"
+                | "sort_by"
+                | "sort_by_key"
+                | "sorted"
+                | "split"
+                | "split_at"
+                | "split_last"
+                | "split_once"
+                | "splitlines"
+                | "split_whitespace"
+                | "skip"
+                | "starts_with"
+                | "startswith"
+                | "strip"
+                | "strip_prefix"
+                | "strip_suffix"
+                | "strings"
+                | "str"
+                | "structural_types"
+                | "take"
+                | "take_while"
+                | "test"
+                | "then"
+                | "then_some"
+                | "then_with"
+                | "to_ascii_lowercase"
+                | "to_digit"
+                | "to_le_bytes"
+                | "to_lowercase"
+                | "toLowerCase"
+                | "to_os_string"
+                | "to_owned"
+                | "to_path_buf"
+                | "to_string"
+                | "to_string_lossy"
+                | "to_str"
+                | "to_uppercase"
+                | "to_vec"
+                | "trim"
+                | "trim_end_matches"
+                | "trim_matches"
+                | "trim_start"
+                | "trim_start_matches"
+                | "trimmingCharacters"
+                | "truncate"
+                | "transpose"
+                | "tuple"
+                | "union"
+                | "unset"
+                | "update"
+                | "unwrap_or"
+                | "unwrap_or_default"
+                | "unwrap_or_else"
+                | "utf8_text"
+                | "urlsplit"
+                | "urlsafe_b64decode"
+                | "values"
+                | "vec"
+                | "visit_block"
+                | "visit_file"
+                | "walk"
+                | "windows"
+                | "with"
+                | "with_capacity"
+                | "with_context"
+                | "with_extension"
+                | "cast"
+                | "wrapping_add"
+                | "wrapping_mul"
+                | "zip"
+        )
+        || call.starts_with("serde_json::to_")
         || call.starts_with("serde_json::from_")
         || call.starts_with("serde_yaml::to_")
         || call.starts_with("serde_yaml::from_")
@@ -1168,15 +1199,17 @@ fn swift_standard_value_method(call: &str, standard_value_names: &BTreeSet<Strin
 
 fn call_is_constructor(call: &str) -> bool {
     call.starts_with('.')
-        || call
-            .split([':', '.'])
-            .find(|part| !part.is_empty())
-            .and_then(|root| root.chars().next())
-            .is_some_and(char::is_uppercase)
+        || (call.contains('.')
+            && call
+                .split('.')
+                .next()
+                .and_then(|root| root.chars().next())
+                .is_some_and(char::is_uppercase))
         || symbol_name(call)
             .chars()
             .next()
             .is_some_and(char::is_uppercase)
+        || matches!(symbol_name(call), "new" | "default")
 }
 
 fn symbol_name(symbol: &str) -> &str {
@@ -1212,6 +1245,7 @@ struct RustCallCollector {
     unsafe_calls: BTreeSet<String>,
     authorities: BTreeSet<String>,
     dynamic_symbols: BTreeSet<String>,
+    parameter_types: BTreeMap<String, String>,
     local_closures: BTreeSet<String>,
     regex_names: BTreeSet<String>,
     regex_match_names: BTreeSet<String>,
@@ -1250,7 +1284,11 @@ impl<'ast> Visit<'ast> for RustCallCollector {
 
     fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
         let receiver = rust_expr_label(&node.receiver);
-        let call = if receiver.is_empty() {
+        let typed_receiver =
+            rust_expr_root_ident(&node.receiver).and_then(|name| self.parameter_types.get(&name));
+        let call = if let Some(receiver_type) = typed_receiver {
+            format!("{receiver_type}::{}", node.method)
+        } else if receiver.is_empty() {
             node.method.to_string()
         } else {
             format!("{receiver}.{}", node.method)
@@ -1267,6 +1305,23 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             self.unsafe_calls.insert(call.clone());
         }
         self.calls.insert(call);
+        if matches!(node.method.to_string().as_str(), "map" | "filter_map") {
+            for argument in &node.args {
+                let Expr::Path(path) = argument else { continue };
+                let callable = path
+                    .path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.ident.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                if self.dynamic_symbols.contains(symbol_name(&callable)) {
+                    self.calls.insert("<dynamic-call>".to_string());
+                } else {
+                    self.calls.insert(callable);
+                }
+            }
+        }
         visit::visit_expr_method_call(self, node);
     }
 
@@ -1410,6 +1465,28 @@ fn rust_dynamic_parameters<'a>(inputs: impl Iterator<Item = &'a FnArg>) -> BTree
         .collect()
 }
 
+fn rust_parameter_types<'a>(inputs: impl Iterator<Item = &'a FnArg>) -> BTreeMap<String, String> {
+    inputs
+        .filter_map(|argument| {
+            let FnArg::Typed(argument) = argument else {
+                return None;
+            };
+            let Pat::Ident(ident) = argument.pat.as_ref() else {
+                return None;
+            };
+            let mut value = argument.ty.as_ref();
+            while let Type::Reference(reference) = value {
+                value = reference.elem.as_ref();
+            }
+            let Type::Path(path) = value else { return None };
+            Some((
+                ident.ident.to_string(),
+                path.path.segments.last()?.ident.to_string(),
+            ))
+        })
+        .collect()
+}
+
 fn rust_type_is_dynamic(value: &Type) -> bool {
     match value {
         Type::BareFn(_) | Type::ImplTrait(_) | Type::TraitObject(_) => true,
@@ -1487,6 +1564,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
         }
         let mut calls = RustCallCollector {
             dynamic_symbols: rust_dynamic_parameters(node.sig.inputs.iter()),
+            parameter_types: rust_parameter_types(node.sig.inputs.iter()),
             ..RustCallCollector::default()
         };
         if node.sig.unsafety.is_some() {
@@ -1513,6 +1591,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
         }
         let mut calls = RustCallCollector {
             dynamic_symbols: rust_dynamic_parameters(node.sig.inputs.iter()),
+            parameter_types: rust_parameter_types(node.sig.inputs.iter()),
             ..RustCallCollector::default()
         };
         if node.sig.unsafety.is_some() {
@@ -2726,7 +2805,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_ambiguous_local_methods_traverse_every_candidate_conservatively() {
+    fn rust_typed_local_methods_resolve_exact_receiver() {
         let result = report(
             "rust",
             "src/transition.rs",
@@ -2741,14 +2820,10 @@ mod tests {
             "#,
             expectation("select", "pure", &[]),
         );
-        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
-        assert_eq!(
-            result.functions[0].transitive_authorities,
-            vec!["filesystem"]
-        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         assert_eq!(
             result.functions[0].resolved_callees,
-            vec!["Effectful::evaluate_candidate", "Pure::evaluate_candidate"]
+            vec!["Pure::evaluate_candidate"]
         );
     }
 
@@ -2838,6 +2913,56 @@ mod tests {
         );
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         assert!(result.functions[0].transitive_authorities.is_empty());
+    }
+
+    #[test]
+    fn rust_verified_dependency_sources_close_named_projector_calls() {
+        let result = analyze(AnalysisInput {
+            binding: "rust".to_string(),
+            source_digest: "source".to_string(),
+            tool_digest: "tool".to_string(),
+            sources: BTreeMap::from([
+                ("src/consumer.rs".to_string(), "fn project(value: &Provider) -> u16 { value.port() } fn decide(values: &[Provider]) -> Vec<u16> { values.iter().map(project).collect() }".to_string()),
+                ("dependencies/provider/src/lib.rs".to_string(), "struct Provider { port: u16 } impl Provider { fn port(&self) -> u16 { self.port } }".to_string()),
+            ]),
+            semantic_functions: vec![expectation("src/consumer.rs#decide", "pure", &[])],
+            authority_facades: vec![],
+            trusted_external_calls: BTreeSet::new(),
+        });
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0]
+            .resolved_callees
+            .contains(&"project".to_string()));
+        assert!(result.functions[0]
+            .resolved_callees
+            .contains(&"Provider::port".to_string()));
+    }
+
+    #[test]
+    fn rust_dynamic_iterator_callback_remains_fail_closed() {
+        let source = "fn decide<F: Fn(&u64) -> u64>(values: &[u64], project: F) -> Vec<u64> { values.iter().map(project).collect() }";
+        let result = report(
+            "rust",
+            "src/lib.rs",
+            source,
+            expectation("decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+        assert_eq!(
+            result.functions[0].transitive_authorities,
+            vec!["dynamic-dispatch"]
+        );
+    }
+
+    #[test]
+    fn rust_primitive_checked_conversion_is_pure() {
+        let result = report(
+            "rust",
+            "src/lib.rs",
+            "fn decide(value: u64) -> Option<u16> { u16::try_from(value).ok() }",
+            expectation("decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
     }
 
     #[test]
