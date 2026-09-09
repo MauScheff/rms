@@ -746,6 +746,7 @@ fn authorities_for_node(
 fn authority_for_call(binding: &str, call: &str) -> Option<String> {
     if binding == "python" {
         match call {
+            "python-stdlib.urllib.request.urlopen" => return Some("network".to_string()),
             "python-stdlib.time.sleep" => return Some("clock".to_string()),
             "python-stdlib.shutil.copy2" | "python-stdlib.Path.stat" => {
                 return Some("filesystem".to_string());
@@ -2405,6 +2406,8 @@ fn resolve_call_alias(call: &str, aliases: &BTreeMap<String, String>) -> String 
 struct SwiftStandardNames {
     subscript: BTreeSet<String>,
     value: BTreeSet<String>,
+    checked_continuation: bool,
+    string_split: bool,
 }
 
 fn extract_tree_sitter_functions(
@@ -2441,6 +2444,13 @@ fn extract_tree_sitter_functions(
             let qualified_name = tree_sitter_qualified_name(node, source, &name);
             let swift_collection_names = if binding == "swift" {
                 let mut names = swift_standard_collection_names(tree.root_node(), node, source);
+                if swift_global_names.string_split {
+                    names.extend(swift_string_split_collection_names(
+                        tree.root_node(),
+                        node,
+                        source,
+                    ));
+                }
                 names.extend(swift_global_names.subscript.iter().cloned());
                 names
             } else {
@@ -2470,6 +2480,36 @@ fn extract_tree_sitter_functions(
                     &mut calls,
                     true,
                 );
+            }
+            if binding == "swift" && swift_global_names.checked_continuation {
+                // Only the standard control primitive is closed. Calls inside
+                // its literal closure were collected and remain in the graph.
+                let mut invocations = Vec::new();
+                collect_nodes_of_kind(node, "call_expression", &mut invocations);
+                for intrinsic in ["withCheckedContinuation", "Swift.withCheckedContinuation"] {
+                    let matching = invocations
+                        .iter()
+                        .filter(|call| {
+                            call.child_by_field_name("function")
+                                .or_else(|| call.child_by_field_name("name"))
+                                .or_else(|| call.named_child(0))
+                                .and_then(|callee| callee.utf8_text(source.as_bytes()).ok())
+                                .map(normalize_call)
+                                .as_deref()
+                                == Some(intrinsic)
+                        })
+                        .collect::<Vec<_>>();
+                    if !matching.is_empty()
+                        && matching.iter().all(|call| {
+                            call.utf8_text(source.as_bytes())
+                                .ok()
+                                .and_then(|text| text.strip_prefix(intrinsic))
+                                .is_some_and(|tail| tail.trim_start().starts_with('{'))
+                        })
+                    {
+                        calls.remove(intrinsic);
+                    }
+                }
             }
             let calls = calls
                 .into_iter()
@@ -2548,6 +2588,7 @@ fn refine_python_stdlib_calls(
             }
         }
     }
+    let reassigned = shadowed.clone();
     let mut definitions = Vec::new();
     collect_function_nodes(root, &mut definitions);
     let mut binding_definitions = definitions.clone();
@@ -2584,22 +2625,13 @@ fn refine_python_stdlib_calls(
         let Ok(line) = statement.utf8_text(source.as_bytes()) else {
             continue;
         };
-        let words = line.split_whitespace().collect::<Vec<_>>();
-        let (module, member, alias) = match words.as_slice() {
-            ["import", module] => (*module, "", *module),
-            ["import", module, "as", alias] => (*module, "", *alias),
-            ["from", module, "import", member] => (*module, *member, *member),
-            ["from", module, "import", member, "as", alias] => (*module, *member, *alias),
-            _ => continue,
-        };
-        if statement.parent() != Some(root) {
-            shadowed.insert(alias.to_string());
-            continue;
+        for (module, member, alias) in python_import_bindings(line) {
+            if statement.parent() != Some(root) {
+                shadowed.insert(alias);
+                continue;
+            }
+            imports.entry(alias).or_default().push((module, member));
         }
-        imports
-            .entry(alias.to_string())
-            .or_default()
-            .push((module.to_string(), member.to_string()));
     }
     let mut recognized = BTreeMap::new();
     for (alias, imported) in imports {
@@ -2607,13 +2639,21 @@ fn refine_python_stdlib_calls(
             continue;
         }
         let (module, member) = &imported[0];
-        if !matches!(module.as_str(), "time" | "shutil" | "pathlib") {
+        if !matches!(
+            module.as_str(),
+            "time" | "shutil" | "pathlib" | "urllib.request"
+        ) {
             continue;
         }
+        let root_module = module.split('.').next().unwrap_or(module);
         if sources.keys().any(|path| {
             path.ends_with(&format!("/{module}.py"))
                 || path == &format!("{module}.py")
                 || path.ends_with(&format!("/{module}/__init__.py"))
+                || path.ends_with(&format!("/{root_module}.py"))
+                || path == &format!("{root_module}.py")
+                || path.contains(&format!("/{root_module}/"))
+                || path.starts_with(&format!("{root_module}/"))
         }) {
             continue;
         }
@@ -2630,6 +2670,42 @@ fn refine_python_stdlib_calls(
             continue;
         }
         let definition = *candidates[0];
+        if let Some(parameters) = definition.child_by_field_name("parameters") {
+            let mut cursor = parameters.walk();
+            for parameter in parameters.named_children(&mut cursor) {
+                let (Some(name), Some(value)) = (
+                    parameter.child_by_field_name("name"),
+                    parameter.child_by_field_name("value"),
+                ) else {
+                    continue;
+                };
+                if name.kind() != "identifier" || value.kind() != "identifier" {
+                    continue;
+                }
+                let (Ok(name), Ok(default)) = (
+                    name.utf8_text(source.as_bytes()),
+                    value.utf8_text(source.as_bytes()),
+                ) else {
+                    continue;
+                };
+                if !function.calls.contains(name) || reassigned.contains(default) {
+                    continue;
+                }
+                let defaults = definitions
+                    .iter()
+                    .filter(|candidate| {
+                        candidate.parent() == Some(root)
+                            && candidate.start_byte() < definition.start_byte()
+                            && function_node_name(**candidate, source).as_deref() == Some(default)
+                    })
+                    .collect::<Vec<_>>();
+                if defaults.len() == 1 {
+                    // The known default adds a reachable path. The supplied
+                    // callable stays unresolved; this is not specialization.
+                    function.calls.insert(format!("{path}#{default}"));
+                }
+            }
+        }
         let mut assignments = Vec::new();
         collect_nodes_of_kind(definition, "assignment", &mut assignments);
         let mut values = BTreeMap::<String, Vec<Node<'_>>>::new();
@@ -2676,10 +2752,15 @@ fn refine_python_stdlib_calls(
                         ("sleep", "python-stdlib.time.sleep"),
                         ("copy2", "python-stdlib.shutil.copy2"),
                         ("Path", "PythonStdlibPath"),
+                        ("urlopen", "python-stdlib.urllib.request.urlopen"),
+                        ("Request", "python-stdlib.urllib.request.Request"),
                     ] {
                         if !matches!(
                             (module.as_str(), operation),
-                            ("time", "sleep") | ("shutil", "copy2") | ("pathlib", "Path")
+                            ("time", "sleep")
+                                | ("shutil", "copy2")
+                                | ("pathlib", "Path")
+                                | ("urllib.request", "urlopen" | "Request")
                         ) {
                             continue;
                         }
@@ -2689,7 +2770,10 @@ fn refine_python_stdlib_calls(
                             if member != operation {
                                 continue;
                             }
-                            format!("{}.py#{member}", normalized_import_path(path, module))
+                            format!(
+                                "{}.py#{member}",
+                                normalized_import_path(path, &module.replace('.', "/"))
+                            )
                         };
                         if call == &expected {
                             return target.to_string();
@@ -2705,6 +2789,47 @@ fn refine_python_stdlib_calls(
             .filter_map(|call| authority_for_call("python", call))
             .collect();
     }
+}
+
+fn python_import_bindings(statement: &str) -> Vec<(String, String, String)> {
+    let (module, members) = if let Some(rest) = statement.strip_prefix("from ") {
+        let Some((module, members)) = rest.split_once(" import ") else {
+            return Vec::new();
+        };
+        (
+            Some(module.trim()),
+            members.trim().trim_start_matches('(').trim_end_matches(')'),
+        )
+    } else if let Some(rest) = statement.strip_prefix("import ") {
+        (None, rest)
+    } else {
+        return Vec::new();
+    };
+    members
+        .split(',')
+        .filter_map(|member| {
+            let words = member.split_whitespace().collect::<Vec<_>>();
+            let (name, alias) = match words.as_slice() {
+                [name] => (*name, *name),
+                [name, "as", alias] => (*name, *alias),
+                _ => return None,
+            };
+            if !name.split('.').all(is_simple_identifier)
+                || !alias.split('.').all(is_simple_identifier)
+            {
+                return None;
+            }
+            Some((
+                module.unwrap_or(name).to_string(),
+                if module.is_some() {
+                    name.to_string()
+                } else {
+                    String::new()
+                },
+                alias.to_string(),
+            ))
+        })
+        .collect()
 }
 
 fn python_is_path_value(
@@ -2804,6 +2929,7 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
     let language: Language = tree_sitter_swift::LANGUAGE.into();
     let mut subscript_classifications = BTreeMap::<String, bool>::new();
     let mut value_classifications = BTreeMap::<String, bool>::new();
+    let mut shadowed = BTreeSet::new();
     for source in sources.values() {
         let mut parser = Parser::new();
         if parser.set_language(&language).is_err() {
@@ -2812,6 +2938,25 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
         let Some(tree) = parser.parse(source, None) else {
             continue;
         };
+        for kind in [
+            "function_declaration",
+            "property_declaration",
+            "parameter",
+            "lambda_parameter",
+            "class_declaration",
+            "typealias_declaration",
+        ] {
+            let mut declarations = Vec::new();
+            collect_nodes_of_kind(tree.root_node(), kind, &mut declarations);
+            for declaration in declarations {
+                if let Some(name) = declaration
+                    .child_by_field_name("name")
+                    .and_then(|name| first_simple_identifier(name, source))
+                {
+                    shadowed.insert(name);
+                }
+            }
+        }
         let mut declarations = Vec::new();
         collect_nodes_of_kind(tree.root_node(), "property_declaration", &mut declarations);
         collect_nodes_of_kind(tree.root_node(), "parameter", &mut declarations);
@@ -2843,6 +2988,11 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
         }
     }
     SwiftStandardNames {
+        checked_continuation: !shadowed.contains("withCheckedContinuation")
+            && !shadowed.contains("Swift"),
+        string_split: !["String", "Swift", "split", "map"]
+            .iter()
+            .any(|name| shadowed.contains(*name)),
         subscript: subscript_classifications
             .into_iter()
             .filter_map(|(name, standard)| standard.then_some(name))
@@ -3439,6 +3589,95 @@ fn swift_standard_collection_names(
     standard
 }
 
+fn swift_string_split_collection_names(
+    root: Node<'_>,
+    function: Node<'_>,
+    source: &str,
+) -> BTreeSet<String> {
+    let mut scopes = vec![function];
+    while let Some(parent) = nearest_function_ancestor(*scopes.last().unwrap()) {
+        scopes.push(parent);
+    }
+    let visible =
+        |node| nearest_function_ancestor(node).is_some_and(|owner| scopes.contains(&owner));
+    let mut parameters = Vec::new();
+    collect_nodes_of_kind(root, "parameter", &mut parameters);
+    collect_nodes_of_kind(root, "lambda_parameter", &mut parameters);
+    let mut names = BTreeMap::<String, usize>::new();
+    let mut strings = BTreeSet::new();
+    for parameter in parameters
+        .into_iter()
+        .filter(|parameter| visible(*parameter))
+    {
+        let Some(name) = parameter
+            .child_by_field_name("name")
+            .and_then(|name| first_simple_identifier(name, source))
+        else {
+            continue;
+        };
+        *names.entry(name.clone()).or_default() += 1;
+        let text = parameter.utf8_text(source.as_bytes()).unwrap_or_default();
+        if text
+            .split_once(':')
+            .map(|(_, ty)| ty.trim())
+            .is_some_and(|ty| matches!(ty, "String" | "Swift.String"))
+        {
+            strings.insert(name);
+        }
+    }
+    let mut declarations = Vec::new();
+    collect_nodes_of_kind(root, "property_declaration", &mut declarations);
+    let declarations = declarations
+        .into_iter()
+        .filter(|declaration| visible(*declaration))
+        .collect::<Vec<_>>();
+    for declaration in &declarations {
+        if let Some(name) = declaration
+            .child_by_field_name("name")
+            .and_then(|name| first_simple_identifier(name, source))
+        {
+            *names.entry(name).or_default() += 1;
+        }
+    }
+    let mut result = BTreeSet::new();
+    for declaration in declarations {
+        let Some(name) = declaration
+            .child_by_field_name("name")
+            .and_then(|name| first_simple_identifier(name, source))
+        else {
+            continue;
+        };
+        if names.get(&name) != Some(&1)
+            || !declaration
+                .utf8_text(source.as_bytes())
+                .unwrap_or_default()
+                .trim_start()
+                .starts_with("let ")
+        {
+            continue;
+        }
+        let Some(value) = declaration.child_by_field_name("value") else {
+            continue;
+        };
+        let compact = value
+            .utf8_text(source.as_bytes())
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        let Some((receiver, _)) = compact.split_once(".split(") else {
+            continue;
+        };
+        if strings.contains(receiver)
+            && names.get(receiver) == Some(&1)
+            && compact.ends_with(").map(String.init)")
+        {
+            result.insert(name);
+        }
+    }
+    result
+}
+
 fn swift_standard_value_names(
     root: Node<'_>,
     function: Node<'_>,
@@ -4000,6 +4239,34 @@ mod tests {
     }
 
     #[test]
+    fn swift_string_split_collection_capture_is_typed_and_shadowing_sensitive() {
+        for (argument_type, inner, expected) in [
+            ("String", "func identity() -> String { fields[1] }; return identity()", AnalysisResult::Pass),
+            ("Custom", "func identity() -> String { fields[1] }; return identity()", AnalysisResult::Fail),
+            ("String", "func identity(fields: Custom) -> String { fields[1] }; return identity(fields: unknown())", AnalysisResult::Fail),
+            ("String", "return { (fields: Custom) in fields[1] }(Custom())", AnalysisResult::Fail),
+        ] {
+            let source = format!("func parse(_ raw: {argument_type}) -> String {{ let fields = raw.split(separator: \"|\", omittingEmptySubsequences: false).map(String.init); {inner} }}");
+            let result = report("swift", "Sources/Parser.swift", &source, expectation("parse", "pure", &[]));
+            assert_eq!(result.result, expected, "{source}: {result:#?}");
+        }
+    }
+
+    #[test]
+    fn swift_checked_continuation_requires_literal_unshadowed_call_and_keeps_closure_effects() {
+        for (source, expected, unresolved) in [
+            ("func execute() async { await withCheckedContinuation { continuation in print(\"effect\") } }", AnalysisResult::Fail, false),
+            ("func execute(callback: Callback) async { await withCheckedContinuation(callback) }", AnalysisResult::Fail, true),
+            ("func execute(withCheckedContinuation: Callback) async { await withCheckedContinuation { continuation in } }", AnalysisResult::Fail, true),
+            ("func withCheckedContinuation(_ callback: Callback) { print(\"effect\") }; func execute() async { await withCheckedContinuation { continuation in } }", AnalysisResult::Fail, false),
+        ] {
+            let result = report("swift", "Sources/Executor.swift", source, expectation("execute", "pure", &[]));
+            assert_eq!(result.result, expected, "{source}: {result:#?}");
+            assert_eq!(result.functions[0].unresolved_calls.contains(&"withCheckedContinuation".to_string()), unresolved, "{source}: {result:#?}");
+        }
+    }
+
+    #[test]
     fn swift_unqualified_calls_stay_in_their_source_module() {
         let mut nodes = Vec::new();
         for (path, source) in [
@@ -4320,6 +4587,62 @@ mod tests {
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         assert!(result.functions[0].transitive_authorities.is_empty());
         assert!(result.functions[0].unresolved_calls.is_empty());
+    }
+
+    #[test]
+    fn python_default_callable_adds_known_effects_without_blessing_injection() {
+        let source = "import os\nfrom pathlib import Path\nfrom urllib.request import Request, urlopen\nfrom collections.abc import Callable\ndef default_open(request):\n    Path('ca.pem').is_file()\n    os.environ.get('SSL_CERT_FILE')\n    return urlopen(request)\ndef execute(value, opener: Callable = default_open):\n    request = Request(value)\n    response = opener(request)\n    return getattr(response, 'status', type(response))\n";
+        let result = report(
+            "python",
+            "src/adapter.py",
+            source,
+            expectation(
+                "execute",
+                "effectful",
+                &["filesystem", "environment", "network", "dynamic-dispatch"],
+            ),
+        );
+        for authority in ["filesystem", "environment", "network"] {
+            assert!(
+                result.functions[0]
+                    .transitive_authorities
+                    .contains(&authority.to_string()),
+                "{result:#?}"
+            );
+        }
+        for call in ["opener", "getattr", "type"] {
+            assert!(
+                result.functions[0]
+                    .unresolved_calls
+                    .contains(&call.to_string()),
+                "{result:#?}"
+            );
+        }
+        assert_eq!(result.result, AnalysisResult::Fail);
+        assert!(result.functions[0]
+            .direct_calls
+            .contains(&"python-stdlib.urllib.request.Request".to_string()));
+    }
+
+    #[test]
+    fn python_urlopen_shadowing_does_not_gain_stdlib_identity() {
+        let result = report("python", "src/adapter.py", "from urllib.request import urlopen\ndef execute(urlopen, value):\n    return urlopen(value)\n", expectation("execute", "pure", &[]));
+        assert_eq!(result.result, AnalysisResult::Fail);
+        assert!(!result.functions[0]
+            .transitive_authorities
+            .contains(&"network".to_string()));
+        let result = analyze(AnalysisInput {
+            binding: "python".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+            sources: BTreeMap::from([
+                ("src/adapter.py".into(), "from urllib.request import urlopen\ndef execute(value):\n    return urlopen(value)\n".into()),
+                ("src/urllib/request.py".into(), "def urlopen(value):\n    return mystery(value)\n".into()),
+            ]),
+            semantic_functions: vec![expectation("src/adapter.py#execute", "pure", &[])], authority_facades: Vec::new(), trusted_external_calls: BTreeSet::new(),
+        });
+        assert_eq!(result.result, AnalysisResult::Fail);
+        assert!(!result.functions[0]
+            .transitive_authorities
+            .contains(&"network".to_string()));
     }
 
     #[test]
