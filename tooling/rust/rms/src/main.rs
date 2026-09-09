@@ -34520,6 +34520,18 @@ struct RustFunctionSignature {
     return_collection_item_type: Option<String>,
 }
 
+fn rust_driver_has_state_input_prefix(
+    signature: &RustFunctionSignature,
+    state: Option<&str>,
+    input: Option<&str>,
+) -> bool {
+    state.is_some()
+        && input.is_some()
+        && signature.parameter_types.len() >= 2
+        && signature.parameter_types.first().and_then(Option::as_deref) == state
+        && signature.parameter_types.get(1).and_then(Option::as_deref) == input
+}
+
 fn rust_function_signature(signature: &syn::Signature) -> RustFunctionSignature {
     let parameter_types = signature
         .inputs
@@ -34927,18 +34939,18 @@ fn validate_rust_machine_execution_path(
         .function_signatures
         .get(driver)
         .is_none_or(|signature| {
-            signature.parameter_types.len() != 2
-                || signature.parameter_types.first().and_then(Option::as_deref)
-                    != machine_types.state.as_deref()
-                || signature.parameter_types.get(1).and_then(Option::as_deref)
-                    != machine_types.input.as_deref()
+            !rust_driver_has_state_input_prefix(
+                signature,
+                machine_types.state.as_deref(),
+                machine_types.input.as_deref(),
+            )
         })
     {
         diagnostics.push(error(
             "structure.machine-driver-signature-mismatch",
             &implementation.path,
             format!(
-                "Rust machine driver `{driver}` must accept declared state `{}` and input `{}`",
+                "Rust machine driver `{driver}` must accept declared state `{}` and input `{}` as its first two parameters; explicit resource parameters may follow",
                 machine_types.state.as_deref().unwrap_or("<missing>"),
                 machine_types.input.as_deref().unwrap_or("<missing>")
             ),
@@ -99458,6 +99470,25 @@ architecture:
         target.realizations[0].runner = "tests/analysis.py#absent".into();
         assert!(checks(&target).contains("property.runner-missing"));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rust_driver_resources_preserve_exact_state_input_prefix() {
+        for (source, expected) in [
+            ("fn drive(state: State, input: Input) {}", true),
+            ("fn drive(state: State, input: Input, parameters: &Parameters, transport: &mut impl Transport) {}", true),
+            ("fn drive() {}", false),
+            ("fn drive(state: State) {}", false),
+            ("fn drive(state: WrongState, input: Input, transport: &mut impl Transport) {}", false),
+            ("fn drive(state: State, input: WrongInput, transport: &mut impl Transport) {}", false),
+            ("fn drive(input: Input, state: State) {}", false),
+            ("fn drive(transport: &Transport, state: State, input: Input) {}", false),
+        ] {
+            let function = syn::parse_str::<syn::ItemFn>(source).unwrap();
+            let signature = rust_function_signature(&function.sig);
+            assert_eq!(rust_driver_has_state_input_prefix(&signature, Some("State"), Some("Input")), expected, "{source}");
+            assert!(!rust_driver_has_state_input_prefix(&signature, None, Some("Input")));
+        }
     }
 
     #[test]
