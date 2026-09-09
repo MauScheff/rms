@@ -7,6 +7,10 @@ use syn::{
 };
 use tree_sitter::{Language, Node, Parser};
 
+#[path = "rust_effect_types.rs"]
+mod rust_effect_types;
+use rust_effect_types::{RustTypeIndex, RustValueType};
+
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
 pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.2";
 pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.2";
@@ -135,6 +139,7 @@ pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
         .map(|(path, source)| (path.clone(), source.clone()))
         .collect::<BTreeMap<_, _>>();
     let swift_global_names = swift_global_standard_names(&swift_sources);
+    let rust_types = RustTypeIndex::from_sources(&input.sources);
     let mut nodes = Vec::new();
     for (path, source) in &input.sources {
         let source_binding = if input.binding == "executable" {
@@ -143,7 +148,7 @@ pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
             input.binding.as_str()
         };
         let mut extracted = if source_binding == "rust" {
-            extract_rust_functions(path, source)
+            extract_rust_functions_with_types(path, source, &rust_types, &input.sources)
         } else {
             extract_tree_sitter_functions(source_binding, path, source, &swift_global_names)
         };
@@ -1303,9 +1308,92 @@ struct RustCallCollector {
     regex_names: BTreeSet<String>,
     regex_match_names: BTreeSet<String>,
     unsafe_depth: usize,
+    type_index: RustTypeIndex,
+    value_types: BTreeMap<String, RustValueType>,
+    helpers: BTreeMap<String, ItemFn>,
+    static_callbacks: BTreeMap<String, String>,
+    callback_bindings: BTreeMap<String, String>,
 }
 
 impl<'ast> Visit<'ast> for RustCallCollector {
+    fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
+        self.visit_expr(&node.expr);
+        let prior_values = self.value_types.clone();
+        let prior_types = self.parameter_types.clone();
+        let prior_dynamic = self.dynamic_symbols.clone();
+        let prior_callbacks = self.callback_bindings.clone();
+        let element = match self
+            .type_index
+            .expression_type(&node.expr, &self.value_types)
+        {
+            Some(RustValueType::Sequence(element) | RustValueType::Iterator(element)) => {
+                Some(*element)
+            }
+            _ => None,
+        };
+        let mut names = BTreeSet::new();
+        collect_rust_pattern_identifiers(&node.pat, &mut names);
+        for name in &names {
+            if self.value_types.contains_key(name) || self.parameter_types.contains_key(name) {
+                self.dynamic_symbols.insert(name.clone());
+            }
+            self.value_types
+                .insert(name.clone(), RustValueType::Unknown);
+            self.parameter_types.remove(name);
+            self.callback_bindings.remove(name);
+        }
+        if let (Pat::Ident(name), Some(element)) = (node.pat.as_ref(), element) {
+            if let Some(value_type) = element.name() {
+                self.parameter_types
+                    .insert(name.ident.to_string(), value_type.clone());
+                self.dynamic_symbols.remove(&name.ident.to_string());
+            }
+            self.value_types.insert(name.ident.to_string(), element);
+        }
+        self.visit_block(&node.body);
+        self.value_types = prior_values;
+        self.parameter_types = prior_types;
+        self.dynamic_symbols = prior_dynamic;
+        self.callback_bindings = prior_callbacks;
+    }
+
+    fn visit_arm(&mut self, node: &'ast syn::Arm) {
+        let prior_values = self.value_types.clone();
+        let prior_types = self.parameter_types.clone();
+        let prior_dynamic = self.dynamic_symbols.clone();
+        let prior_callbacks = self.callback_bindings.clone();
+        let mut names = BTreeSet::new();
+        collect_rust_pattern_identifiers(&node.pat, &mut names);
+        for name in names {
+            if self.value_types.contains_key(&name) || self.parameter_types.contains_key(&name) {
+                self.dynamic_symbols.insert(name.clone());
+            }
+            self.value_types
+                .insert(name.clone(), RustValueType::Unknown);
+            self.parameter_types.remove(&name);
+            self.callback_bindings.remove(&name);
+        }
+        visit::visit_arm(self, node);
+        self.value_types = prior_values;
+        self.parameter_types = prior_types;
+        self.dynamic_symbols = prior_dynamic;
+        self.callback_bindings = prior_callbacks;
+    }
+
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        let prior_values = self.value_types.clone();
+        let prior_types = self.parameter_types.clone();
+        let prior_dynamic = self.dynamic_symbols.clone();
+        let prior_callbacks = self.callback_bindings.clone();
+        let prior_closures = self.local_closures.clone();
+        visit::visit_block(self, block);
+        self.value_types = prior_values;
+        self.parameter_types = prior_types;
+        self.dynamic_symbols = prior_dynamic;
+        self.callback_bindings = prior_callbacks;
+        self.local_closures = prior_closures;
+    }
+
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
         if let syn::Expr::Path(path) = node.func.as_ref() {
             let call = path
@@ -1316,6 +1404,62 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 .collect::<Vec<_>>()
                 .join("::");
             let leaf = symbol_name(&call);
+            if let Some(callback) = self.callback_bindings.get(&call) {
+                self.calls.insert(callback.clone());
+                visit::visit_expr_call(self, node);
+                return;
+            }
+            if let Some(helper) = self.helpers.get(&call) {
+                let callback_parameters = rust_dynamic_parameters(helper.sig.inputs.iter());
+                let bindings = helper
+                    .sig
+                    .inputs
+                    .iter()
+                    .zip(&node.args)
+                    .filter_map(|(parameter, argument)| {
+                        let FnArg::Typed(parameter) = parameter else {
+                            return None;
+                        };
+                        let Pat::Ident(name) = parameter.pat.as_ref() else {
+                            return None;
+                        };
+                        let name = name.ident.to_string();
+                        if !callback_parameters.contains(&name) {
+                            return None;
+                        }
+                        let Expr::Path(argument) = argument else {
+                            return None;
+                        };
+                        let name_in_caller = argument.path.get_ident()?.to_string();
+                        Some((name, self.static_callbacks.get(&name_in_caller)?.clone()))
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                if !bindings.is_empty()
+                    && bindings.len() == callback_parameters.len()
+                    && helper.sig.inputs.len() == node.args.len()
+                    && rust_callbacks_only_called(&helper.block, &callback_parameters)
+                {
+                    let mut specialized = RustCallCollector {
+                        dynamic_symbols: callback_parameters,
+                        parameter_types: rust_parameter_types(helper.sig.inputs.iter()),
+                        value_types: self.type_index.parameters(&helper.sig),
+                        type_index: self.type_index.clone(),
+                        callback_bindings: bindings,
+                        ..RustCallCollector::default()
+                    };
+                    if helper.sig.unsafety.is_some() {
+                        specialized.authorities.insert("unsafe".into());
+                    }
+                    specialized.visit_block(&helper.block);
+                    self.calls.extend(specialized.calls);
+                    self.unsafe_calls.extend(specialized.unsafe_calls);
+                    self.authorities.extend(specialized.authorities);
+                    for argument in &node.args {
+                        self.visit_expr(argument);
+                    }
+                    return;
+                }
+            }
             if self.local_closures.contains(leaf) {
                 visit::visit_expr_call(self, node);
                 return;
@@ -1337,12 +1481,17 @@ impl<'ast> Visit<'ast> for RustCallCollector {
 
     fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
         let receiver = rust_expr_label(&node.receiver);
+        let inferred_receiver = self
+            .type_index
+            .expression_type(&node.receiver, &self.value_types);
+        let inferred_name = inferred_receiver.as_ref().and_then(RustValueType::name);
         let typed_receiver = match node.receiver.as_ref() {
             Expr::Path(path) if path.path.segments.len() == 1 => self
                 .parameter_types
                 .get(&path.path.segments[0].ident.to_string()),
             _ => None,
-        };
+        }
+        .or(inferred_name);
         let call = if let Some(receiver_type) = typed_receiver {
             format!("{receiver_type}::{}", node.method)
         } else if receiver.is_empty() {
@@ -1388,7 +1537,50 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 }
             }
         }
-        visit::visit_expr_method_call(self, node);
+        if let Some(element) = inferred_receiver
+            .as_ref()
+            .and_then(RustValueType::element)
+            .filter(|_| {
+                matches!(
+                    node.method.to_string().as_str(),
+                    "map" | "filter" | "filter_map" | "any" | "all" | "find"
+                )
+            })
+        {
+            self.visit_expr(&node.receiver);
+            for argument in &node.args {
+                if let Expr::Closure(closure) = argument {
+                    if closure.inputs.len() == 1 {
+                        let prior_values = self.value_types.clone();
+                        let prior_types = self.parameter_types.clone();
+                        let prior_dynamic = self.dynamic_symbols.clone();
+                        let mut names = BTreeSet::new();
+                        collect_rust_pattern_identifiers(&closure.inputs[0], &mut names);
+                        for name in &names {
+                            self.value_types.remove(name);
+                            self.parameter_types.remove(name);
+                            self.dynamic_symbols.insert(name.clone());
+                        }
+                        if let Pat::Ident(ident) = &closure.inputs[0] {
+                            let name = ident.ident.to_string();
+                            self.value_types.insert(name.clone(), element.clone());
+                            if let Some(type_name) = element.name() {
+                                self.parameter_types.insert(name.clone(), type_name.clone());
+                                self.dynamic_symbols.remove(&name);
+                            }
+                        }
+                        self.visit_expr(&closure.body);
+                        self.value_types = prior_values;
+                        self.parameter_types = prior_types;
+                        self.dynamic_symbols = prior_dynamic;
+                        continue;
+                    }
+                }
+                self.visit_expr(argument);
+            }
+        } else {
+            visit::visit_expr_method_call(self, node);
+        }
     }
 
     fn visit_expr_unsafe(&mut self, node: &'ast syn::ExprUnsafe) {
@@ -1399,6 +1591,8 @@ impl<'ast> Visit<'ast> for RustCallCollector {
     }
 
     fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
+        let prior_callbacks = self.callback_bindings.clone();
+        let prior_values = self.value_types.clone();
         let prior_types = self.parameter_types.clone();
         let prior_dynamic = self.dynamic_symbols.clone();
         let mut names = BTreeSet::new();
@@ -1406,12 +1600,17 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             collect_rust_pattern_identifiers(input, &mut names);
         }
         for name in names {
+            self.callback_bindings.remove(&name);
+            self.value_types
+                .insert(name.clone(), RustValueType::Unknown);
             self.parameter_types.remove(&name);
             self.dynamic_symbols.insert(name);
         }
         visit::visit_expr_closure(self, node);
         self.parameter_types = prior_types;
         self.dynamic_symbols = prior_dynamic;
+        self.value_types = prior_values;
+        self.callback_bindings = prior_callbacks;
     }
 
     fn visit_expr_macro(&mut self, node: &'ast ExprMacro) {
@@ -1433,6 +1632,35 @@ impl<'ast> Visit<'ast> for RustCallCollector {
     }
 
     fn visit_local(&mut self, node: &'ast Local) {
+        let inferred = node.init.as_ref().and_then(|init| {
+            self.type_index
+                .expression_type(&init.expr, &self.value_types)
+        });
+        let mut bound_names = BTreeSet::new();
+        collect_rust_pattern_identifiers(&node.pat, &mut bound_names);
+        // Inspect the initializer in the old scope, then install the new binding.
+        visit::visit_local(self, node);
+        for name in &bound_names {
+            self.callback_bindings.remove(name);
+            let shadowed = self.value_types.contains_key(name)
+                || self.parameter_types.contains_key(name)
+                || self.dynamic_symbols.contains(name);
+            self.value_types
+                .insert(name.clone(), RustValueType::Unknown);
+            self.parameter_types.remove(name);
+            self.local_closures.remove(name);
+            if shadowed {
+                self.dynamic_symbols.insert(name.clone());
+            }
+        }
+        if let (Pat::Ident(name), Some(value)) = (&node.pat, inferred) {
+            if let Some(type_name) = value.name() {
+                self.parameter_types
+                    .insert(name.ident.to_string(), type_name.clone());
+                self.dynamic_symbols.remove(&name.ident.to_string());
+            }
+            self.value_types.insert(name.ident.to_string(), value);
+        }
         if node
             .init
             .as_ref()
@@ -1449,7 +1677,6 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 collect_rust_pattern_identifiers(&node.pat, &mut self.regex_match_names);
             }
         }
-        visit::visit_local(self, node);
     }
 }
 
@@ -1495,6 +1722,21 @@ fn collect_rust_pattern_identifiers(pattern: &Pat, names: &mut BTreeSet<String>)
         Pat::Reference(reference) => collect_rust_pattern_identifiers(&reference.pat, names),
         Pat::Type(typed) => collect_rust_pattern_identifiers(&typed.pat, names),
         Pat::Paren(paren) => collect_rust_pattern_identifiers(&paren.pat, names),
+        Pat::Struct(value) => {
+            for field in &value.fields {
+                collect_rust_pattern_identifiers(&field.pat, names);
+            }
+        }
+        Pat::Slice(value) => {
+            for element in &value.elems {
+                collect_rust_pattern_identifiers(element, names);
+            }
+        }
+        Pat::Or(value) => {
+            for element in &value.cases {
+                collect_rust_pattern_identifiers(element, names);
+            }
+        }
         _ => {}
     }
 }
@@ -1637,6 +1879,9 @@ struct RustFunctionCollector {
     path: String,
     owner: Vec<String>,
     test_depth: usize,
+    type_index: RustTypeIndex,
+    helpers: BTreeMap<String, ItemFn>,
+    static_callbacks: BTreeMap<String, String>,
 }
 
 impl<'ast> Visit<'ast> for RustFunctionCollector {
@@ -1645,6 +1890,17 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             return;
         }
         let mut calls = RustCallCollector {
+            helpers: self
+                .helpers
+                .iter()
+                .filter(|(name, _)| {
+                    rust_unshadowed_callbacks(node, &self.static_callbacks).contains_key(*name)
+                })
+                .map(|(name, helper)| (name.clone(), helper.clone()))
+                .collect(),
+            static_callbacks: rust_unshadowed_callbacks(node, &self.static_callbacks),
+            type_index: self.type_index.clone(),
+            value_types: self.type_index.parameters(&node.sig),
             dynamic_symbols: rust_dynamic_parameters(node.sig.inputs.iter()),
             parameter_types: rust_parameter_types(node.sig.inputs.iter()),
             ..RustCallCollector::default()
@@ -1673,6 +1929,8 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             return;
         }
         let mut calls = RustCallCollector {
+            type_index: self.type_index.clone(),
+            value_types: self.type_index.parameters(&node.sig),
             dynamic_symbols: rust_dynamic_parameters(node.sig.inputs.iter()),
             parameter_types: rust_parameter_types(node.sig.inputs.iter()),
             ..RustCallCollector::default()
@@ -1736,6 +1994,72 @@ fn has_test_attribute(attributes: &[syn::Attribute]) -> bool {
     })
 }
 
+fn rust_unshadowed_callbacks(
+    function: &ItemFn,
+    callbacks: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    #[derive(Default)]
+    struct Names(BTreeSet<String>);
+    impl<'ast> Visit<'ast> for Names {
+        fn visit_pat_ident(&mut self, node: &'ast syn::PatIdent) {
+            self.0.insert(node.ident.to_string());
+        }
+        fn visit_item_fn(&mut self, node: &'ast ItemFn) {
+            self.0.insert(node.sig.ident.to_string());
+        }
+        fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+            let mut aliases = BTreeMap::new();
+            collect_rust_use_aliases(&node.tree, Vec::new(), &mut aliases);
+            self.0.extend(aliases.into_keys());
+        }
+    }
+    let mut names = Names::default();
+    names.visit_signature(&function.sig);
+    names.visit_block(&function.block);
+    callbacks
+        .iter()
+        .filter(|(name, _)| !names.0.contains(*name))
+        .map(|(name, target)| (name.clone(), target.clone()))
+        .collect()
+}
+
+fn rust_callbacks_only_called(block: &syn::Block, names: &BTreeSet<String>) -> bool {
+    struct Uses<'a> {
+        names: &'a BTreeSet<String>,
+        escaped: bool,
+    }
+    impl<'ast> Visit<'ast> for Uses<'_> {
+        fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+            if matches!(call.func.as_ref(), Expr::Path(path) if path.path.get_ident().is_some_and(|name| self.names.contains(&name.to_string())))
+            {
+                for argument in &call.args {
+                    self.visit_expr(argument);
+                }
+            } else {
+                visit::visit_expr_call(self, call);
+            }
+        }
+        fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+            if path
+                .path
+                .get_ident()
+                .is_some_and(|name| self.names.contains(&name.to_string()))
+            {
+                self.escaped = true;
+            }
+        }
+        fn visit_expr_macro(&mut self, _: &'ast ExprMacro) {
+            self.escaped = true;
+        }
+    }
+    let mut uses = Uses {
+        names,
+        escaped: false,
+    };
+    uses.visit_block(block);
+    !uses.escaped
+}
+
 fn qualified_rust_name(owner: &[String], name: &str) -> String {
     if owner.is_empty() {
         name.to_string()
@@ -1744,18 +2068,82 @@ fn qualified_rust_name(owner: &[String], name: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn extract_rust_functions(path: &str, source: &str) -> Vec<FunctionNode> {
+    extract_rust_functions_with_types(path, source, &RustTypeIndex::default(), &BTreeMap::new())
+}
+
+fn extract_rust_functions_with_types(
+    path: &str,
+    source: &str,
+    types: &RustTypeIndex,
+    sources: &BTreeMap<String, String>,
+) -> Vec<FunctionNode> {
     let Ok(file) = syn::parse_file(source) else {
         return Vec::new();
     };
+    let mut function_counts = BTreeMap::<String, usize>::new();
+    for item in &file.items {
+        if let syn::Item::Fn(function) = item {
+            *function_counts
+                .entry(function.sig.ident.to_string())
+                .or_default() += 1;
+        }
+    }
     let mut collector = RustFunctionCollector {
         nodes: Vec::new(),
         path: path.to_string(),
         owner: Vec::new(),
         test_depth: 0,
+        type_index: types.for_path(path),
+        helpers: file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Fn(function)
+                    if matches!(function.vis, syn::Visibility::Inherited)
+                        && function.attrs.is_empty()
+                        && function_counts.get(&function.sig.ident.to_string()) == Some(&1) =>
+                {
+                    Some((function.sig.ident.to_string(), function.clone()))
+                }
+                _ => None,
+            })
+            .collect(),
+        static_callbacks: file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Fn(function)
+                    if function.attrs.is_empty()
+                        && function_counts.get(&function.sig.ident.to_string()) == Some(&1) =>
+                {
+                    Some((
+                        function.sig.ident.to_string(),
+                        format!("{path}#{}", function.sig.ident),
+                    ))
+                }
+                _ => None,
+            })
+            .collect(),
     };
+    let mut aliases = rust_import_aliases(&file);
+    let safe_aliases = rust_unique_unconditional_imports(&file);
+    for (name, target) in &mut aliases {
+        if !safe_aliases.contains(name) || function_counts.contains_key(name) {
+            continue;
+        }
+        if let Some(exact) = rust_exact_function_reference(path, target, sources, 0) {
+            *target = exact;
+        }
+    }
+    collector.static_callbacks.extend(
+        aliases
+            .iter()
+            .filter(|(_, target)| target.contains('#'))
+            .map(|(name, target)| (name.clone(), target.clone())),
+    );
     collector.visit_file(&file);
-    let aliases = rust_import_aliases(&file);
     for node in &mut collector.nodes {
         node.calls = node
             .calls
@@ -1769,6 +2157,115 @@ fn extract_rust_functions(path: &str, source: &str) -> Vec<FunctionNode> {
             .collect();
     }
     collector.nodes
+}
+
+fn rust_unique_unconditional_imports(file: &syn::File) -> BTreeSet<String> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    let mut conditional = BTreeSet::new();
+    for item in &file.items {
+        if let syn::Item::Use(item) = item {
+            let mut aliases = BTreeMap::new();
+            collect_rust_use_aliases(&item.tree, Vec::new(), &mut aliases);
+            for name in aliases.into_keys() {
+                *counts.entry(name.clone()).or_default() += 1;
+                if !item.attrs.is_empty() {
+                    conditional.insert(name);
+                }
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(name, count)| *count == 1 && !conditional.contains(name))
+        .map(|(name, _)| name)
+        .collect()
+}
+
+fn rust_exact_function_reference(
+    path: &str,
+    reference: &str,
+    sources: &BTreeMap<String, String>,
+    depth: usize,
+) -> Option<String> {
+    let exact = rust_exact_item_reference(path, reference, sources, depth)?;
+    let (path, name) = exact.split_once('#')?;
+    let file = syn::parse_file(sources.get(path)?).ok()?;
+    file.items
+        .iter()
+        .any(|item| matches!(item, syn::Item::Fn(function) if function.sig.ident == name))
+        .then_some(exact)
+}
+
+fn rust_exact_item_reference(
+    path: &str,
+    reference: &str,
+    sources: &BTreeMap<String, String>,
+    depth: usize,
+) -> Option<String> {
+    if depth > 8 {
+        return None;
+    }
+    let parts = reference.split("::").collect::<Vec<_>>();
+    if parts.len() > 1 {
+        let prefix = if parts[0] == "crate" {
+            path.split_once("/src/")
+                .map(|(prefix, _)| prefix.to_string())
+                .unwrap_or_default()
+        } else {
+            sources
+                .get(&format!("rms-metadata/rust-crate-alias/{}", parts[0]))?
+                .clone()
+        };
+        let root = if prefix.is_empty() {
+            "src".to_string()
+        } else {
+            format!("{prefix}/src")
+        };
+        let target = if parts.len() == 2 {
+            format!("{root}/lib.rs")
+        } else {
+            format!("{root}/{}.rs", parts[1..parts.len() - 1].join("/"))
+        };
+        return rust_exact_item_reference(&target, parts.last()?, sources, depth + 1);
+    }
+    let file = syn::parse_file(sources.get(path)?).ok()?;
+    let functions = file
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(function)
+                if function.sig.ident == reference && function.attrs.is_empty() =>
+            {
+                Some(())
+            }
+            syn::Item::Struct(item) if item.ident == reference => Some(()),
+            syn::Item::Enum(item) if item.ident == reference => Some(()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if functions.len() == 1 {
+        return Some(format!("{path}#{reference}"));
+    }
+    if !functions.is_empty() {
+        return None;
+    }
+    let mut targets = Vec::new();
+    for item in &file.items {
+        if let syn::Item::Use(item) = item {
+            if !item.attrs.is_empty() {
+                continue;
+            }
+            let mut aliases = BTreeMap::new();
+            collect_rust_use_aliases(&item.tree, Vec::new(), &mut aliases);
+            if let Some(target) = aliases.get(reference) {
+                targets.push(target.clone());
+            }
+        }
+    }
+    if targets.len() != 1 {
+        return None;
+    }
+    rust_exact_item_reference(path, &targets[0], sources, depth + 1)
 }
 
 fn rust_import_aliases(file: &syn::File) -> BTreeMap<String, String> {
@@ -3238,6 +3735,103 @@ mod tests {
             result.functions[0].resolved_callees,
             vec!["Pure::evaluate_candidate"]
         );
+    }
+
+    #[test]
+    fn rust_fixed_callback_specializations_do_not_merge_callers_or_shadowed_bindings() {
+        let definitions = "fn invoke<F: FnOnce()>(callback: F) { callback(); } fn pure_callback() {} fn effect_callback() { std::fs::read_to_string(\"x\").ok(); } #[cfg(test)] mod tests { fn test_only() { super::invoke(super::effect_callback); } }";
+        for (body, expected) in [
+            ("invoke(pure_callback);", AnalysisResult::Pass),
+            ("invoke(effect_callback);", AnalysisResult::Fail),
+            (
+                "invoke(pure_callback); invoke(effect_callback);",
+                AnalysisResult::Fail,
+            ),
+            (
+                "let pure_callback = effect_callback; invoke(pure_callback);",
+                AnalysisResult::Fail,
+            ),
+            (
+                "let invoke = unknown(); invoke(pure_callback);",
+                AnalysisResult::Fail,
+            ),
+        ] {
+            let result = report(
+                "rust",
+                "src/lib.rs",
+                &format!("{definitions} fn decide() {{ {body} }}"),
+                expectation("decide", "pure", &[]),
+            );
+            assert_eq!(result.result, expected, "{body}: {result:#?}");
+        }
+        let result = report(
+            "rust",
+            "src/lib.rs",
+            definitions,
+            expectation("invoke", "pure", &[]),
+        );
+        assert_eq!(
+            result.result,
+            AnalysisResult::Fail,
+            "open helper must remain dynamic: {result:#?}"
+        );
+        for helper in [
+            "fn invoke(mut callback: fn()) { callback = effect_callback; callback(); }",
+            "fn invoke(mut callback: fn()) { std::mem::replace(&mut callback, effect_callback); callback(); }",
+            "fn invoke(callback: fn()) { let callback = effect_callback; callback(); }",
+        ] {
+            let source = format!("{helper} fn pure_callback() {{}} fn effect_callback() {{ std::fs::read_to_string(\"x\").ok(); }} fn decide() {{ invoke(pure_callback); }}");
+            assert_eq!(report("rust", "src/lib.rs", &source, expectation("decide", "pure", &[])).result, AnalysisResult::Fail, "{helper}");
+        }
+    }
+
+    #[test]
+    fn rust_callback_import_uses_verified_crate_identity_and_reexport() {
+        let mut sources = BTreeMap::from([
+            ("src/lib.rs".into(), "use decisions::transition as decide_delivery; fn transition() {} fn invoke<F: FnOnce()>(callback: F) { callback(); } fn decide() { invoke(decide_delivery); }".into()),
+            ("dependencies/decisions/src/lib.rs".into(), "pub use crate::transition::transition;".into()),
+            ("dependencies/decisions/src/transition.rs".into(), "pub fn transition() { std::fs::read_to_string(\"x\").ok(); }".into()),
+            ("rms-metadata/rust-crate-alias/decisions".into(), "dependencies/decisions".into()),
+        ]);
+        let run = |sources: BTreeMap<String, String>| {
+            analyze(AnalysisInput {
+                binding: "rust".into(),
+                source_digest: "source".into(),
+                tool_digest: "tool".into(),
+                sources,
+                semantic_functions: vec![expectation("src/lib.rs#decide", "pure", &[])],
+                authority_facades: Vec::new(),
+                trusted_external_calls: BTreeSet::new(),
+            })
+        };
+        let effectful = run(sources.clone());
+        assert_eq!(effectful.result, AnalysisResult::Fail, "{effectful:#?}");
+        assert!(effectful.functions[0]
+            .transitive_authorities
+            .contains(&"filesystem".into()));
+        sources.insert(
+            "dependencies/decisions/src/transition.rs".into(),
+            "pub fn transition() {}".into(),
+        );
+        assert_eq!(run(sources.clone()).result, AnalysisResult::Pass);
+        sources.remove("rms-metadata/rust-crate-alias/decisions");
+        assert_eq!(run(sources).result, AnalysisResult::Fail);
+    }
+
+    #[test]
+    fn rust_declared_return_and_iterator_receiver_types_are_bounded() {
+        let definitions = "struct Root; struct Leaf; impl Root { fn items(&self) -> &[Leaf] { todo!() } fn leaf(&self) -> &Leaf { todo!() } } impl Leaf { fn evaluate(&self) {} fn mutate(&self) { std::fs::read_to_string(\"x\").ok(); } }";
+        for (body, expected) in [
+            ("root.leaf().evaluate();", AnalysisResult::Pass),
+            ("root.items().iter().map(|item| item.evaluate()).count();", AnalysisResult::Pass),
+            ("root.leaf().mutate();", AnalysisResult::Fail),
+            ("root.items().iter().map(|item| item.mutate()).count();", AnalysisResult::Fail),
+            ("root.items().iter().map(|item| { let item = unknown(); item.evaluate(); }).count();", AnalysisResult::Fail),
+            ("[()].iter().map(|root| root.evaluate()).count();", AnalysisResult::Fail),
+        ] {
+            let result = report("rust", "src/lib.rs", &format!("{definitions} fn decide(root: &Root) {{ {body} }}"), expectation("decide", "pure", &[]));
+            assert_eq!(result.result, expected, "{body}: {result:#?}");
+        }
     }
 
     #[test]

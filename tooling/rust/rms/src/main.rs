@@ -27489,6 +27489,64 @@ fn append_verified_dependency_sources(
         if !source_root.is_dir() {
             continue;
         }
+        // Record only native Cargo path dependencies that resolve to this exact
+        // verified provider checkout. Package-name similarity is not identity.
+        if binding == "rust" {
+            if let (Ok(consumer_cargo), Ok(provider_cargo)) = (
+                fs::read_to_string(base.join("Cargo.toml")),
+                fs::read_to_string(provider_base.join("Cargo.toml")),
+            ) {
+                if let (Ok(consumer_cargo), Ok(provider_cargo)) = (
+                    consumer_cargo.parse::<toml::Value>(),
+                    provider_cargo.parse::<toml::Value>(),
+                ) {
+                    let package = provider_cargo
+                        .get("package")
+                        .and_then(|v| v.get("name"))
+                        .and_then(toml::Value::as_str);
+                    let library = provider_cargo.get("lib");
+                    if library.and_then(|v| v.get("name")).is_none()
+                        && library
+                            .and_then(|v| v.get("path"))
+                            .and_then(toml::Value::as_str)
+                            .is_none_or(|p| p == "src/lib.rs")
+                    {
+                        if let Some(dependencies) = consumer_cargo
+                            .get("dependencies")
+                            .and_then(toml::Value::as_table)
+                        {
+                            for (alias, dependency) in dependencies {
+                                if package != Some(alias.as_str())
+                                    || dependency.get("package").is_some()
+                                {
+                                    continue;
+                                }
+                                let Some(path) =
+                                    dependency.get("path").and_then(toml::Value::as_str)
+                                else {
+                                    continue;
+                                };
+                                if base
+                                    .join(path)
+                                    .canonicalize()
+                                    .ok()
+                                    .zip(provider_base.canonicalize().ok())
+                                    .is_some_and(|(actual, expected)| actual == expected)
+                                {
+                                    sources.insert(
+                                        format!(
+                                            "rms-metadata/rust-crate-alias/{}",
+                                            alias.replace('-', "_")
+                                        ),
+                                        format!("dependencies/{provider_name}"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for entry in WalkDir::new(&source_root)
             .follow_links(false)
             .into_iter()
