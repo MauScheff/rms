@@ -21543,6 +21543,7 @@ fn trace_producer_serializes_transition_records(
 #[derive(Clone, Debug, Default)]
 struct RustTraceFunctionFacts {
     calls: Vec<Vec<String>>,
+    function_item_callbacks: Vec<Vec<String>>,
     record_fields: BTreeSet<String>,
     macro_tokens: Vec<String>,
     uses_json: bool,
@@ -21568,6 +21569,22 @@ impl<'ast> Visit<'ast> for RustTraceFunctionVisitor {
             self.facts.calls.push(segments);
         }
         visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        if matches!(node.method.to_string().as_str(), "map" | "filter_map") && node.args.len() == 1
+        {
+            if let Some(syn::Expr::Path(path)) = node.args.first() {
+                self.facts.function_item_callbacks.push(
+                    path.path
+                        .segments
+                        .iter()
+                        .map(|segment| segment.ident.to_string())
+                        .collect(),
+                );
+            }
+        }
+        visit::visit_expr_method_call(self, node);
     }
 
     fn visit_expr_field(&mut self, node: &'ast syn::ExprField) {
@@ -21636,6 +21653,7 @@ fn rust_trace_serialization_reachable(base: &Path, runner_path: &str, runner_sym
         uses_json |= facts.uses_json;
         writes_file |= facts.writes_file;
         let mut calls = facts.calls.clone();
+        let mut callbacks = facts.function_item_callbacks.clone();
         for name in &function_names {
             if facts
                 .macro_tokens
@@ -21643,6 +21661,13 @@ fn rust_trace_serialization_reachable(base: &Path, runner_path: &str, runner_sym
                 .any(|tokens| rust_compact_tokens_call(tokens, name))
             {
                 calls.push(vec![name.clone()]);
+            }
+            if facts
+                .macro_tokens
+                .iter()
+                .any(|tokens| rust_compact_tokens_function_item_callback(tokens, name))
+            {
+                callbacks.push(vec![name.clone()]);
             }
         }
         for call in calls {
@@ -21652,6 +21677,12 @@ fn rust_trace_serialization_reachable(base: &Path, runner_path: &str, runner_sym
                 &functions,
                 &paths_by_name,
             ));
+        }
+        for callback in &callbacks {
+            let resolved = resolve_rust_trace_call(&key.0, callback, &functions, &paths_by_name);
+            if resolved.len() == 1 {
+                pending.extend(resolved);
+            }
         }
     }
 
@@ -21696,6 +21727,17 @@ fn rust_compact_tokens_call(tokens: &str, symbol: &str) -> bool {
         let after = tokens[start + symbol.len()..].chars().next();
         before.is_none_or(|character| !character.is_ascii_alphanumeric() && character != '_')
             && after == Some('(')
+    })
+}
+
+fn rust_compact_tokens_function_item_callback(tokens: &str, symbol: &str) -> bool {
+    [".map(", ".filter_map("].iter().any(|prefix| {
+        tokens
+            .match_indices(&format!("{prefix}{symbol}"))
+            .any(|(start, matched)| {
+                let after = tokens[start + matched.len()..].chars().next();
+                matches!(after, Some(')') | Some(','))
+            })
     })
 }
 
@@ -98032,6 +98074,73 @@ fn produce_transition_trace() {
         .unwrap();
 
         assert!(rust_trace_serialization_reachable(
+            &root,
+            "tests/trace_producer.rs",
+            "produce_transition_trace"
+        ));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rust_trace_producer_resolves_function_item_map_serializer() {
+        let root = unique_test_dir("trace-producer-map-serializer");
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(
+            root.join("tests/trace_producer.rs"),
+            r#"fn record_json(record: &Record) -> serde_json::Value {
+    serde_json::json!({
+        "state_before": record.state_before,
+        "state_after": record.state_after,
+        "output": record.output,
+        "source": record.source,
+    })
+}
+
+fn produce_transition_trace() {
+    let records = vec![transition_record(Input::Accept)];
+    let document = serde_json::json!({"records": records.iter().map(record_json).collect::<Vec<_>>()});
+    std::fs::write("trace.json", serde_json::to_vec(&document).unwrap()).unwrap();
+}
+"#,
+        )
+        .unwrap();
+
+        assert!(rust_trace_serialization_reachable(
+            &root,
+            "tests/trace_producer.rs",
+            "produce_transition_trace"
+        ));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rust_trace_producer_rejects_ambiguous_function_item_map_serializer() {
+        let root = unique_test_dir("trace-producer-ambiguous-map-serializer");
+        fs::create_dir_all(root.join("tests/one")).unwrap();
+        fs::create_dir_all(root.join("tests/two")).unwrap();
+        fs::write(
+            root.join("tests/trace_producer.rs"),
+            r#"fn produce_transition_trace() {
+    let records = vec![transition_record(Input::Accept)];
+    let document = serde_json::json!({"records": records.iter().map(record_json).collect::<Vec<_>>()});
+    std::fs::write("trace.json", serde_json::to_vec(&document).unwrap()).unwrap();
+}
+"#,
+        )
+        .unwrap();
+        let serializer = r#"fn record_json(record: &Record) -> serde_json::Value {
+    serde_json::json!({
+        "state_before": record.state_before,
+        "state_after": record.state_after,
+        "output": record.output,
+        "source": record.source,
+    })
+}
+"#;
+        fs::write(root.join("tests/one/serializer.rs"), serializer).unwrap();
+        fs::write(root.join("tests/two/serializer.rs"), serializer).unwrap();
+
+        assert!(!rust_trace_serialization_reachable(
             &root,
             "tests/trace_producer.rs",
             "produce_transition_trace"
