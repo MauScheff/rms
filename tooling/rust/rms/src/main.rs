@@ -36885,18 +36885,20 @@ fn strip_swift_modifiers(mut line: &str) -> &str {
         let Some((token, rest)) = trimmed.split_once(char::is_whitespace) else {
             return trimmed;
         };
-        if matches!(
-            token,
-            "public"
-                | "open"
-                | "internal"
-                | "private"
-                | "fileprivate"
-                | "final"
-                | "static"
-                | "mutating"
-                | "nonmutating"
-        ) {
+        if token.starts_with('@')
+            || matches!(
+                token,
+                "public"
+                    | "open"
+                    | "internal"
+                    | "private"
+                    | "fileprivate"
+                    | "final"
+                    | "static"
+                    | "mutating"
+                    | "nonmutating"
+            )
+        {
             line = rest;
         } else {
             return trimmed;
@@ -97302,6 +97304,48 @@ semantic_functions: []
 
         fs::remove_dir_all(&root).unwrap();
         assert!(calls_operation);
+    }
+
+    #[test]
+    fn swift_testing_attribute_does_not_hide_runner_calls() {
+        let root = unique_test_dir("swift-testing-attributed-property-calls");
+        fs::create_dir_all(root.join("Sources")).unwrap();
+        fs::create_dir_all(root.join("Tests")).unwrap();
+        fs::write(
+            root.join("Sources/Traversal.swift"),
+            "public func generateCases() -> [Int] { [1] }\npublic enum Traversal { public static func resolve(_ value: Int) -> Int { value } }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Tests/TraversalTests.swift"),
+            "@Test func traversalProperty() { let cases = generateCases(); #expect(Traversal.resolve(cases[0]) == 1) }\n",
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: root.join("implementation.yaml"),
+            value: serde_yaml::from_str(
+                "spec: rms/implementation/v0.1\nmodule: swift-property\nbinding: swift\nsemantic_functions: []\n",
+            )
+            .unwrap(),
+        };
+        let runner = "Tests/TraversalTests.swift#traversalProperty";
+        let index = SwiftFunctionIndex::from_swift_sources_under(&root);
+
+        assert!(binding_function_references_symbol_with_swift_index(
+            &root,
+            &manifest,
+            runner,
+            "generateCases",
+            Some(&index),
+        ));
+        assert!(binding_function_references_symbol_with_swift_index(
+            &root,
+            &manifest,
+            runner,
+            "Traversal.resolve",
+            Some(&index),
+        ));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
