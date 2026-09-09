@@ -38713,31 +38713,6 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
                 .or_default()
                 .extend(properties.clone());
         }
-        let contract_directory = base.join("contracts");
-        if contract_directory.is_dir() {
-            for entry in WalkDir::new(&contract_directory)
-                .max_depth(1)
-                .into_iter()
-                .filter_map(Result::ok)
-                .filter(|entry| entry.file_type().is_file())
-                .filter(|entry| {
-                    matches!(
-                        entry
-                            .path()
-                            .extension()
-                            .and_then(|extension| extension.to_str()),
-                        Some("yaml" | "yml")
-                    )
-                })
-            {
-                let path = entry.path().to_path_buf();
-                let identity = fs::canonicalize(&path).unwrap_or(path);
-                owners
-                    .entry(identity)
-                    .or_default()
-                    .extend(properties.clone());
-            }
-        }
     }
 
     extend_exact_composite_export_contract_owners(
@@ -38755,6 +38730,7 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
         &executable_properties_by_module,
         &mut owners,
     );
+    extend_api_operation_contract_owners(&mut owners);
 
     let mut findings = Vec::new();
     for entry in WalkDir::new(root)
@@ -38774,13 +38750,29 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
         let Ok(manifest) = load_manifest(path) else {
             continue;
         };
-        match get_str(&manifest.value, &["spec"]) {
+        let spec = get_str(&manifest.value, &["spec"]);
+        if matches!(
+            spec,
+            Some(
+                behavioral_contract::LEGACY_CONTRACT_SPEC
+                    | behavioral_contract::CONTRACT_SPEC
+                    | behavioral_contract::CONTRACT_SPEC_V2
+            )
+        ) {
+            let identity = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            if !owners.contains_key(&identity) {
+                continue;
+            }
+        }
+        match spec {
             Some(behavioral_contract::LEGACY_CONTRACT_SPEC) => findings.push((
                 path.to_path_buf(),
                 "contract.migration-required".to_string(),
                 "legacy contract must be migrated to rms/contract/v0.2".to_string(),
             )),
             Some(behavioral_contract::CONTRACT_SPEC | behavioral_contract::CONTRACT_SPEC_V2) => {
+                let identity = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                let available = owners.get(&identity).expect("active contract owner exists");
                 let value = serde_json::to_value(&manifest.value)?;
                 findings.extend(
                     behavioral_contract::validate(&value, true)
@@ -38790,9 +38782,7 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
                 );
                 let required = behavioral_contract::external_property_ids(&value);
                 if !required.is_empty() {
-                    let identity = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-                    let available = owners.get(&identity).cloned().unwrap_or_default();
-                    for property in required.difference(&available) {
+                    for property in required.difference(available) {
                         findings.push((
                             path.to_path_buf(),
                             "contract.external-property-unresolved".to_string(),
@@ -38847,6 +38837,43 @@ fn strict_behavioral_contract_findings(root: &Path) -> Result<Vec<(PathBuf, Stri
         }
     }
     Ok(findings)
+}
+
+fn extend_api_operation_contract_owners(owners: &mut BTreeMap<PathBuf, BTreeSet<String>>) {
+    let mut pending = owners.keys().cloned().collect::<VecDeque<_>>();
+    let mut visited = BTreeSet::new();
+    while let Some(path) = pending.pop_front() {
+        if !visited.insert(path.clone()) {
+            continue;
+        }
+        let Some(properties) = owners.get(&path).cloned() else {
+            continue;
+        };
+        let Ok(contract) = load_manifest(&path) else {
+            continue;
+        };
+        if get_str(&contract.value, &["kind"]) != Some("api") {
+            continue;
+        }
+        for reference in get_path(&contract.value, &["semantics", "api", "operations"])
+            .and_then(YamlValue::as_sequence)
+            .into_iter()
+            .flatten()
+            .filter_map(|operation| get_str(operation, &["contract"]))
+        {
+            let child = path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(reference);
+            let identity = fs::canonicalize(&child).unwrap_or(child);
+            let available = owners.entry(identity.clone()).or_default();
+            let before = available.len();
+            available.extend(properties.iter().cloned());
+            if available.len() != before || !visited.contains(&identity) {
+                pending.push_back(identity);
+            }
+        }
+    }
 }
 
 fn restrict_behavioral_contract_findings_to_module_closure(
@@ -121070,6 +121097,83 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
         fs::remove_dir_all(&root).unwrap();
         assert!(findings.iter().any(|(path, check, _)| {
             path.ends_with("parent/contracts/deploy.v1.yaml")
+                && check == "contract.external-property-unresolved"
+        }));
+    }
+
+    #[test]
+    fn strict_contract_resolution_ignores_unselected_historical_versions() {
+        let root = unique_test_dir("strict-contract-active-version-only");
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
+module: { name: connection, version: 0.1.0, kind: library, purpose: Resolve connections. }
+profiles: [core]
+owns: { concepts: [], data: [], decisions: [resolution] }
+provides:
+  commands: []
+  queries: []
+  events: []
+  capabilities: [{ name: resolve-connection, contract: contracts/resolve-connection.v2.yaml }]
+requires: { modules: [], capabilities: [] }
+invariants: []
+properties:
+  - id: current-resolution-property
+    proves: resolve-connection
+    kind: property
+    input_space: { cases: [request] }
+    operation: resolve connection
+    oracle: [the current contract is satisfied]
+    evidence: { path: verification/properties/current.md }
+    realizations: [{ profile: smoke, strategy: deterministic-corpus, command: verify }]
+effects: []
+compatibility: { policy: backward-compatible-within-major }
+verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
+"#,
+        )
+        .unwrap();
+        let contract = |version: &str, property: &str| {
+            format!(
+                r#"spec: rms/contract/v0.2
+name: resolve-connection
+version: {version}
+kind: capability
+meaning: Resolve a connection.
+semantics:
+  behavior:
+    observations: []
+    requires:
+      - id: resolution-is-valid
+        statement: The resolution is valid.
+        evaluation: {{ kind: external, property: {property} }}
+    guarantees: []
+    failures: []
+    cases: []
+    invariants: []
+    case_policy: {{ coverage: exhaustive, overlap: forbidden }}
+compatibility: {{ policy: backward-compatible-within-major }}
+"#
+            )
+        };
+        fs::write(
+            root.join("contracts/resolve-connection.v1.yaml"),
+            contract("1.0.0", "retired-resolution-property"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("contracts/resolve-connection.v2.yaml"),
+            contract("2.0.0", "current-resolution-property"),
+        )
+        .unwrap();
+
+        let findings = strict_behavioral_contract_findings(&root).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(!findings
+            .iter()
+            .any(|(path, _, _)| path.ends_with("contracts/resolve-connection.v1.yaml")));
+        assert!(!findings.iter().any(|(path, check, _)| {
+            path.ends_with("contracts/resolve-connection.v2.yaml")
                 && check == "contract.external-property-unresolved"
         }));
     }

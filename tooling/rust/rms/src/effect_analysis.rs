@@ -439,6 +439,9 @@ fn collect_closure(
     let node = &nodes[index];
     authorities.extend(authorities_for_node(index, nodes, facades));
     for call in &node.calls {
+        if node.binding == "rust" && call.contains("().") && known_pure_call(call) {
+            continue;
+        }
         let candidates = resolve_local_call(index, call, nodes);
         if node.binding == "rust"
             && (candidates.len() == 1 || (call.contains('.') && !candidates.is_empty()))
@@ -704,7 +707,6 @@ fn authority_for_call(binding: &str, call: &str) -> Option<String> {
     {
         "filesystem"
     } else if [
-        "command::",
         "std::process",
         "subprocess",
         "os.system",
@@ -1121,6 +1123,7 @@ fn known_pure_call(call: &str) -> bool {
             | "with_extension"
             | "cast"
             | "wrapping_add"
+            | "wrapping_mul"
             | "zip"
     ) || call.starts_with("serde_json::to_")
         || call.starts_with("serde_json::from_")
@@ -2530,6 +2533,57 @@ mod tests {
             effectful_comparator.functions[0].transitive_authorities,
             vec!["filesystem"]
         );
+    }
+
+    #[test]
+    fn rust_iterator_chain_does_not_reach_an_unrelated_same_leaf_method() {
+        let result = analyze(AnalysisInput {
+            binding: "rust".to_string(),
+            source_digest: "source".to_string(),
+            tool_digest: "tool".to_string(),
+            sources: BTreeMap::from([
+                (
+                    "src/transition.rs".to_string(),
+                    "fn decide(values: &[u64]) -> Option<u64> { values.iter().copied().next() }"
+                        .to_string(),
+                ),
+                (
+                    "src/property_support.rs".to_string(),
+                    "struct SplitMix64(u64); impl SplitMix64 { fn next(&mut self) -> u64 { self.0.wrapping_mul(3) } }"
+                        .to_string(),
+                ),
+            ]),
+            semantic_functions: vec![expectation("src/transition.rs#decide", "pure", &[])],
+            authority_facades: Vec::new(),
+            trusted_external_calls: BTreeSet::new(),
+        });
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(!result.functions[0]
+            .resolved_callees
+            .contains(&"SplitMix64::next".to_string()));
+    }
+
+    #[test]
+    fn rust_primitive_wrapping_multiplication_is_pure() {
+        let result = report(
+            "rust",
+            "src/property_support.rs",
+            "fn advance(value: u64) -> u64 { value.wrapping_mul(3) }",
+            expectation("advance", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+    }
+
+    #[test]
+    fn rust_domain_command_associated_calls_are_not_process_authority() {
+        let result = report(
+            "rust",
+            "src/transition.rs",
+            "enum TalkTurnCommand { Request } impl TalkTurnCommand { fn kind(&self) {} } fn decide(command: &TalkTurnCommand) { command.kind(); }",
+            expectation("decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].transitive_authorities.is_empty());
     }
 
     #[test]
