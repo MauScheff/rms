@@ -2620,6 +2620,8 @@ struct SemanticChange {
     #[serde(default)]
     roles: Option<MachineRolesChange>,
     #[serde(default)]
+    representation: Option<SemanticRepresentationChange>,
+    #[serde(default)]
     allowed_missing_constructors: Option<MachineVariantListChange>,
     #[serde(default)]
     evidence: Option<SemanticEvidenceChange>,
@@ -3942,6 +3944,13 @@ struct MachineVariantListChange {
     add: Vec<String>,
     #[serde(default)]
     remove: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticRepresentationChange {
+    #[serde(default)]
+    validated_values: MachineVariantListChange,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -58666,6 +58675,10 @@ fn validate_prepared_spec_plan_change(
                 .roles
                 .as_ref()
                 .is_some_and(|roles| machine_roles_change_has_operations(Some(roles)))
+            || change
+                .representation
+                .as_ref()
+                .is_some_and(semantic_representation_change_has_operations)
             || change.probe.is_some()
             || change
                 .trace_producers
@@ -59274,7 +59287,7 @@ fn render_spec_plan_repair_prompt(
                     && prompt.contains("This target has no implementation binding")
         })
         .then_some(
-            "\n\nMissing implementation owner repair rule: the bounded target has no `implementation.yaml`. The `rms/semantic-change/v0.1` object has no top-level `implementation` field, and a path string cannot create or select an implementation owner. Keep `trace_producers`, `probe`, `semantic_functions`, `implementation_commands`, `machine`, `roles`, `allowed_missing_constructors`, `surfaces`, `binding_dependencies`, `protocol_bindings`, `authority_bindings`, `public_behavior_bindings`, and `dependency_behavior_bindings` null. Preserve the contract, law, property, and evidence changes that the module can own. A later authorized `rms add-binding` creates the implementation manifest before any implementation-owned binding is declared.",
+            "\n\nMissing implementation owner repair rule: the bounded target has no `implementation.yaml`. The `rms/semantic-change/v0.1` object has no top-level `implementation` field, and a path string cannot create or select an implementation owner. Keep `trace_producers`, `probe`, `semantic_functions`, `implementation_commands`, `machine`, `roles`, `representation`, `allowed_missing_constructors`, `surfaces`, `binding_dependencies`, `protocol_bindings`, `authority_bindings`, `public_behavior_bindings`, and `dependency_behavior_bindings` null. Preserve the contract, law, property, and evidence changes that the module can own. A later authorized `rms add-binding` creates the implementation manifest before any implementation-owned binding is declared.",
         )
         .unwrap_or_default();
     let probe_trace_projection_repair = diagnostics
@@ -60128,6 +60141,11 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "  set: []")?;
         writeln!(out, "  add: []")?;
         writeln!(out, "  remove: []")?;
+        writeln!(out, "representation:")?;
+        writeln!(out, "  validated_values:")?;
+        writeln!(out, "    set: null")?;
+        writeln!(out, "    add: []")?;
+        writeln!(out, "    remove: []")?;
         writeln!(out, "allowed_missing_constructors:")?;
         writeln!(out, "  set: null")?;
         writeln!(out, "  add: []")?;
@@ -60151,6 +60169,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         writeln!(out, "dependency_behavior_bindings: null")?;
         writeln!(out, "machine: null")?;
         writeln!(out, "roles: null")?;
+        writeln!(out, "representation: null")?;
         writeln!(out, "allowed_missing_constructors: null")?;
         writeln!(out, "surfaces: null")?;
         writeln!(out, "binding_dependencies: null")?;
@@ -60364,6 +60383,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "```")?;
     writeln!(out, "Closed trace metrics are `elapsed` with `value: {{quantity: time}}`, `transition-count` with `value: {{quantity: transition}}`, `attempt-count` with `value: {{quantity: attempt}}`, and `message-count` with `value: {{quantity: message}}`. Quantity dimensions are scalar strings under `value.quantity`; units belong on predicate comparison values and temporal bounds, not in the observation type.")?;
     writeln!(out, "`properties.remove[]` contains existing property ids. Binding-native realizations name a `path#symbol` runner and an exact generator. Protocol observations reference a public protocol automaton. `semantic_functions.add[]` and `semantic_functions.set[]` use the rendered function shape; `semantic_functions.remove[]` contains existing function ids. `public_behavior_bindings.add[]` and `.set[]` use the exact rendered binding shape. Their optional `observation_source` is exactly `{{kind: transition-record|invocation-record, command: existing-command-key}}`; it never contains `name` or `value`, and its `kind` is never `semantic-function`.")?;
+    writeln!(out, "`representation.validated_values` uses set/remove/add semantics for exact implementation type names. Use `remove` to delete stale validated-constructor metadata. Pair that removal with `semantic_functions.remove` when its constructor function is also obsolete. Omitted representation fields and every unrelated representation declaration are preserved.")?;
     writeln!(out, "`hunt_exceptions.set` replaces the complete list, `add` replaces an existing item with the same obligation, and `remove` contains obligation names. Obligations are exactly `generated-input`, `boundary-fuzz`, `finite-state-exploration`, `schedule-fault-exploration`, `unsafe-code-analysis`, `oracle-mutation`, and `temporal-violation-search`; every exception needs a focused reason and is valid only when that lane is genuinely inapplicable.")?;
     writeln!(out, "For a composite parent that repeats a contained child's exported promise, use `proof_delegations.add` with `proves`, `provider_module`, `provider_law`, `provider_property`, `through_export`, and concrete parent `evidence`. The parent law, contained provider law, executable provider property, and named public export must all exist. Delegation resolves only the same external property named by both the parent and provider exported contracts; it never relaxes contract compatibility or exact-export checks. `set: null` preserves existing delegations; `remove` contains parent law ids.")?;
     writeln!(out, "Every changed law and every added or changed contract requires its own `evidence.add[]` item whose `proves` exactly matches that law id or contract/command name. Evidence paths are unique relative paths inside the module. A new path creates only a declared evidence obligation and reports `semantic.evidence-obligation-only`; it is not observed proof. Bind behavioral promises to executable property runners and replace the obligation with the exact command, observed result, and source revision before strict completion. Never present generated scaffold text as completed evidence. `evidence.remove[]` uses exact scalar `kind`, exact relative `path`, and `delete_file: true|false`; deletion is allowed only after the final declaration no longer references that path.")?;
@@ -60480,7 +60500,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     )?;
     writeln!(out, "```")?;
     if context.implementation.is_none() {
-        writeln!(out, "This target has no implementation binding. The semantic-change object has no top-level `implementation` field. Keep `semantic_functions`, `implementation_commands`, `machine`, `roles`, `allowed_missing_constructors`, `surfaces`, `binding_dependencies`, `protocol_bindings`, `authority_bindings`, `public_behavior_bindings`, and `dependency_behavior_bindings` null for contract/law/property/evidence-only work. Before requesting implementation bindings, machine roles, or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|python|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
+        writeln!(out, "This target has no implementation binding. The semantic-change object has no top-level `implementation` field. Keep `semantic_functions`, `implementation_commands`, `machine`, `roles`, `representation`, `allowed_missing_constructors`, `surfaces`, `binding_dependencies`, `protocol_bindings`, `authority_bindings`, `public_behavior_bindings`, and `dependency_behavior_bindings` null for contract/law/property/evidence-only work. Before requesting implementation bindings, machine roles, or runnable surfaces, run `rms add-binding {} --binding <rust|swift|js|python|executable>`, then rerun this plan against the module or generated implementation.yaml.", shell_arg(&context.target.display().to_string()))?;
     }
     writeln!(out)?;
     writeln!(out, "Surface add entries use `name`, `kind: runnable-boundary`, `surface`, `entrypoint`, `delegates_to.role` or `delegates_to.symbol`, `delegates_to.command`, `effects` or `no_effects_justification`, `usage_document`, `smoke_command`, and `evidence`. `smoke_command` names a key under implementation `commands`, and `rms verify` executes it. A delegated role must exist in `architecture.roles`; effect-emitting surfaces use an exact callable symbol that reaches the declared machine driver.")?;
@@ -62467,6 +62487,10 @@ fn validate_semantic_change(
         .allowed_missing_constructors
         .as_ref()
         .is_some_and(machine_variant_list_change_has_operations);
+    let has_representation = change
+        .representation
+        .as_ref()
+        .is_some_and(semantic_representation_change_has_operations);
     let has_surfaces = change
         .surfaces
         .as_ref()
@@ -62516,6 +62540,7 @@ fn validate_semantic_change(
         && !has_semantic_functions
         && !has_implementation_commands
         && !has_machine
+        && !has_representation
         && !has_allowed_missing_constructors
         && !has_evidence
         && !has_surfaces
@@ -62531,7 +62556,7 @@ fn validate_semantic_change(
         diagnostics.push(error(
             "semantic-change.empty",
             &context.target,
-            "semantic change must revise the module declaration, laws, contracts, properties, proof delegations, hunt exceptions, trace producers, semantic functions, existing implementation commands, machine structure, implementation constructor policy, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, behavior bindings, or evidence obligations",
+            "semantic change must revise the module declaration, laws, contracts, properties, proof delegations, hunt exceptions, trace producers, semantic functions, existing implementation commands, machine structure, validated-value representation, implementation constructor policy, runnable surfaces, binding dependencies, artifacts, transformations, authorities, protocol bindings, authority bindings, behavior bindings, or evidence obligations",
         ));
     }
 
@@ -62556,6 +62581,7 @@ fn validate_semantic_change(
         ));
     }
     validate_semantic_functions(context, change, &mut diagnostics);
+    validate_semantic_representation(context, change, &mut diagnostics);
     validate_implementation_commands(context, change, &mut diagnostics);
     validate_semantic_evidence(context, change, evidence_items, &mut diagnostics);
     validate_allowed_missing_constructors(context, change, &mut diagnostics);
@@ -63130,6 +63156,48 @@ fn validate_allowed_missing_constructors(
                 "semantic.constructor-policy-name",
                 &context.target,
                 format!("constructor-policy type `{name}` is not a stable identifier"),
+            ));
+        }
+    }
+}
+
+fn semantic_representation_change_has_operations(change: &SemanticRepresentationChange) -> bool {
+    machine_variant_list_change_has_operations(&change.validated_values)
+}
+
+fn validate_semantic_representation(
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(representation) = change
+        .representation
+        .as_ref()
+        .filter(|change| semantic_representation_change_has_operations(change))
+    else {
+        return;
+    };
+    if context.implementation.is_none() {
+        diagnostics.push(error(
+            "semantic.representation-without-implementation",
+            &context.target,
+            "representation changes require an implementation binding",
+        ));
+        return;
+    }
+    for name in representation
+        .validated_values
+        .replace
+        .iter()
+        .flatten()
+        .chain(&representation.validated_values.add)
+        .chain(&representation.validated_values.remove)
+    {
+        if !is_stable_identifier(name) {
+            diagnostics.push(error(
+                "semantic.representation-validated-value-name",
+                &context.target,
+                format!("validated-value type `{name}` is not a stable identifier"),
             ));
         }
     }
@@ -67760,6 +67828,10 @@ fn semantic_change_modifies_implementation_declarations(
 ) -> bool {
     machine_change.is_some()
         || change
+            .representation
+            .as_ref()
+            .is_some_and(semantic_representation_change_has_operations)
+        || change
             .allowed_missing_constructors
             .as_ref()
             .is_some_and(machine_variant_list_change_has_operations)
@@ -67822,6 +67894,13 @@ fn spec_apply_candidate_context(
         }
         if let Some(machine_change) = machine_change {
             apply_machine_change_to_manifest(&mut implementation.value, machine_change);
+        }
+        if let Some(representation) = change
+            .representation
+            .as_ref()
+            .filter(|change| semantic_representation_change_has_operations(change))
+        {
+            apply_semantic_representation_changes(&mut implementation.value, representation);
         }
         if let Some(policy) = change
             .allowed_missing_constructors
@@ -67953,6 +68032,30 @@ fn apply_allowed_missing_constructor_changes(
     set_yaml_string_sequence_path(
         value,
         &["architecture", "allowed_missing_constructors"],
+        &names,
+    );
+}
+
+fn apply_semantic_representation_changes(
+    value: &mut YamlValue,
+    representation: &SemanticRepresentationChange,
+) {
+    let policy = &representation.validated_values;
+    let mut names = policy.replace.clone().unwrap_or_else(|| {
+        get_string_array(
+            value,
+            &["architecture", "representation", "validated_values"],
+        )
+    });
+    names.retain(|name| !policy.remove.contains(name));
+    for name in &policy.add {
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    set_yaml_string_sequence_path(
+        value,
+        &["architecture", "representation", "validated_values"],
         &names,
     );
 }
@@ -68275,6 +68378,15 @@ fn planned_spec_apply_writes(
             || !properties.replace.is_empty()
             || !properties.remove.is_empty()
     }) {
+        if let Some(implementation) = &context.implementation {
+            writes.push(implementation.path.display().to_string());
+        }
+    }
+    if change
+        .representation
+        .as_ref()
+        .is_some_and(semantic_representation_change_has_operations)
+    {
         if let Some(implementation) = &context.implementation {
             writes.push(implementation.path.display().to_string());
         }
@@ -88529,6 +88641,75 @@ evidence:
             ),
             vec!["RetainedResult", "MachineProducedResult"]
         );
+    }
+
+    #[test]
+    fn semantic_representation_removes_only_stale_validated_value_atomically() {
+        let root = route_capability_fixture("remove-stale-validated-value");
+        let target = root.join("modules/play-game-domain/module.yaml");
+        let implementation_path = root.join("modules/play-game-domain/implementation.yaml");
+        let mut implementation = load_manifest(&implementation_path).unwrap();
+        set_yaml_string_sequence_path(
+            &mut implementation.value,
+            &["architecture", "representation", "closed_variants"],
+            &["RetainedVariant".to_string()],
+        );
+        set_yaml_string_sequence_path(
+            &mut implementation.value,
+            &["architecture", "representation", "validated_values"],
+            &["RetainedValue".to_string(), "StaleValue".to_string()],
+        );
+        set_yaml_string_sequence_path(
+            &mut implementation.value,
+            &["architecture", "representation", "transition_functions"],
+            &["transition".to_string()],
+        );
+        write_yaml_manifest(&implementation).unwrap();
+
+        let context = load_spec_target(&target).unwrap();
+        let change: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+intent: {summary: Remove stale constructor metadata and preserve every unrelated declaration.}
+representation:
+  validated_values:
+    set: null
+    add: []
+    remove: [StaleValue]
+semantic_functions:
+  add: []
+  set: []
+  remove: [representation-constructors]
+"#,
+        )
+        .unwrap();
+        let candidate = spec_apply_candidate_context(&context, &change, None).unwrap();
+        let value = &candidate.implementation.unwrap().value;
+
+        assert_eq!(
+            get_string_array(
+                value,
+                &["architecture", "representation", "validated_values"]
+            ),
+            vec!["RetainedValue"]
+        );
+        assert_eq!(
+            get_string_array(
+                value,
+                &["architecture", "representation", "closed_variants"]
+            ),
+            vec!["RetainedVariant"]
+        );
+        assert_eq!(
+            get_string_array(
+                value,
+                &["architecture", "representation", "transition_functions"]
+            ),
+            vec!["transition"]
+        );
+        assert!(existing_semantic_function_declarations_from_value(value)
+            .iter()
+            .all(|function| get_str(function, &["id"]) != Some("representation-constructors")));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
