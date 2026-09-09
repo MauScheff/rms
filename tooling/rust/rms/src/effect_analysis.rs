@@ -1144,7 +1144,13 @@ fn swift_standard_value_method(call: &str, standard_value_names: &BTreeSet<Strin
     let method = symbol_name(call);
     if !matches!(
         method,
-        "firstIndex" | "flatMap" | "formUnion" | "joined" | "removeAll" | "removeValue"
+        "dropFirst"
+            | "firstIndex"
+            | "flatMap"
+            | "formUnion"
+            | "joined"
+            | "removeAll"
+            | "removeValue"
     ) {
         return false;
     }
@@ -1817,6 +1823,7 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
         };
         let mut declarations = Vec::new();
         collect_nodes_of_kind(tree.root_node(), "property_declaration", &mut declarations);
+        collect_nodes_of_kind(tree.root_node(), "parameter", &mut declarations);
         for declaration in declarations {
             if nearest_function_ancestor(declaration).is_some() || !has_explicit_type(declaration) {
                 continue;
@@ -1837,6 +1844,12 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
             let prior_value = value_classifications.get(&name).copied().unwrap_or(true);
             value_classifications.insert(name, prior_value && is_value);
         }
+        for name in swift_labeled_array_value_names(source) {
+            subscript_classifications
+                .entry(name.clone())
+                .or_insert(true);
+            value_classifications.entry(name).or_insert(true);
+        }
     }
     SwiftStandardNames {
         subscript: subscript_classifications
@@ -1848,6 +1861,20 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
             .filter_map(|(name, standard)| standard.then_some(name))
             .collect(),
     }
+}
+
+fn swift_labeled_array_value_names(source: &str) -> BTreeSet<String> {
+    source
+        .split(['\n', '(', ')', ','])
+        .filter_map(|fragment| {
+            let (label, value_type) = fragment.split_once(':')?;
+            let name = label.split_whitespace().last()?.trim();
+            let value_type = value_type.trim_start();
+            (is_simple_identifier(name)
+                && (value_type.starts_with('[') || value_type.starts_with("Array<")))
+            .then(|| name.to_string())
+        })
+        .collect()
 }
 
 fn tree_sitter_import_aliases(
@@ -2070,6 +2097,11 @@ fn collect_call_nodes(
             // Swift's grammar represents subscripting as a call expression. A
             // subscript on a statically visible standard collection is a value
             // operation, not an unresolved function or dynamic authority.
+        } else if binding == "swift"
+            && swift_call_is_standard_zip_order_check(node, source, swift_collection_names)
+        {
+            // This exact standard-library ordering predicate has no open
+            // callback. Other higher-order calls remain fail-closed.
         } else if let Some(call) = call {
             calls.insert(call);
         } else {
@@ -2080,6 +2112,33 @@ fn collect_call_nodes(
     for child in node.children(&mut cursor) {
         collect_call_nodes(binding, child, source, swift_collection_names, calls, false);
     }
+}
+
+fn swift_call_is_standard_zip_order_check(
+    node: Node<'_>,
+    source: &str,
+    standard_collection_names: &BTreeSet<String>,
+) -> bool {
+    let Ok(text) = node.utf8_text(source.as_bytes()) else {
+        return false;
+    };
+    let compact = text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    let Some(zip_arguments) = compact
+        .strip_prefix("zip(")
+        .and_then(|text| text.strip_suffix(").allSatisfy(<)"))
+    else {
+        return false;
+    };
+    let Some((first, second)) = zip_arguments.split_once(',') else {
+        return false;
+    };
+    let Some(second_base) = second.strip_suffix(".dropFirst()") else {
+        return false;
+    };
+    first == second_base && standard_collection_names.contains(first)
 }
 
 fn collect_shell_call_nodes(
@@ -3166,6 +3225,64 @@ mod tests {
         );
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         assert!(result.functions[0].transitive_authorities.is_empty());
+    }
+
+    #[test]
+    fn swift_standard_zip_operator_order_check_is_pure() {
+        let source = r#"
+            func strictlyIncreasing(_ values: [UInt64]) -> Bool {
+                zip(values, values.dropFirst()).allSatisfy(<)
+            }
+        "#;
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            source,
+            expectation("Sources/App.swift#strictlyIncreasing", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].transitive_authorities.is_empty());
+        assert!(result.functions[0].unresolved_calls.is_empty());
+    }
+
+    #[test]
+    fn swift_enum_array_binding_zip_operator_order_check_is_pure() {
+        let source = r#"
+            enum Input { case replace(retainedFrameIndices: [UInt64]) }
+            func decide(_ input: Input) -> Bool {
+                switch input {
+                case .replace(let retainedFrameIndices):
+                    return zip(retainedFrameIndices, retainedFrameIndices.dropFirst()).allSatisfy(<)
+                }
+            }
+        "#;
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            source,
+            expectation("Sources/App.swift#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+    }
+
+    #[test]
+    fn swift_standard_all_satisfy_with_open_callback_fails_closed() {
+        let source = r#"
+            func decide(_ values: [UInt64], predicate: (UInt64) -> Bool) -> Bool {
+                values.allSatisfy(predicate)
+            }
+        "#;
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            source,
+            expectation("Sources/App.swift#decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+        assert_eq!(
+            result.functions[0].transitive_authorities,
+            vec!["dynamic-dispatch"]
+        );
     }
 
     #[test]
