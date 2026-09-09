@@ -2271,7 +2271,11 @@ fn collect_call_nodes(
         let call = callee
             .and_then(|callee| callee.utf8_text(source.as_bytes()).ok())
             .map(normalize_call);
-        if binding == "swift" && swift_call_is_immediate_closure(callee, source) {
+        if binding == "swift" && call.as_deref() == Some("defer") {
+            // Tree-sitter represents Swift's `defer` control-flow statement as
+            // a call. The statement body is still traversed below, so only the
+            // keyword itself is excluded from the call graph.
+        } else if binding == "swift" && swift_call_is_immediate_closure(callee, source) {
             // The closure body is traversed below. Its calls and authorities
             // remain visible, so invoking this statically present closure does
             // not require dynamic-dispatch authority.
@@ -3799,5 +3803,26 @@ mod tests {
             expectation("Sources/Facade.swift#Facade.send(_:Missing)", "pure", &[]),
         );
         assert_eq!(missing.result, AnalysisResult::Fail, "{missing:#?}");
+    }
+    #[test]
+    fn swift_defer_keyword_is_not_a_call_but_its_body_is_traversed() {
+        let result = report(
+            "swift",
+            "Sources/Facade.swift",
+            r#"
+                func releaseAuthority() { FileManager.default.remove_file("token") }
+                func perform() {
+                    defer { releaseAuthority() }
+                }
+            "#,
+            expectation("Sources/Facade.swift#perform", "effectful", &["filesystem"]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(!result.functions[0]
+            .unresolved_calls
+            .contains(&"defer".to_string()));
+        assert!(result.functions[0]
+            .resolved_callees
+            .contains(&"releaseAuthority".to_string()));
     }
 }
