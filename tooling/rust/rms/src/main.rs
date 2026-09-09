@@ -42783,7 +42783,9 @@ fn inferred_absent_intent_fact(rationale: &str) -> IntentFact {
 
 fn exact_public_observation_source_repair_ready(task: &str, owner: &OwnerResolution) -> bool {
     let normalized = task.to_ascii_lowercase();
-    if !(normalized.contains("observation_source") || normalized.contains("observation source"))
+    if !(normalized.contains("observation_source")
+        || normalized.contains("observation source")
+        || normalized.contains("observation-source"))
         || !normalized.contains("invocation-record")
         || !normalized.contains("transition-record")
     {
@@ -97878,7 +97880,7 @@ fn produce_transition_trace() {
         write_yaml_manifest(&implementation).unwrap();
         initialize_test_git_repository(&root);
         let task = format!(
-            "Correct only the existing play-game-domain {first_id} and {second_id} public behavior binding observation_source.kind values from invocation-record to transition-record. Preserve the complete existing bindings and all product semantics."
+            "Correct only the existing play-game-domain {first_id} and {second_id} public behavior binding observation-source kinds from invocation-record to transition-record. Preserve the complete existing bindings and all product semantics."
         );
 
         let report = build_next_report(&root, None, &task).unwrap();
