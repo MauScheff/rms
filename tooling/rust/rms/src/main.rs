@@ -20557,14 +20557,18 @@ fn validate_property_target_report(
                     }
                 }
             }
-            if !property_runner_calls_operation_with_swift_index(
-                &realization_base,
-                implementation,
-                &realization.runner,
-                realization.generator.as_deref(),
-                get_path(&target.definition, &["operation"]),
-                swift_index,
-            ) {
+            // Static analyzers inspect source rather than execute the operation.
+            // Keep runner, oracle, command, and evidence validation for this lane.
+            if realization.strategy != "static-analyzer"
+                && !property_runner_calls_operation_with_swift_index(
+                    &realization_base,
+                    implementation,
+                    &realization.runner,
+                    realization.generator.as_deref(),
+                    get_path(&target.definition, &["operation"]),
+                    swift_index,
+                )
+            {
                 push_unique_warning(
                     diagnostics,
                     "property.runner-does-not-call-operation",
@@ -22106,7 +22110,17 @@ fn property_runner_has_oracle(base: &Path, implementation: &LoadedManifest, runn
                         || function.contains("assert(")
                 }),
                 Some("python") => python_function_source(&source, symbol).is_some_and(|function| {
-                    function.contains("assert") || function.contains("self.assert")
+                    function.contains("assert")
+                        || function.contains("self.assert")
+                        || function.lines().any(|line| {
+                            let line = line.trim_start();
+                            line.strip_prefix("raise AssertionError")
+                                .is_some_and(|tail| {
+                                    tail.is_empty()
+                                        || tail.starts_with('(')
+                                        || tail.starts_with(' ')
+                                })
+                        })
                 }),
                 _ => false,
             }
@@ -99340,6 +99354,52 @@ architecture:
             ),
             Some(1)
         );
+    }
+
+    #[test]
+    fn static_analyzer_property_validates_oracle_without_runtime_operation_call() {
+        let root = unique_test_dir("static-analyzer-property");
+        fs::create_dir_all(root.join("tests")).unwrap();
+        write_test_file(
+            &root.join("tests/analysis.py"),
+            "def scan():\n    report = analyze_source()\n    if report.errors:\n        raise AssertionError(\"analysis failed\")\n\ndef empty():\n    pass\n",
+        );
+        write_test_file(
+            &root.join("implementation.yaml"),
+            "spec: rms/implementation/v0.1\nmodule: example\nbinding: python\ncommands: { analysis: 'python tests/analysis.py' }\nsemantic_functions: [{id: operation, symbol: 'src/core.py#operate'}]\n",
+        );
+        let implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let definition: YamlValue = serde_yaml::from_str(
+            "id: analysis\nproves: source-safety\ninput_space: {strategy: generated}\noperation: {kind: semantic-function, name: operation}\noracle: [No findings]\nrealizations:\n- {profile: ci, strategy: static-analyzer, command: analysis, runner: 'tests/analysis.py#scan'}\n",
+        ).unwrap();
+        let mut target = property_target_from_yaml(&definition, "property", 0);
+        let checks = |target: &PropertyTargetReport| {
+            let mut diagnostics = Vec::new();
+            validate_property_target_report(
+                &implementation,
+                &root,
+                target,
+                Some(&implementation),
+                None,
+                &mut diagnostics,
+            );
+            diagnostics
+                .into_iter()
+                .map(|d| d.check)
+                .collect::<BTreeSet<_>>()
+        };
+        let valid = checks(&target);
+        assert!(!valid.contains("property.runner-does-not-call-operation"));
+        assert!(!valid.contains("property.runner-has-no-oracle"));
+        assert!(valid.contains("semantic.property-evidence-missing"));
+        target.realizations[0].strategy = "deterministic-corpus".into();
+        assert!(checks(&target).contains("property.runner-does-not-call-operation"));
+        target.realizations[0].strategy = "static-analyzer".into();
+        target.realizations[0].runner = "tests/analysis.py#empty".into();
+        assert!(checks(&target).contains("property.runner-has-no-oracle"));
+        target.realizations[0].runner = "tests/analysis.py#absent".into();
+        assert!(checks(&target).contains("property.runner-missing"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
