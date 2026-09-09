@@ -575,6 +575,20 @@ fn rust_regex_match_offset_query(call: &str, regex_match_names: &BTreeSet<String
 fn resolve_local_call(index: usize, call: &str, nodes: &[FunctionNode]) -> Vec<usize> {
     let name = symbol_name(call);
     let expected_path = symbol_path(call);
+    if nodes[index].binding == "rust" && expected_path.is_none() {
+        if let Some((root, _)) = call.split_once("::") {
+            if root.chars().next().is_some_and(char::is_lowercase)
+                && !matches!(root, "crate" | "self" | "super")
+                && !nodes
+                    .iter()
+                    .any(|node| rust_source_module_name(&node.path) == Some(root))
+            {
+                // An unverified external path must not fall back to an unrelated
+                // local callable with the same leaf name.
+                return Vec::new();
+            }
+        }
+    }
     if nodes[index].binding == "swift" && !call.contains(['.', ':', '#']) {
         let origin = |path: &str| {
             path.strip_prefix("dependencies/")
@@ -602,6 +616,7 @@ fn resolve_local_call(index: usize, call: &str, nodes: &[FunctionNode]) -> Vec<u
         .enumerate()
         .filter(|(_, candidate)| {
             candidate.path == nodes[index].path
+                && !symbol_qualified_name(call).contains("::")
                 && candidate.name == name
                 && candidate.qualified_name == candidate.name
                 && expected_path.is_none_or(|path| normalized_path_matches(&candidate.path, path))
@@ -2148,7 +2163,10 @@ fn extract_rust_functions_with_types(
         node.calls = node
             .calls
             .iter()
-            .map(|call| resolve_call_alias(call, &aliases))
+            .map(|call| {
+                let resolved = resolve_call_alias(call, &aliases);
+                rust_exact_function_reference(path, &resolved, sources, 0).unwrap_or(resolved)
+            })
             .collect();
         node.rust_unsafe_calls = node
             .rust_unsafe_calls
@@ -2261,6 +2279,57 @@ fn rust_exact_item_reference(
                 targets.push(target.clone());
             }
         }
+    }
+    if targets.is_empty() {
+        fn glob_modules(tree: &UseTree, prefix: Vec<String>, modules: &mut Vec<String>) {
+            match tree {
+                UseTree::Path(item) => {
+                    let mut prefix = prefix;
+                    prefix.push(item.ident.to_string());
+                    glob_modules(&item.tree, prefix, modules);
+                }
+                UseTree::Group(group) => {
+                    for item in &group.items {
+                        glob_modules(item, prefix.clone(), modules);
+                    }
+                }
+                UseTree::Glob(_) => modules.push(prefix.join("::")),
+                _ => {}
+            }
+        }
+        let mut modules = Vec::new();
+        for item in &file.items {
+            if let syn::Item::Use(item) = item {
+                if !item.attrs.is_empty() {
+                    continue;
+                }
+                glob_modules(&item.tree, Vec::new(), &mut modules);
+            }
+        }
+        let mut resolved = BTreeSet::new();
+        for module in modules {
+            // Expand only inspectable crate-local globs. Unknown external globs
+            // cannot establish absence or a unique exported callable.
+            let module_path = module.strip_prefix("crate::")?.replace("::", "/");
+            let prefix = path
+                .split_once("/src/")
+                .map(|(prefix, _)| format!("{prefix}/"))
+                .unwrap_or_default();
+            if !sources.contains_key(&format!("{prefix}src/{module_path}.rs")) {
+                return None;
+            }
+            if let Some(target) = rust_exact_item_reference(
+                path,
+                &format!("{module}::{reference}"),
+                sources,
+                depth + 1,
+            ) {
+                resolved.insert(target);
+            }
+        }
+        return (resolved.len() == 1)
+            .then(|| resolved.into_iter().next())
+            .flatten();
     }
     if targets.len() != 1 {
         return None;
@@ -3816,6 +3885,43 @@ mod tests {
         assert_eq!(run(sources.clone()).result, AnalysisResult::Pass);
         sources.remove("rms-metadata/rust-crate-alias/decisions");
         assert_eq!(run(sources).result, AnalysisResult::Fail);
+    }
+
+    #[test]
+    fn rust_direct_reexports_are_exact_and_ambiguous_globs_fail_closed() {
+        let mut sources = BTreeMap::from([
+            (
+                "src/lib.rs".into(),
+                "pub use crate::one::*; pub use crate::two::*; fn decide() { crate::run(); }"
+                    .into(),
+            ),
+            ("src/one.rs".into(), "pub fn run() {}".into()),
+            ("src/two.rs".into(), "pub fn other() {}".into()),
+        ]);
+        let run = |sources: BTreeMap<String, String>| {
+            analyze(AnalysisInput {
+                binding: "rust".into(),
+                source_digest: "source".into(),
+                tool_digest: "tool".into(),
+                sources,
+                semantic_functions: vec![expectation("src/lib.rs#decide", "pure", &[])],
+                authority_facades: Vec::new(),
+                trusted_external_calls: BTreeSet::new(),
+            })
+        };
+        assert_eq!(run(sources.clone()).result, AnalysisResult::Pass);
+        sources.insert(
+            "src/two.rs".into(),
+            "pub fn run() { std::fs::read_to_string(\"x\").ok(); }".into(),
+        );
+        assert_eq!(run(sources).result, AnalysisResult::Fail);
+        let unknown = report(
+            "rust",
+            "src/lib.rs",
+            "fn run() {} fn decide() { unverified_dependency::run(); }",
+            expectation("decide", "pure", &[]),
+        );
+        assert_eq!(unknown.result, AnalysisResult::Fail);
     }
 
     #[test]

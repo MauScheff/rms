@@ -34532,6 +34532,17 @@ fn rust_driver_has_state_input_prefix(
         && signature.parameter_types.get(1).and_then(Option::as_deref) == input
 }
 
+fn rust_executor_has_effect_signature(
+    signature: &RustFunctionSignature,
+    effect: Option<&str>,
+    result: Option<&str>,
+) -> bool {
+    effect.is_some()
+        && result.is_some()
+        && signature.parameter_types.first().and_then(Option::as_deref) == effect
+        && signature.return_type.as_deref() == result
+}
+
 fn rust_function_signature(signature: &syn::Signature) -> RustFunctionSignature {
     let parameter_types = signature
         .inputs
@@ -35008,15 +35019,12 @@ fn validate_rust_machine_execution_path(
         if let Some(signature) = summary.function_signatures.get(executor) {
             let expected_input = machine_types.effect.as_deref();
             let expected_output = machine_types.effect_result.as_deref();
-            if signature.parameter_types.len() != 1
-                || signature.parameter_types.first().and_then(Option::as_deref) != expected_input
-                || signature.return_type.as_deref() != expected_output
-            {
+            if !rust_executor_has_effect_signature(signature, expected_input, expected_output) {
                 diagnostics.push(error(
                     "structure.effect-protocol-executor-signature-mismatch",
                     &implementation.path,
                     format!(
-                        "effect `{}` executor `{executor}` must accept {:?} and return {:?}; found {:?} -> {:?}",
+                        "effect `{}` executor `{executor}` must accept {:?} as its first parameter and return {:?}; explicit resource parameters may follow; found {:?} -> {:?}",
                         protocol.effect,
                         expected_input,
                         expected_output,
@@ -99488,6 +99496,24 @@ architecture:
             let signature = rust_function_signature(&function.sig);
             assert_eq!(rust_driver_has_state_input_prefix(&signature, Some("State"), Some("Input")), expected, "{source}");
             assert!(!rust_driver_has_state_input_prefix(&signature, None, Some("Input")));
+        }
+    }
+
+    #[test]
+    fn rust_executor_resources_preserve_exact_effect_and_result() {
+        for (source, expected) in [
+            ("fn execute(effect: Effect) -> EffectResult { todo!() }", true),
+            ("fn execute(effect: Effect, parameters: &Parameters, transport: &mut impl Transport) -> EffectResult { todo!() }", true),
+            ("fn execute() -> EffectResult { todo!() }", false),
+            ("fn execute(effect: WrongEffect, transport: &Transport) -> EffectResult { todo!() }", false),
+            ("fn execute(effect: Effect, transport: &Transport) -> WrongResult { todo!() }", false),
+            ("fn execute(effect: Effect, transport: &Transport) {}", false),
+            ("fn execute(transport: &Transport, effect: Effect) -> EffectResult { todo!() }", false),
+        ] {
+            let function = syn::parse_str::<syn::ItemFn>(source).unwrap();
+            let signature = rust_function_signature(&function.sig);
+            assert_eq!(rust_executor_has_effect_signature(&signature, Some("Effect"), Some("EffectResult")), expected, "{source}");
+            assert!(!rust_executor_has_effect_signature(&signature, None, Some("EffectResult")));
         }
     }
 
