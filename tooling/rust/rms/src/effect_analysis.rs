@@ -533,10 +533,22 @@ fn collect_closure(
             );
             continue;
         }
-        if let Some(authority) = authority_for_call(&node.binding, call)
-            .or_else(|| facades.get(symbol_name(call)).cloned())
-        {
+        if let Some(authority) = authority_for_call(&node.binding, call) {
             authorities.insert(authority);
+            continue;
+        }
+        if let Some(authority) = facades.get(symbol_name(call)) {
+            authorities.insert(authority.clone());
+            // A named facade contains ambient IO. It does not erase open
+            // dispatch or unresolved calls in an inspectable implementation.
+            let mut contained = BTreeSet::new();
+            let mut facade_visited = visited.clone();
+            for candidate in candidates {
+                resolved.insert(nodes[candidate].qualified_name.clone());
+                collect_closure(candidate, nodes, facades, &mut facade_visited,
+                    resolved, unresolved, &mut contained, trusted_external_calls);
+            }
+            authorities.extend(contained.into_iter().filter(|authority| authority == "dynamic-dispatch"));
             continue;
         }
         if node.rust_unsafe_calls.contains(call) {
@@ -2508,6 +2520,19 @@ fn extract_tree_sitter_functions(
                     true,
                 );
             }
+            if binding == "swift" {
+                for parameter in swift_direct_callable_parameters(node, source) {
+                    let dynamic = calls.iter().filter(|call| {
+                        *call == &parameter || call.strip_prefix(&parameter).is_some_and(|tail| {
+                            tail.starts_with('(') && matching_delimiter(tail, 0, '(', ')') == Some(tail.len() - 1)
+                        })
+                    }).cloned().collect::<Vec<_>>();
+                    if !dynamic.is_empty() {
+                        for call in dynamic { calls.remove(&call); }
+                        calls.insert("<dynamic-call>".to_string());
+                    }
+                }
+            }
             if binding == "swift" && swift_global_names.checked_continuation {
                 // Only the standard control primitive is closed. Calls inside
                 // its literal closure were collected and remain in the graph.
@@ -3230,6 +3255,57 @@ fn tree_sitter_qualified_name(node: Node<'_>, source: &str, name: &str) -> Strin
     } else {
         format!("{}::{name}", owners.join("::"))
     }
+}
+
+fn swift_direct_callable_parameters(node: Node<'_>, source: &str) -> BTreeSet<String> {
+    let Some(declaration) = node.utf8_text(source.as_bytes()).ok() else { return BTreeSet::new(); };
+    let Some(start) = declaration.find('(') else { return BTreeSet::new(); };
+    let Some(end) = matching_delimiter(declaration, start, '(', ')') else { return BTreeSet::new(); };
+    let parameters = split_top_level(&declaration[start + 1..end], ',').into_iter().filter_map(|parameter| {
+        let colon = top_level_delimiter(parameter, ':')?;
+        let name = parameter[..colon].split_whitespace().next_back()?;
+        (is_simple_identifier(name) && name != "_").then(|| name.to_string())
+    }).collect::<BTreeSet<_>>();
+    let mut candidates = parameters.iter().map(|name| (name.clone(), 1usize)).collect::<BTreeMap<_, _>>();
+    let mut owner = node.parent();
+    while let Some(parent) = owner {
+        if matches!(parent.kind(), "class_declaration" | "struct_declaration" | "actor_declaration") {
+            let mut fields = Vec::new();
+            collect_nodes_of_kind(parent, "property_declaration", &mut fields);
+            for field in fields {
+                if nearest_function_ancestor(field).is_some() || !node_has_kind(field, "function_type") { continue; }
+                let mut field_owner = field.parent();
+                while field_owner.is_some_and(|owner| !matches!(owner.kind(), "class_declaration" | "struct_declaration" | "actor_declaration")) {
+                    field_owner = field_owner.and_then(|owner| owner.parent());
+                }
+                if field_owner != Some(parent) { continue; }
+                let Some(name) = field.child_by_field_name("name").and_then(|name| first_simple_identifier(name, source)) else { continue; };
+                if !parameters.contains(&name) { candidates.insert(name, 0); }
+            }
+            break;
+        }
+        owner = parent.parent();
+    }
+    let mut identifiers = Vec::new();
+    collect_nodes_of_kind(node, "simple_identifier", &mut identifiers);
+    let mut invocations = Vec::new();
+    collect_nodes_of_kind(node, "call_expression", &mut invocations);
+    candidates.into_iter().filter_map(|(parameter, declaration_count)| {
+        let occurrences = identifiers.iter().filter(|identifier| identifier.utf8_text(source.as_bytes()).ok() == Some(parameter.as_str())).count();
+        let calls = invocations.iter().filter(|call| {
+            call.child_by_field_name("function")
+                .or_else(|| call.child_by_field_name("name"))
+                .or_else(|| call.named_child(0))
+                .is_some_and(|callee| callee.kind() == "simple_identifier"
+                    && callee.utf8_text(source.as_bytes()).ok() == Some(parameter.as_str())
+                    && source.get(callee.end_byte()..call.end_byte()).is_some_and(|tail| tail.trim_start().starts_with('(')))
+        }).count();
+        // Admit only the parameter declaration (or enclosing stored callable)
+        // plus direct invocations. Any
+        // rebinding, capture, nested parameter, alias, or other use is left open.
+        // Callable identity implies dynamic dispatch, never callback purity.
+        (calls > 0 && occurrences == calls + declaration_count).then_some(parameter)
+    }).collect()
 }
 
 fn swift_callable_selector(node: Node<'_>, source: &str) -> Option<String> {
@@ -5292,6 +5368,65 @@ mod tests {
             expectation("Sources/Facade.swift#Facade.send(_:Missing)", "pure", &[]),
         );
         assert_eq!(missing.result, AnalysisResult::Fail, "{missing:#?}");
+    }
+    #[test]
+    fn swift_callable_parameter_invocation_is_dynamic_not_unresolved_or_pure() {
+        let source = "typealias Operation = @Sendable (Int) async -> Int\nfunc execute(_ value: Int, using operation: Operation) async -> Int { await operation(value) }";
+        let dynamic = report("swift", "Executor.swift", source, expectation("execute", "effectful", &["dynamic-dispatch"]));
+        assert_eq!(dynamic.result, AnalysisResult::Pass, "{dynamic:#?}");
+        assert!(dynamic.functions[0].unresolved_calls.is_empty());
+        let pure = report("swift", "Executor.swift", source, expectation("execute", "pure", &[]));
+        assert_eq!(pure.result, AnalysisResult::Fail);
+        let named_global = format!("func operation(_ value: Int) -> Int {{ value }}\n{source}");
+        let dynamic = report("swift", "Executor.swift", &named_global, expectation("execute", "effectful", &["dynamic-dispatch"]));
+        assert_eq!(dynamic.result, AnalysisResult::Pass, "{dynamic:#?}");
+        for source in [
+            "func execute() { operation(1) }",
+            "func execute(operation: Operation) { let operation = missing; operation(1) }",
+            "func execute(operation: Operation) { let (operation, other) = missing; operation(1) }",
+            "func execute(operation: Operation) { let local = { operation in operation(1) }; local(operation) }",
+            "func execute(operation: Operation) { func operation(_ value: Int) { print(value) }; operation(1) }",
+        ] {
+            let result = report("swift", "Executor.swift", source, expectation("execute", "effectful", &["dynamic-dispatch"]));
+            assert_ne!(result.result, AnalysisResult::Pass, "{source}: {result:#?}");
+        }
+    }
+
+    #[test]
+    fn swift_facade_preserves_callback_dispatch_and_unresolved_obligations() {
+        for (body, expected) in [
+            ("await operation(value)", AnalysisResult::Pass),
+            ("missing(value)", AnalysisResult::Fail),
+        ] {
+            let result = analyze(AnalysisInput {
+                binding: "swift".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+                sources: BTreeMap::from([("Executor.swift".into(), format!("typealias Operation = @Sendable (Int) async -> Int\nfunc execute(_ value: Int) -> Int {{ value }}\nfunc execute(_ value: Int, using operation: Operation) async -> Int {{ {body} }}\nfunc drive(_ value: Int, using operation: Operation) async -> Int {{ await execute(value, using: operation) }}"))]),
+                semantic_functions: vec![expectation("drive", "effectful", &["device", "dynamic-dispatch"])],
+                authority_facades: vec![AuthorityFacade { authority: "device".into(), symbol: "Executor.swift#execute(_:Int,using:Operation)".into() }],
+                trusted_external_calls: BTreeSet::new(),
+            });
+            assert_eq!(result.result, expected, "{result:#?}");
+            if expected == AnalysisResult::Pass {
+                assert_eq!(result.functions[0].transitive_authorities, vec!["device", "dynamic-dispatch"]);
+            } else {
+                assert!(result.functions[0].unresolved_calls.contains(&"missing".to_string()));
+            }
+        }
+    }
+
+    #[test]
+    fn swift_stored_and_trailing_argument_callbacks_keep_dynamic_authority() {
+        for source in [
+            "class Completion { private let deliver: @Sendable () -> Void; func execute() { deliver() } }",
+            "func execute(operation: Operation) { operation(1) { FileManager.default.remove_file(\"token\") } }",
+        ] {
+            let authorities = if source.contains("FileManager") { vec!["dynamic-dispatch", "filesystem"] } else { vec!["dynamic-dispatch"] };
+            let result = report("swift", "Executor.swift", source, expectation("execute", "effectful", &authorities));
+            assert_eq!(result.result, AnalysisResult::Pass, "{source}: {result:#?}");
+        }
+        let source = "class Completion { private let deliver: @Sendable () -> Void; func execute() { let deliver = missing; deliver() } }";
+        let result = report("swift", "Executor.swift", source, expectation("execute", "effectful", &["dynamic-dispatch"]));
+        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
     }
     #[test]
     fn swift_defer_keyword_is_not_a_call_but_its_body_is_traversed() {
