@@ -958,6 +958,7 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
+    if call == "<rust-iterator-max-by-key>" { return true; }
     let name = symbol_name(call).trim_end_matches('!');
     (name == "try_from"
         && [
@@ -1368,9 +1369,19 @@ struct RustCallCollector {
     helpers: BTreeMap<String, ItemFn>,
     static_callbacks: BTreeMap<String, String>,
     callback_bindings: BTreeMap<String, String>,
+    matched_value: Option<RustValueType>,
+    sequence_constraints: BTreeMap<String, RustValueType>,
 }
 
 impl<'ast> Visit<'ast> for RustCallCollector {
+    fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
+        self.visit_expr(&node.expr);
+        let prior = self.matched_value.take();
+        self.matched_value = self.type_index.expression_type(&node.expr, &self.value_types);
+        for arm in &node.arms { self.visit_arm(arm); }
+        self.matched_value = prior;
+    }
+
     fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
         self.visit_expr(&node.expr);
         let prior_values = self.value_types.clone();
@@ -1428,6 +1439,15 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             self.parameter_types.remove(&name);
             self.callback_bindings.remove(&name);
         }
+        if let Some(value) = &self.matched_value {
+            for (name, value) in self.type_index.pattern_bindings(&node.pat, value) {
+                if let Some(ty) = value.name() {
+                    self.parameter_types.insert(name.clone(), ty.clone());
+                    self.dynamic_symbols.remove(&name);
+                }
+                self.value_types.insert(name, value);
+            }
+        }
         visit::visit_arm(self, node);
         self.value_types = prior_values;
         self.parameter_types = prior_types;
@@ -1441,12 +1461,24 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         let prior_dynamic = self.dynamic_symbols.clone();
         let prior_callbacks = self.callback_bindings.clone();
         let prior_closures = self.local_closures.clone();
+        let prior_constraints = self.sequence_constraints.clone();
+        for statement in &block.stmts {
+            let syn::Stmt::Local(local) = statement else { continue; };
+            let Pat::Ident(name) = &local.pat else { continue; };
+            self.sequence_constraints.remove(&name.ident.to_string());
+            if local.init.as_ref().is_some_and(|init| self.type_index.is_standard_empty_vec(&init.expr)) {
+                if let Some(value) = self.type_index.empty_sequence_constraint(&name.ident.to_string(), block, &self.value_types) {
+                    self.sequence_constraints.insert(name.ident.to_string(), value);
+                }
+            }
+        }
         visit::visit_block(self, block);
         self.value_types = prior_values;
         self.parameter_types = prior_types;
         self.dynamic_symbols = prior_dynamic;
         self.callback_bindings = prior_callbacks;
         self.local_closures = prior_closures;
+        self.sequence_constraints = prior_constraints;
     }
 
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
@@ -1547,7 +1579,11 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             _ => None,
         }
         .or(inferred_name);
-        let call = if let Some(receiver_type) = typed_receiver {
+        let call = if matches!(inferred_receiver, Some(RustValueType::Iterator(_)))
+            && node.method == "max_by_key" && node.args.len() == 1
+            && matches!(&node.args[0], Expr::Closure(closure) if closure.inputs.len() == 1) {
+            "<rust-iterator-max-by-key>".to_string()
+        } else if let Some(receiver_type) = typed_receiver {
             format!("{receiver_type}::{}", node.method)
         } else if receiver.is_empty() {
             node.method.to_string()
@@ -1598,7 +1634,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             .filter(|_| {
                 matches!(
                     node.method.to_string().as_str(),
-                    "map" | "filter" | "filter_map" | "any" | "all" | "find"
+                    "map" | "filter" | "filter_map" | "any" | "all" | "find" | "and_then" | "is_some_and" | "max_by_key" | "min_by_key"
                 )
             })
         {
@@ -1690,6 +1726,10 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         let inferred = node.init.as_ref().and_then(|init| {
             self.type_index
                 .expression_type(&init.expr, &self.value_types)
+        }).or_else(|| {
+            let Pat::Ident(name) = &node.pat else { return None; };
+            node.init.as_ref().filter(|init| self.type_index.is_standard_empty_vec(&init.expr))
+                .and_then(|_| self.sequence_constraints.get(&name.ident.to_string()).cloned())
         });
         let mut bound_names = BTreeSet::new();
         collect_rust_pattern_identifiers(&node.pat, &mut bound_names);
@@ -1708,13 +1748,14 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 self.dynamic_symbols.insert(name.clone());
             }
         }
-        if let (Pat::Ident(name), Some(value)) = (&node.pat, inferred) {
-            if let Some(type_name) = value.name() {
-                self.parameter_types
-                    .insert(name.ident.to_string(), type_name.clone());
-                self.dynamic_symbols.remove(&name.ident.to_string());
+        if let Some(value) = inferred {
+            for (name, value) in self.type_index.pattern_bindings(&node.pat, &value) {
+                if let Some(type_name) = value.name() {
+                    self.parameter_types.insert(name.clone(), type_name.clone());
+                    self.dynamic_symbols.remove(&name);
+                }
+                self.value_types.insert(name, value);
             }
-            self.value_types.insert(name.ident.to_string(), value);
         }
         if node
             .init
@@ -4441,6 +4482,39 @@ mod tests {
             ("[()].iter().map(|root| root.evaluate()).count();", AnalysisResult::Fail),
         ] {
             let result = report("rust", "src/lib.rs", &format!("{definitions} fn decide(root: &Root) {{ {body} }}"), expectation("decide", "pure", &[]));
+            assert_eq!(result.result, expected, "{body}: {result:#?}");
+        }
+    }
+
+    #[test]
+    fn rust_empty_vec_uses_only_exact_mutable_sequence_constraints() {
+        let definitions = "struct Leaf; impl Leaf { fn check(&self) -> bool { true } fn mutate(&self) -> bool { std::fs::read_to_string(\"x\").is_ok() } } fn populate(values: &mut Vec<Leaf>) { values.push(Leaf); }";
+        for (body, expected) in [
+            ("let mut values = Vec::new(); populate(&mut values); values.iter().any(|value| value.check());", AnalysisResult::Pass),
+            ("let mut values = Vec::new(); populate(&mut values); values.iter().any(|value| value.mutate());", AnalysisResult::Fail),
+            ("let mut values = Vec::new(); mystery(&mut values); values.iter().any(|value| value.check());", AnalysisResult::Fail),
+            ("let mut values = Vec::new(); let populate = unknown(); populate(&mut values); values.iter().any(|value| value.check());", AnalysisResult::Fail),
+            ("let mut values = Vec::new(); populate(&mut values); let values = unknown(); values.iter().any(|value| value.check());", AnalysisResult::Fail),
+        ] {
+            let result = report("rust", "src/lib.rs", &format!("{definitions} fn decide() {{ {body} }}"), expectation("decide", "pure", &[]));
+            assert_eq!(result.result, expected, "{body}: {result:#?}");
+        }
+    }
+
+    #[test]
+    fn rust_field_optional_and_iterator_facts_preserve_exact_methods() {
+        let declarations = "struct Root { leaves: Vec<Leaf>, leaf: Leaf } struct Leaf; impl Leaf { fn next(&self) -> Option<&Leaf> { Some(self) } fn check(&self) -> bool { true } fn mutate(&self) -> bool { std::fs::read_to_string(\"x\").is_ok() } }";
+        for (body, expected) in [
+            ("root.leaf.check();", AnalysisResult::Pass),
+            ("root.leaves.iter().max_by_key(|leaf| leaf.check());", AnalysisResult::Pass),
+            ("let latest = root.leaves.iter().max_by_key(|leaf| leaf.check()); let Some(latest) = latest else { return; }; latest.check();", AnalysisResult::Pass),
+            ("root.leaf.next().and_then(|leaf| leaf.next()).filter(|leaf| leaf.check());", AnalysisResult::Pass),
+            ("root.leaves.iter().max_by_key(|leaf| leaf.mutate());", AnalysisResult::Fail),
+            ("root.leaf.next().and_then(|leaf| leaf.next()).filter(|leaf| leaf.mutate());", AnalysisResult::Fail),
+            ("let latest = root.leaf.next(); let Some(latest) = latest else { return; }; latest.mutate();", AnalysisResult::Fail),
+            ("root.leaf.next().filter(|leaf| { let leaf = unknown(); leaf.check() });", AnalysisResult::Fail),
+        ] {
+            let result = report("rust", "src/lib.rs", &format!("{declarations} fn decide(root: &Root) {{ {body} }}"), expectation("decide", "pure", &[]));
             assert_eq!(result.result, expected, "{body}: {result:#?}");
         }
     }
