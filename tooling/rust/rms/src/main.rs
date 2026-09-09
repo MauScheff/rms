@@ -50537,8 +50537,12 @@ fn append_semantic_change_implementation_reflection_checks(
             let expected = semantic_function_change_yaml(function);
             let actual = declared
                 .iter()
-                .find(|item| get_str(item, &["id"]) == Some(function.id.as_str()));
-            if actual != Some(&expected) {
+                .find(|item| get_str(item, &["id"]) == Some(function.id.as_str()))
+                .and_then(|item| {
+                    serde_yaml::from_value::<SemanticFunctionChange>(item.clone()).ok()
+                })
+                .map(|item| semantic_function_change_yaml(&item));
+            if actual.as_ref() != Some(&expected) {
                 push_applied_change_reflection_failure(
                     checks,
                     strict,
@@ -100831,6 +100835,81 @@ properties:
         assert!(report.checks.iter().any(|check| {
             check.id == "semantic.applied-change-not-reflected" && check.result == "fail"
         }));
+    }
+
+    #[test]
+    fn semantic_function_reflection_normalizes_omitted_empty_lists() {
+        let implementation: YamlValue = serde_yaml::from_str(
+            r#"semantic_functions:
+  - id: transition-model
+    symbol: transition
+    kind: transition
+    purity: pure
+    trust: internal
+    discharges:
+      invariants: [stable-law]
+    assumptions:
+      ensures: [The transition remains deterministic.]
+    authorities: []
+"#,
+        )
+        .unwrap();
+        let change: SemanticChange = serde_yaml::from_str(
+            r#"spec: rms/semantic-change/v0.1
+semantic_functions:
+  set:
+    - id: transition-model
+      symbol: transition
+      kind: transition
+      purity: pure
+      trust: internal
+      discharges:
+        contracts: []
+        invariants: [stable-law]
+        assumptions: []
+      assumptions:
+        requires: []
+        maintains: []
+        ensures: [The transition remains deterministic.]
+      authorities: []
+"#,
+        )
+        .unwrap();
+        let mut checks = Vec::new();
+        append_semantic_change_implementation_reflection_checks(
+            &implementation,
+            Path::new("implementation.yaml"),
+            Path::new("verification/changes/change.yaml"),
+            &change,
+            true,
+            &mut checks,
+        );
+        assert!(checks
+            .iter()
+            .all(|check| check.id != "semantic.applied-change-not-reflected"));
+
+        let mut mismatched = implementation.clone();
+        let function = get_path_mut(&mut mismatched, &["semantic_functions"])
+            .and_then(YamlValue::as_sequence_mut)
+            .and_then(|items| items.first_mut())
+            .unwrap();
+        set_yaml_string_sequence_path(
+            function,
+            &["assumptions", "ensures"],
+            &["A different non-empty promise.".to_string()],
+        );
+        let mut mismatch_checks = Vec::new();
+        append_semantic_change_implementation_reflection_checks(
+            &mismatched,
+            Path::new("implementation.yaml"),
+            Path::new("verification/changes/change.yaml"),
+            &change,
+            true,
+            &mut mismatch_checks,
+        );
+        assert!(mismatch_checks
+            .iter()
+            .any(|check| check.id == "semantic.applied-change-not-reflected"));
     }
 
     #[test]
