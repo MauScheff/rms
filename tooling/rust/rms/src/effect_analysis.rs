@@ -815,8 +815,6 @@ fn authority_for_call(binding: &str, call: &str) -> Option<String> {
         )
     {
         "process"
-    } else if binding != "swift" && (lower.contains("provider") || lower.contains("codex")) {
-        "provider"
     } else {
         return None;
     };
@@ -947,6 +945,7 @@ fn known_pure_call(call: &str) -> bool {
             | "into_bytes"
             | "into_keys"
             | "into_path"
+            | "into_values"
             | "items"
             | "is_absolute"
             | "is_alphanumeric"
@@ -1145,7 +1144,7 @@ fn swift_standard_value_method(call: &str, standard_value_names: &BTreeSet<Strin
     let method = symbol_name(call);
     if !matches!(
         method,
-        "firstIndex" | "flatMap" | "formUnion" | "removeAll" | "removeValue"
+        "firstIndex" | "flatMap" | "formUnion" | "joined" | "removeAll" | "removeValue"
     ) {
         return false;
     }
@@ -2690,6 +2689,30 @@ mod tests {
     }
 
     #[test]
+    fn rust_owned_map_values_are_a_pure_collection_iterator() {
+        let result = report(
+            "rust",
+            "src/transition.rs",
+            "fn select(values: std::collections::BTreeMap<u64, u64>) -> Vec<u64> { values.into_values().collect() }",
+            expectation("select", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].transitive_authorities.is_empty());
+    }
+
+    #[test]
+    fn rust_provider_domain_vocabulary_does_not_imply_external_authority() {
+        let result = report(
+            "rust",
+            "src/parser.rs",
+            "struct StunProviderCandidates; impl StunProviderCandidates { fn new() -> Self { Self } } fn parse() -> StunProviderCandidates { StunProviderCandidates::new() }",
+            expectation("parse", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].transitive_authorities.is_empty());
+    }
+
+    #[test]
     fn rust_native_memory_primitives_and_declared_pure_dependency_are_classified_exactly() {
         let result = analyze(AnalysisInput {
             binding: "rust".to_string(),
@@ -3128,6 +3151,18 @@ mod tests {
             "Sources/App.swift",
             source,
             expectation("Sources/App.swift#Context::decide", "pure", &[]),
+        );
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].transitive_authorities.is_empty());
+    }
+
+    #[test]
+    fn swift_standard_string_collection_join_is_pure() {
+        let result = report(
+            "swift",
+            "Sources/App.swift",
+            "func stableDigest(_ components: [String]) -> String { components.joined(separator: \"|\") }",
+            expectation("Sources/App.swift#stableDigest", "pure", &[]),
         );
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         assert!(result.functions[0].transitive_authorities.is_empty());
