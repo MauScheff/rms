@@ -567,6 +567,28 @@ fn rust_regex_match_offset_query(call: &str, regex_match_names: &BTreeSet<String
 fn resolve_local_call(index: usize, call: &str, nodes: &[FunctionNode]) -> Vec<usize> {
     let name = symbol_name(call);
     let expected_path = symbol_path(call);
+    if nodes[index].binding == "swift" && !call.contains(['.', ':', '#']) {
+        let origin = |path: &str| {
+            path.strip_prefix("dependencies/")
+                .and_then(|rest| rest.split('/').next())
+                .unwrap_or("")
+                .to_string()
+        };
+        let local = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, candidate)| {
+                candidate.binding == "swift"
+                    && candidate.name == name
+                    && candidate.qualified_name == candidate.name
+                    && origin(&candidate.path) == origin(&nodes[index].path)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if !local.is_empty() {
+            return local;
+        }
+    }
     let same_file_free = nodes
         .iter()
         .enumerate()
@@ -1303,8 +1325,12 @@ impl<'ast> Visit<'ast> for RustCallCollector {
 
     fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
         let receiver = rust_expr_label(&node.receiver);
-        let typed_receiver =
-            rust_expr_root_ident(&node.receiver).and_then(|name| self.parameter_types.get(&name));
+        let typed_receiver = match node.receiver.as_ref() {
+            Expr::Path(path) if path.path.segments.len() == 1 => self
+                .parameter_types
+                .get(&path.path.segments[0].ident.to_string()),
+            _ => None,
+        };
         let call = if let Some(receiver_type) = typed_receiver {
             format!("{receiver_type}::{}", node.method)
         } else if receiver.is_empty() {
@@ -1312,6 +1338,15 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         } else {
             format!("{receiver}.{}", node.method)
         };
+        if typed_receiver.is_none()
+            && rust_expr_root_ident(&node.receiver)
+                .is_some_and(|root| self.parameter_types.contains_key(&root))
+            && !known_pure_call(&call)
+        {
+            self.calls.insert("<dynamic-call>".to_string());
+            visit::visit_expr_method_call(self, node);
+            return;
+        }
         if rust_expr_root_ident(&node.receiver)
             .is_some_and(|root| self.dynamic_symbols.contains(&root))
             && !known_pure_call(&call)
@@ -1349,6 +1384,22 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         self.unsafe_depth += 1;
         visit::visit_block(self, &node.block);
         self.unsafe_depth -= 1;
+    }
+
+    fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
+        let prior_types = self.parameter_types.clone();
+        let prior_dynamic = self.dynamic_symbols.clone();
+        let mut names = BTreeSet::new();
+        for input in &node.inputs {
+            collect_rust_pattern_identifiers(input, &mut names);
+        }
+        for name in names {
+            self.parameter_types.remove(&name);
+            self.dynamic_symbols.insert(name);
+        }
+        visit::visit_expr_closure(self, node);
+        self.parameter_types = prior_types;
+        self.dynamic_symbols = prior_dynamic;
     }
 
     fn visit_expr_macro(&mut self, node: &'ast ExprMacro) {
@@ -2931,6 +2982,61 @@ mod tests {
             result.functions[0].resolved_callees,
             vec!["Pure::evaluate_candidate"]
         );
+    }
+
+    #[test]
+    fn rust_parameter_type_does_not_leak_to_fields_returns_or_shadowed_closures() {
+        for body in [
+            "value.score.loss_permille();",
+            "value.next().loss_permille();",
+            "[()].iter().map(|value| value.loss_permille()).count();",
+        ] {
+            let source = format!(
+                "struct Root; impl Root {{ fn loss_permille(&self) {{}} fn next(&self) {{}} }} fn select(value: &Root) {{ {body} }}"
+            );
+            let result = report(
+                "rust",
+                "src/lib.rs",
+                &source,
+                expectation("select", "pure", &[]),
+            );
+            assert_eq!(result.result, AnalysisResult::Fail, "{body}: {result:#?}");
+            assert!(
+                !result.functions[0]
+                    .resolved_callees
+                    .contains(&"Root::loss_permille".to_string()),
+                "{body}: {result:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn swift_unqualified_calls_stay_in_their_source_module() {
+        let mut nodes = Vec::new();
+        for (path, source) in [
+            (
+                "Sources/Adapter.swift",
+                "func adapter() { transitionRecord() }",
+            ),
+            ("Sources/Transition.swift", "func transitionRecord() {}"),
+            (
+                "dependencies/provider/Sources/Transition.swift",
+                "func transitionRecord() {}",
+            ),
+        ] {
+            nodes.extend(extract_tree_sitter_functions(
+                "swift",
+                path,
+                source,
+                &SwiftStandardNames::default(),
+            ));
+        }
+        let resolved = resolve_local_call(0, "transitionRecord", &nodes);
+        assert_eq!(resolved, vec![1]);
+        let resolved = resolve_local_call(2, "transitionRecord", &nodes);
+        assert_eq!(resolved, vec![2]);
+        nodes.push(nodes[1].clone());
+        assert_eq!(resolve_local_call(0, "transitionRecord", &nodes).len(), 2);
     }
 
     #[test]
