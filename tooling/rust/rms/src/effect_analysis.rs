@@ -2447,6 +2447,7 @@ struct SwiftStandardNames {
     value: BTreeSet<String>,
     checked_continuation: bool,
     string_split: bool,
+    foundation_values: bool,
 }
 
 fn extract_tree_sitter_functions(
@@ -2521,6 +2522,9 @@ fn extract_tree_sitter_functions(
                 );
             }
             if binding == "swift" {
+                if swift_global_names.foundation_values {
+                    swift_refine_guard_values(node, source, &mut calls);
+                }
                 for parameter in swift_direct_callable_parameters(node, source) {
                     let dynamic = calls.iter().filter(|call| {
                         *call == &parameter || call.strip_prefix(&parameter).is_some_and(|tail| {
@@ -2753,9 +2757,44 @@ fn refine_python_stdlib_calls(
                     .collect::<Vec<_>>();
                 if defaults.len() == 1 {
                     // The known default adds a reachable path. The supplied
-                    // callable stays unresolved; this is not specialization.
+                    // callable retains dynamic authority; this is not specialization.
                     function.calls.insert(format!("{path}#{default}"));
                 }
+            }
+        }
+        // A direct parameter invocation has a known dispatch mechanism, not
+        // a known implementation. Preserve its dynamic authority. Require all
+        // occurrences to be the declaration or direct calls so rebinding,
+        // nested shadowing, aliases, and captured values remain unresolved.
+        let mut identifiers = Vec::new();
+        collect_nodes_of_kind(definition, "identifier", &mut identifiers);
+        let mut invocations = Vec::new();
+        collect_nodes_of_kind(definition, "call", &mut invocations);
+        let direct_count = |name: &str| invocations.iter().filter(|call| {
+            call.child_by_field_name("function").is_some_and(|callee|
+                callee.kind() == "identifier" && callee.utf8_text(source.as_bytes()).ok() == Some(name))
+        }).count();
+        if let Some(parameters) = definition.child_by_field_name("parameters") {
+            let mut cursor = parameters.walk();
+            for parameter in parameters.named_children(&mut cursor) {
+                let name = if parameter.kind() == "identifier" { Some(parameter) }
+                    else { parameter.child_by_field_name("name").or_else(|| parameter.named_child(0)) };
+                let Some(name) = name.filter(|node| node.kind() == "identifier")
+                    .and_then(|node| node.utf8_text(source.as_bytes()).ok()) else { continue; };
+                let count = direct_count(name);
+                let occurrences = identifiers.iter().filter(|node|
+                    node.utf8_text(source.as_bytes()).ok() == Some(name)).count();
+                if count > 0 && occurrences == count + 1 && function.calls.remove(name) {
+                    function.calls.insert("<dynamic-call>".to_string());
+                }
+            }
+        }
+        // Reflection can invoke user-defined attribute/metaclass behavior.
+        // It is never a purity exemption. Shadowed names stay unresolved.
+        for builtin in ["getattr", "type"] {
+            if !shadowed.contains(builtin) && direct_count(builtin) > 0
+                && function.calls.remove(builtin) {
+                function.calls.insert("<dynamic-call>".to_string());
             }
         }
         let mut assignments = Vec::new();
@@ -2982,6 +3021,7 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
     let mut subscript_classifications = BTreeMap::<String, bool>::new();
     let mut value_classifications = BTreeMap::<String, bool>::new();
     let mut shadowed = BTreeSet::new();
+    let mut declared_methods = BTreeSet::new();
     for source in sources.values() {
         let mut parser = Parser::new();
         if parser.set_language(&language).is_err() {
@@ -2990,6 +3030,15 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
         let Some(tree) = parser.parse(source, None) else {
             continue;
         };
+        let mut identifiers = Vec::new();
+        collect_nodes_of_kind(tree.root_node(), "simple_identifier", &mut identifiers);
+        for identifier in identifiers {
+            if identifier.utf8_text(source.as_bytes()).ok() == Some("UUID")
+                && !identifier.parent().is_some_and(|parent| parent.kind() == "call_expression"
+                    && parent.named_child(0) == Some(identifier)) {
+                shadowed.insert("UUID".to_string());
+            }
+        }
         for kind in [
             "function_declaration",
             "property_declaration",
@@ -3003,8 +3052,11 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
             for declaration in declarations {
                 if let Some(name) = declaration
                     .child_by_field_name("name")
-                    .and_then(|name| first_simple_identifier(name, source))
+                    .and_then(|name| name.utf8_text(source.as_bytes()).ok()
+                        .filter(|name| is_simple_identifier(name)).map(str::to_string)
+                        .or_else(|| first_simple_identifier(name, source)))
                 {
+                    if kind == "function_declaration" { declared_methods.insert(name.clone()); }
                     shadowed.insert(name);
                 }
             }
@@ -3040,6 +3092,9 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
         }
     }
     SwiftStandardNames {
+        foundation_values: !["UUID", "String", "Dictionary", "Foundation", "Swift", "lowercased", "uuidString", "trimmingCharacters"]
+            .iter().any(|name| shadowed.contains(*name))
+            && !declared_methods.contains("data"),
         checked_continuation: !shadowed.contains("withCheckedContinuation")
             && !shadowed.contains("Swift"),
         string_split: !["String", "Swift", "split", "map"]
@@ -3254,6 +3309,81 @@ pub(crate) fn tree_sitter_qualified_name(node: Node<'_>, source: &str, name: &st
         name.to_string()
     } else {
         format!("{}::{name}", owners.join("::"))
+    }
+}
+
+// Bounded Foundation value flow. Only exact guarded casts/constructors and
+// immutable String normalization qualify. Every name use must be a member or
+// subscript receiver after its declaration; shadowing and aliases stay open.
+fn swift_refine_guard_values(node: Node<'_>, source: &str, calls: &mut BTreeSet<String>) {
+    if node.has_error() || !source.lines().any(|line| line.trim() == "import Foundation") { return; }
+    let compact = |node: Node<'_>| node.utf8_text(source.as_bytes()).unwrap_or_default()
+        .chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let mut identifiers = Vec::new();
+    collect_nodes_of_kind(node, "simple_identifier", &mut identifiers);
+    let stable = |name: &str, declaration: Node<'_>, available: usize| {
+        identifiers.iter().filter(|id| id.utf8_text(source.as_bytes()).ok() == Some(name)).all(|id| {
+            if id.start_byte() >= declaration.start_byte() && id.end_byte() <= declaration.end_byte() { return true; }
+            let receiver = id.parent().filter(|parent| parent.kind() == "prefix_expression"
+                && compact(*parent) == format!("!{name}")).unwrap_or(*id);
+            id.start_byte() >= available && receiver.parent().is_some_and(|parent| {
+                (parent.kind() == "navigation_expression" || parent.kind() == "call_expression")
+                    && parent.named_child(0) == Some(receiver)
+                    && source.get(receiver.end_byte()..parent.end_byte()).is_some_and(|tail|
+                        tail.trim_start().starts_with('.') || tail.trim_start().starts_with('['))
+            })
+        })
+    };
+    let mut strings = BTreeSet::new();
+    let mut parameters = Vec::new();
+    collect_nodes_of_kind(node, "parameter", &mut parameters);
+    for parameter in parameters {
+        let Some(name) = parameter.child_by_field_name("name") else { continue; };
+        let name_text = compact(name);
+        if compact(parameter).ends_with(":String") && stable(&name_text, name, parameter.end_byte()) {
+            strings.insert(name_text);
+        }
+    }
+    let mut properties = Vec::new();
+    collect_nodes_of_kind(node, "property_declaration", &mut properties);
+    for property in properties {
+        let (Some(name), Some(value)) = (property.child_by_field_name("name"), property.child_by_field_name("value")) else { continue; };
+        let name_text = compact(name);
+        if !property.utf8_text(source.as_bytes()).unwrap_or_default().trim_start().starts_with("let ")
+            || !stable(&name_text, name, value.end_byte()) { continue; }
+        if compact(value).strip_suffix(".trimmingCharacters(in:.whitespacesAndNewlines)")
+            .is_some_and(|receiver| strings.contains(receiver)) {
+            strings.insert(name_text);
+        }
+    }
+    let mut guards = Vec::new();
+    collect_nodes_of_kind(node, "guard_statement", &mut guards);
+    for guard in guards {
+        for i in 0..guard.child_count() {
+            if guard.field_name_for_child(i as u32) != Some("bound_identifier") { continue; }
+            let Some(name) = guard.child(i) else { continue; };
+            let Some(value) = name.next_named_sibling().filter(|rhs|
+                source.get(name.end_byte()..rhs.start_byte()).is_some_and(|text| text.trim() == "=")) else { continue; };
+            let name_text = compact(name);
+            if !is_simple_identifier(&name_text) || !stable(&name_text, name, value.end_byte()) { continue; }
+            let expression = compact(value);
+            if value.kind() == "as_expression" && expression.ends_with("as?[String:Any]") {
+                calls.remove(&name_text);
+            }
+            if expression.strip_prefix("UUID(uuidString:").is_some_and(|tail|
+                tail.ends_with(')') && is_simple_identifier(&tail[..tail.len()-1])) {
+                calls.remove(&format!("{name_text}.uuidString.lowercased"));
+            }
+        }
+    }
+    let mut invocations = Vec::new();
+    collect_nodes_of_kind(node, "call_expression", &mut invocations);
+    for receiver in strings {
+        let call_name = format!("{receiver}.data");
+        let matching = invocations.iter().filter(|call| call.named_child(0).is_some_and(|callee| compact(callee) == call_name)).collect::<Vec<_>>();
+        if !matching.is_empty() && matching.iter().all(|call| compact(**call) == format!("{receiver}.data(using:.utf8)")) {
+            calls.remove(&call_name);
+        }
     }
 }
 
@@ -4675,7 +4805,8 @@ mod tests {
             expectation("src/app.py#decide", "pure", &[]),
         );
         assert_eq!(result.result, AnalysisResult::Fail);
-        assert_eq!(result.functions[0].unresolved_calls, vec!["callback"]);
+        assert!(result.functions[0].unresolved_calls.is_empty());
+        assert_eq!(result.functions[0].transitive_authorities, vec!["dynamic-dispatch"]);
     }
 
     #[test]
@@ -4713,18 +4844,36 @@ mod tests {
                 "{result:#?}"
             );
         }
-        for call in ["opener", "getattr", "type"] {
-            assert!(
-                result.functions[0]
-                    .unresolved_calls
-                    .contains(&call.to_string()),
-                "{result:#?}"
-            );
-        }
-        assert_eq!(result.result, AnalysisResult::Fail);
+        assert!(result.functions[0].unresolved_calls.is_empty(), "{result:#?}");
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         assert!(result.functions[0]
             .direct_calls
             .contains(&"python-stdlib.urllib.request.Request".to_string()));
+    }
+
+    #[test]
+    fn python_dispatch_refinement_keeps_unknown_and_rebound_calls_open() {
+        for source in [
+            "def run(value):\n    return mystery(value)\n",
+            "def run(callback, value):\n    callback = mystery\n    return callback(value)\n",
+            "def run(callback, value):\n    def nested(callback):\n        return callback(value)\n    return callback(value)\n",
+            "def getattr(value):\n    return mystery(value)\ndef run(value):\n    return getattr(value)\n",
+            "type = mystery\ndef run(value):\n    return type(value)\n",
+        ] {
+            let result = report("python", "src/adapter.py", source,
+                expectation("run", "effectful", &["dynamic-dispatch"]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+            assert!(!result.functions[0].unresolved_calls.is_empty(), "{source}: {result:#?}");
+        }
+        for source in [
+            "def run(callback, value):\n    return callback(value)\n",
+            "def run(value):\n    return getattr(value, 'status')\n",
+            "def run(value):\n    return type(value)\n",
+        ] {
+            let result = report("python", "src/adapter.py", source,
+                expectation("run", "effectful", &["dynamic-dispatch"]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{source}: {result:#?}");
+        }
     }
 
     #[test]
@@ -5025,6 +5174,28 @@ mod tests {
         });
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         assert_eq!(result.functions[0].transitive_authorities, vec!["provider"]);
+    }
+
+    #[test]
+    fn swift_guarded_foundation_values_are_pure_without_blessing_shadowing() {
+        let uuid = "import Foundation\nfunc parse(_ value: String?) -> Bool { guard let value, let parsed = UUID(uuidString: value) else { return false }; return parsed.uuidString.lowercased() == value }";
+        let dictionary = "import Foundation\nfunc parse(_ payload: String) -> Any? { let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines); guard !trimmed.isEmpty else { return nil }; guard let data = trimmed.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data), let fields = object as? [String: Any] else { return nil }; return fields[\"reason\"] }";
+        for source in [uuid, dictionary] {
+            let result = report("swift", "Sources/Parser.swift", source, expectation("parse", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for source in [
+            format!("struct UUID {{}}\n{uuid}"),
+            uuid.replace("return parsed.uuidString", "let parsed = unknown(); return parsed.uuidString"),
+            dictionary.replace("[String: Any]", "CustomDictionary"),
+            dictionary.replace("return fields[", "let fields = unknown(); return fields["),
+            dictionary.replace("_ payload: String", "_ payload: CustomString"),
+            dictionary.replace(".data(using: .utf8)", ".data(using: unknown())"),
+            format!("extension String {{ func data(using: Int) -> Int {{ unknown() }} }}\n{dictionary}"),
+        ] {
+            let result = report("swift", "Sources/Parser.swift", &source, expectation("parse", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+        }
     }
 
     #[test]
