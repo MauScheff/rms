@@ -958,7 +958,7 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
-    if call == "<rust-iterator-max-by-key>" { return true; }
+    if matches!(call, "<rust-iterator-max-by-key>" | "<rust-str-ascii-uppercase>") { return true; }
     let name = symbol_name(call).trim_end_matches('!');
     (name == "try_from"
         && [
@@ -1371,6 +1371,7 @@ struct RustCallCollector {
     callback_bindings: BTreeMap<String, String>,
     matched_value: Option<RustValueType>,
     sequence_constraints: BTreeMap<String, RustValueType>,
+    standard_str: bool,
 }
 
 impl<'ast> Visit<'ast> for RustCallCollector {
@@ -1444,6 +1445,8 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 if let Some(ty) = value.name() {
                     self.parameter_types.insert(name.clone(), ty.clone());
                     self.dynamic_symbols.remove(&name);
+                } else if value == RustValueType::Unknown {
+                    self.dynamic_symbols.insert(name.clone());
                 }
                 self.value_types.insert(name, value);
             }
@@ -1456,6 +1459,8 @@ impl<'ast> Visit<'ast> for RustCallCollector {
     }
 
     fn visit_block(&mut self, block: &'ast syn::Block) {
+        let prior_index = self.type_index.clone();
+        self.type_index = self.type_index.with_local_type_shadows(block);
         let prior_values = self.value_types.clone();
         let prior_types = self.parameter_types.clone();
         let prior_dynamic = self.dynamic_symbols.clone();
@@ -1479,6 +1484,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         self.callback_bindings = prior_callbacks;
         self.local_closures = prior_closures;
         self.sequence_constraints = prior_constraints;
+        self.type_index = prior_index;
     }
 
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
@@ -1528,9 +1534,10 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 {
                     let mut specialized = RustCallCollector {
                         dynamic_symbols: callback_parameters,
+                        standard_str: self.type_index.standard_str_available(&helper.sig, &helper.block),
                         parameter_types: rust_parameter_types(helper.sig.inputs.iter()),
                         value_types: self.type_index.parameters(&helper.sig),
-                        type_index: self.type_index.clone(),
+                        type_index: self.type_index.with_generics(&helper.sig.generics),
                         callback_bindings: bindings,
                         ..RustCallCollector::default()
                     };
@@ -1559,7 +1566,9 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             if self.unsafe_depth > 0 {
                 self.unsafe_calls.insert(call.clone());
             }
-            self.calls.insert(call);
+            self.calls.insert(if self.standard_str && call == "str::to_ascii_uppercase" {
+                "<rust-str-ascii-uppercase>".to_string()
+            } else { call });
         } else {
             self.calls.insert("<dynamic-call>".to_string());
         }
@@ -1572,13 +1581,13 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             .type_index
             .expression_type(&node.receiver, &self.value_types);
         let inferred_name = inferred_receiver.as_ref().and_then(RustValueType::name);
-        let typed_receiver = match node.receiver.as_ref() {
+        let typed_receiver = inferred_name.or_else(|| match node.receiver.as_ref() {
             Expr::Path(path) if path.path.segments.len() == 1 => self
                 .parameter_types
-                .get(&path.path.segments[0].ident.to_string()),
+                .get(&path.path.segments[0].ident.to_string())
+                .filter(|name| !self.type_index.is_generic(name) && !self.type_index.is_declared_type(name)),
             _ => None,
-        }
-        .or(inferred_name);
+        });
         let call = if matches!(inferred_receiver, Some(RustValueType::Iterator(_)))
             && node.method == "max_by_key" && node.args.len() == 1
             && matches!(&node.args[0], Expr::Closure(closure) if closure.inputs.len() == 1) {
@@ -1611,9 +1620,17 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             self.unsafe_calls.insert(call.clone());
         }
         self.calls.insert(call);
-        if matches!(node.method.to_string().as_str(), "map" | "filter_map") {
-            for argument in &node.args {
-                let Expr::Path(path) = argument else { continue };
+        {
+            for (position, argument) in node.args.iter().enumerate() {
+                let bounded_new_callback = matches!((node.method.to_string().as_str(), position),
+                    ("map_or_else", 0 | 1) | ("flat_map", 0) | ("fold", 1));
+                if !bounded_new_callback && !matches!(node.method.to_string().as_str(), "map" | "filter_map") { continue; }
+                let Expr::Path(path) = argument else {
+                    if bounded_new_callback && !matches!(argument, Expr::Closure(_)) {
+                        self.calls.insert("<dynamic-call>".to_string());
+                    }
+                    continue;
+                };
                 let callable = path
                     .path
                     .segments
@@ -1624,46 +1641,44 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 if self.dynamic_symbols.contains(symbol_name(&callable)) {
                     self.calls.insert("<dynamic-call>".to_string());
                 } else {
-                    self.calls.insert(callable);
+                    self.calls.insert(if self.standard_str && callable == "str::to_ascii_uppercase" {
+                        "<rust-str-ascii-uppercase>".to_string()
+                    } else { callable });
                 }
             }
         }
-        if let Some(element) = inferred_receiver
-            .as_ref()
-            .and_then(RustValueType::element)
-            .filter(|_| {
-                matches!(
-                    node.method.to_string().as_str(),
-                    "map" | "filter" | "filter_map" | "any" | "all" | "find" | "and_then" | "is_some_and" | "max_by_key" | "min_by_key"
-                )
-            })
-        {
+        if let Some(receiver) = inferred_receiver.as_ref() {
             self.visit_expr(&node.receiver);
-            for argument in &node.args {
+            for (position, argument) in node.args.iter().enumerate() {
                 if let Expr::Closure(closure) = argument {
-                    if closure.inputs.len() == 1 {
+                    if let Some(inputs) = receiver.callback_inputs(&node.method.to_string(), position)
+                        .filter(|inputs| inputs.len() == closure.inputs.len()) {
                         let prior_values = self.value_types.clone();
                         let prior_types = self.parameter_types.clone();
                         let prior_dynamic = self.dynamic_symbols.clone();
+                        let prior_callbacks = self.callback_bindings.clone();
                         let mut names = BTreeSet::new();
-                        collect_rust_pattern_identifiers(&closure.inputs[0], &mut names);
+                        for pattern in &closure.inputs { collect_rust_pattern_identifiers(pattern, &mut names); }
                         for name in &names {
                             self.value_types.remove(name);
                             self.parameter_types.remove(name);
+                            self.callback_bindings.remove(name);
                             self.dynamic_symbols.insert(name.clone());
                         }
-                        if let Pat::Ident(ident) = &closure.inputs[0] {
-                            let name = ident.ident.to_string();
-                            self.value_types.insert(name.clone(), element.clone());
-                            if let Some(type_name) = element.name() {
-                                self.parameter_types.insert(name.clone(), type_name.clone());
-                                self.dynamic_symbols.remove(&name);
+                        for (pattern, value) in closure.inputs.iter().zip(inputs) {
+                            for (name, value) in self.type_index.pattern_bindings(pattern, &value) {
+                                if let Some(type_name) = value.name() {
+                                    self.parameter_types.insert(name.clone(), type_name.clone());
+                                    self.dynamic_symbols.remove(&name);
+                                }
+                                self.value_types.insert(name, value);
                             }
                         }
                         self.visit_expr(&closure.body);
                         self.value_types = prior_values;
                         self.parameter_types = prior_types;
                         self.dynamic_symbols = prior_dynamic;
+                        self.callback_bindings = prior_callbacks;
                         continue;
                     }
                 }
@@ -1753,6 +1768,8 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 if let Some(type_name) = value.name() {
                     self.parameter_types.insert(name.clone(), type_name.clone());
                     self.dynamic_symbols.remove(&name);
+                } else if value == RustValueType::Unknown {
+                    self.dynamic_symbols.insert(name.clone());
                 }
                 self.value_types.insert(name, value);
             }
@@ -1995,7 +2012,8 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
                 .map(|(name, helper)| (name.clone(), helper.clone()))
                 .collect(),
             static_callbacks: rust_unshadowed_callbacks(node, &self.static_callbacks),
-            type_index: self.type_index.clone(),
+            type_index: self.type_index.with_generics(&node.sig.generics),
+            standard_str: self.type_index.standard_str_available(&node.sig, &node.block),
             value_types: self.type_index.parameters(&node.sig),
             dynamic_symbols: rust_dynamic_parameters(node.sig.inputs.iter()),
             parameter_types: rust_parameter_types(node.sig.inputs.iter()),
@@ -2025,7 +2043,8 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             return;
         }
         let mut calls = RustCallCollector {
-            type_index: self.type_index.clone(),
+            type_index: self.type_index.with_generics(&node.sig.generics),
+            standard_str: self.type_index.standard_str_available(&node.sig, &node.block),
             value_types: self.type_index.parameters(&node.sig),
             dynamic_symbols: rust_dynamic_parameters(node.sig.inputs.iter()),
             parameter_types: rust_parameter_types(node.sig.inputs.iter()),
@@ -2051,6 +2070,8 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
     }
 
     fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
+        let prior_index = self.type_index.clone();
+        self.type_index = self.type_index.with_generics(&node.generics);
         let owner = match node.self_ty.as_ref() {
             Type::Path(path) => path
                 .path
@@ -2066,6 +2087,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
         } else {
             syn::visit::visit_item_impl(self, node);
         }
+        self.type_index = prior_index;
     }
 
     fn visit_item_mod(&mut self, node: &'ast ItemMod) {
@@ -4487,6 +4509,117 @@ mod tests {
     }
 
     #[test]
+    fn rust_qualified_types_keep_same_name_declarations_separate() {
+        for (imports, left_effectful, right_effectful, expected) in [
+            ("use crate::left::Entry;", false, true, AnalysisResult::Pass),
+            ("use crate::right::Entry;", false, true, AnalysisResult::Fail),
+            ("use crate::right::Entry;", true, false, AnalysisResult::Pass),
+            ("use crate::left::Entry;", true, false, AnalysisResult::Fail),
+            ("use crate::left::Entry; use crate::right::Entry;", false, false, AnalysisResult::Fail),
+            ("use crate::{left::Entry, right::Entry};", false, false, AnalysisResult::Fail),
+            ("struct Entry; impl Entry { fn check(&self) -> bool { true } } use crate::left::Entry;", false, false, AnalysisResult::Fail),
+            ("use unknown::Entry;", false, false, AnalysisResult::Fail),
+            ("", false, false, AnalysisResult::Fail),
+        ] {
+            let declaration = |effectful| format!("pub struct Entry; impl Entry {{ pub fn check(&self) -> bool {{ {} true }} }}", if effectful { "std::fs::read_to_string(\"x\");" } else { "" });
+            let result = analyze(AnalysisInput {
+                binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+                sources: BTreeMap::from([
+                    ("src/lib.rs".into(), format!("mod left; mod right; {imports} fn decide(values: &[Entry]) {{ values.iter().any(|entry| entry.check()); }} fn direct(entry: &Entry) {{ entry.check(); }}")),
+                    ("src/left.rs".into(), declaration(left_effectful)),
+                    ("src/right.rs".into(), declaration(right_effectful)),
+                    ("tests/independent.rs".into(), declaration(true)),
+                ]),
+                semantic_functions: vec![expectation("src/lib.rs#decide", "pure", &[]), expectation("src/lib.rs#direct", "pure", &[])],
+                authority_facades: Vec::new(), trusted_external_calls: BTreeSet::new(),
+            });
+            assert_eq!(result.result, expected, "{imports}: {result:#?}");
+            assert!(result.functions.iter().all(|function| (function.verdict == FunctionVerdict::Pass) == (expected == AnalysisResult::Pass)), "{imports}: {result:#?}");
+        }
+        let result = report("rust", "src/lib.rs", "struct Entry; impl Entry { fn check(&self) -> bool { true } } fn decide<Entry>(values: &[Entry]) { values.iter().any(|entry| entry.check()); }", expectation("decide", "pure", &[]));
+        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+    }
+
+    #[test]
+    fn rust_exact_enum_payload_binding_checks_identity_arity_and_effects() {
+        let declarations = "struct Endpoint; impl Endpoint { fn check(&self) -> bool { true } fn mutate(&self) -> bool { std::fs::read_to_string(\"x\").is_ok() } } struct Configuration; impl Configuration { fn endpoints(&self) -> &[Endpoint] { &[] } } enum Reply { Resolved(Configuration) } enum Other { Resolved(Configuration) } struct Output { reply: Option<Reply> }";
+        for (pattern, operation, prefix, expected) in [
+            ("Some(Reply::Resolved(configuration))", "check", "", AnalysisResult::Pass),
+            ("Some(Reply::Resolved(configuration))", "mutate", "", AnalysisResult::Fail),
+            ("Some(Other::Resolved(configuration))", "check", "", AnalysisResult::Fail),
+            ("Some(Reply::Resolved(configuration, extra))", "check", "", AnalysisResult::Fail),
+            ("Some(Reply::Missing(configuration))", "check", "", AnalysisResult::Fail),
+            ("Some(Reply::Resolved(configuration))", "check", "enum Reply { Resolved(Configuration) }", AnalysisResult::Fail),
+        ] {
+            let source = format!("{declarations} fn decide(output: Output) {{ {prefix} let {pattern} = output.reply else {{ return; }}; configuration.endpoints().iter().any(|endpoint| endpoint.{operation}()); }}");
+            let result = report("rust", "src/lib.rs", &source, expectation("decide", "pure", &[]));
+            assert_eq!(result.result, expected, "{pattern} {operation} {prefix}: {result:#?}");
+        }
+        for (owner, expected) in [("Alias", AnalysisResult::Pass), ("crate::other::Reply", AnalysisResult::Fail)] {
+            let result = analyze(AnalysisInput {
+                binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+                sources: BTreeMap::from([
+                    ("src/lib.rs".into(), format!("mod data; mod other; use crate::data::{{Output, Reply as Alias}}; fn decide(output: Output) {{ let Some({owner}::Resolved(configuration)) = output.reply else {{ return; }}; configuration.endpoints().iter().any(|endpoint| endpoint.check()); }}")),
+                    ("src/data.rs".into(), declarations.into()),
+                    ("src/other.rs".into(), "use crate::data::Configuration; enum Reply { Resolved(Configuration) }".into()),
+                ]),
+                semantic_functions: vec![expectation("src/lib.rs#decide", "pure", &[])],
+                authority_facades: Vec::new(), trusted_external_calls: BTreeSet::new(),
+            });
+            assert_eq!(result.result, expected, "{owner}: {result:#?}");
+        }
+    }
+
+    #[test]
+    fn rust_bounded_ascii_uppercase_requires_unshadowed_primitive() {
+        for source in [
+            "fn decide(value: Option<&str>) { value.map(str::to_ascii_uppercase); }",
+            "fn decide(value: &str) { str::to_ascii_uppercase(value); }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for source in [
+            "struct str; impl str { fn to_ascii_uppercase(_: &Self) { std::fs::read_to_string(\"x\"); } } fn decide(value: &str) { str::to_ascii_uppercase(value); }",
+            "fn decide<str>(value: &str) { str::to_ascii_uppercase(value); }",
+            "fn decide(value: &str) { use mystery as str; str::to_ascii_uppercase(value); }",
+            "use mystery::*; fn decide(value: &str) { str::to_ascii_uppercase(value); }",
+            "fn decide(value: Option<&str>) { value.map(Custom::to_ascii_uppercase); }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+        }
+    }
+
+    #[test]
+    fn rust_bounded_callback_slots_preserve_elements_and_effects() {
+        let definitions = "struct Leaf; impl Leaf { fn check(&self) -> bool { true } fn items(&self) -> &[Leaf] { todo!() } fn mutate(&self) -> bool { std::fs::read_to_string(\"x\").is_ok() } }";
+        for (signature, body, expected) in [
+            ("value: Option<&Leaf>", "value.map_or_else(|| false, |leaf| leaf.check());", AnalysisResult::Pass),
+            ("values: &[Leaf]", "values.iter().flat_map(|leaf| leaf.items().iter()).count();", AnalysisResult::Pass),
+            ("values: &[Leaf]", "values.iter().enumerate().filter_map(|(index, leaf)| leaf.check().then(|| index)).count();", AnalysisResult::Pass),
+            ("values: &[Leaf]", "values.iter().fold(false, |accumulator, leaf| accumulator || leaf.check());", AnalysisResult::Pass),
+            ("value: Option<&Leaf>", "value.map_or_else(|| { std::fs::read_to_string(\"x\"); false }, |leaf| leaf.check());", AnalysisResult::Fail),
+            ("value: Option<&Leaf>", "value.map_or_else(|| false, |leaf| leaf.mutate());", AnalysisResult::Fail),
+            ("values: &[Leaf]", "values.iter().flat_map(|leaf| { leaf.mutate(); leaf.items().iter() }).count();", AnalysisResult::Fail),
+            ("values: &[Leaf]", "values.iter().enumerate().filter_map(|(_, leaf)| leaf.mutate().then(|| 0)).count();", AnalysisResult::Fail),
+            ("values: &[Leaf]", "values.iter().fold(false, |accumulator, leaf| accumulator || leaf.mutate());", AnalysisResult::Fail),
+            ("values: &[Leaf]", "values.iter().fold(false, |accumulator, leaf| accumulator.mystery() || leaf.check());", AnalysisResult::Fail),
+            ("values: &[Leaf]", "values.iter().flat_map(|leaf| { let leaf = unknown(); leaf.items().iter() }).count();", AnalysisResult::Fail),
+            ("values: &[Leaf]", "values.iter().enumerate().filter_map(|(leaf, _)| leaf.check().then(|| 0)).count();", AnalysisResult::Fail),
+            ("values: &[Leaf]", "values.iter().enumerate().filter_map(|(_, leaf)| { let leaf = unknown(); leaf.check().then(|| 0) }).count();", AnalysisResult::Fail),
+            ("value: Option<&Leaf>, callback: fn(&Leaf) -> bool", "value.map_or_else(|| false, callback);", AnalysisResult::Fail),
+            ("values: &[Leaf], callback: fn(bool, &Leaf) -> bool", "values.iter().fold(false, callback);", AnalysisResult::Fail),
+            ("values: &[Leaf]", "values.iter().flat_map({ unknown() }).count();", AnalysisResult::Fail),
+            ("value: Unknown", "value.map_or_else(|| false, |leaf| leaf.check());", AnalysisResult::Fail),
+        ] {
+            let source = format!("{definitions} fn decide({signature}) {{ {body} }}");
+            let result = report("rust", "src/lib.rs", &source, expectation("decide", "pure", &[]));
+            assert_eq!(result.result, expected, "{source}: {result:#?}");
+        }
+    }
+
+    #[test]
     fn rust_empty_vec_uses_only_exact_mutable_sequence_constraints() {
         let definitions = "struct Leaf; impl Leaf { fn check(&self) -> bool { true } fn mutate(&self) -> bool { std::fs::read_to_string(\"x\").is_ok() } } fn populate(values: &mut Vec<Leaf>) { values.push(Leaf); }";
         for (body, expected) in [
@@ -4697,8 +4830,9 @@ mod tests {
             source_digest: "source".to_string(),
             tool_digest: "tool".to_string(),
             sources: BTreeMap::from([
-                ("src/consumer.rs".to_string(), "fn project(value: &Provider) -> u16 { value.port() } fn decide(values: &[Provider]) -> Vec<u16> { values.iter().map(project).collect() }".to_string()),
-                ("dependencies/provider/src/lib.rs".to_string(), "struct Provider { port: u16 } impl Provider { fn port(&self) -> u16 { self.port } }".to_string()),
+                ("src/consumer.rs".to_string(), "use provider::Provider; fn project(value: &Provider) -> u16 { value.port() } fn decide(values: &[Provider]) -> Vec<u16> { values.iter().map(project).collect() }".to_string()),
+                ("dependencies/provider/src/lib.rs".to_string(), "pub struct Provider { port: u16 } impl Provider { pub fn port(&self) -> u16 { self.port } }".to_string()),
+                ("rms-metadata/rust-crate-alias/provider".to_string(), "dependencies/provider".to_string()),
             ]),
             semantic_functions: vec![expectation("src/consumer.rs#decide", "pure", &[])],
             authority_facades: vec![],

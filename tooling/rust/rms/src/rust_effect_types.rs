@@ -5,7 +5,7 @@ use syn::{Expr, FnArg, GenericArgument, Item, Pat, PathArguments, ReturnType, Si
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum RustValueType {
     Unknown,
-    Named(String),
+    Named(String), // Exact source-path#type identity, never a global leaf name.
     Sequence(Box<Self>),
     Iterator(Box<Self>),
     Optional(Box<Self>),
@@ -27,6 +27,19 @@ impl RustValueType {
             _ => None,
         }
     }
+
+    pub(super) fn callback_inputs(&self, method: &str, argument: usize) -> Option<Vec<Self>> {
+        match (self, method, argument) {
+            (Self::Optional(_), "map_or_else", 0) => Some(Vec::new()),
+            (Self::Optional(element), "map_or_else", 1) => Some(vec![(**element).clone()]),
+            (Self::Iterator(element), "fold", 1) => Some(vec![Self::Unknown, (**element).clone()]),
+            (Self::Iterator(element), "flat_map", 0) => Some(vec![(**element).clone()]),
+            (_, "map" | "filter" | "filter_map" | "any" | "all" | "find" | "and_then" | "is_some_and" | "max_by_key" | "min_by_key", 0) => {
+                self.element().map(|element| vec![element.clone()])
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -37,6 +50,8 @@ pub(super) struct RustTypeIndex {
     function_returns: BTreeMap<String, RustValueType>,
     fields: BTreeMap<(String, String), RustValueType>,
     mutable_sequences: BTreeMap<String, Vec<Option<RustValueType>>>,
+    variants: BTreeMap<(String, String), Vec<RustValueType>>,
+    generic_names: BTreeSet<String>,
     sources: BTreeMap<String, String>,
     path: String,
 }
@@ -49,7 +64,7 @@ impl RustTypeIndex {
             .filter_map(|(path, source)| syn::parse_file(source).ok().map(|file| (path, file)))
             .collect::<Vec<_>>();
         let mut counts = BTreeMap::<String, usize>::new();
-        for (_, file) in &files {
+        for (path, file) in &files {
             for item in &file.items {
                 let name = match item {
                     Item::Struct(item) => Some(&item.ident),
@@ -58,7 +73,7 @@ impl RustTypeIndex {
                     _ => None,
                 };
                 if let Some(name) = name {
-                    *counts.entry(name.to_string()).or_default() += 1;
+                    *counts.entry(format!("{path}#{name}")).or_default() += 1;
                 }
             }
         }
@@ -68,11 +83,13 @@ impl RustTypeIndex {
                 .filter(|(_, count)| **count == 1)
                 .map(|(name, _)| name.clone())
                 .collect(),
-            shadowed_types: counts.keys().cloned().collect(),
+            shadowed_types: counts.keys().map(|key| super::symbol_name(key).to_string()).collect(),
             returns: BTreeMap::new(),
             function_returns: BTreeMap::new(),
             fields: BTreeMap::new(),
             mutable_sequences: BTreeMap::new(),
+            variants: BTreeMap::new(),
+            generic_names: BTreeSet::new(),
             sources: sources.clone(),
             path: String::new(),
         };
@@ -80,14 +97,27 @@ impl RustTypeIndex {
         for (path, file) in &files {
             for item in &file.items {
                 if let Item::Struct(item) = item {
-                    if index.unique_types.contains(&item.ident.to_string()) && item.generics.params.is_empty()
+                    if index.unique_types.contains(&format!("{path}#{}", item.ident)) && item.generics.params.is_empty()
                         && !item.attrs.iter().any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")) {
                         for (position, field) in item.fields.iter().enumerate() {
                             if !field.attrs.is_empty() { continue; }
                             if let Some(value) = index.for_path(path).parse_type(&field.ty) {
                                 let name = field.ident.as_ref().map(ToString::to_string).unwrap_or_else(|| position.to_string());
-                                index.fields.insert((item.ident.to_string(), name), value);
+                                index.fields.insert((format!("{path}#{}", item.ident), name), value);
                             }
+                        }
+                    }
+                }
+                if let Item::Enum(item) = item {
+                    let owner = format!("{path}#{}", item.ident);
+                    if index.unique_types.contains(&owner) && item.generics.params.is_empty()
+                        && !item.attrs.iter().any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")) {
+                        for variant in &item.variants {
+                            if item.variants.iter().filter(|candidate| candidate.ident == variant.ident).count() != 1 { continue; }
+                            let syn::Fields::Unnamed(fields) = &variant.fields else { continue; };
+                            if !variant.attrs.is_empty() || fields.unnamed.iter().any(|field| !field.attrs.is_empty()) { continue; }
+                            let values = fields.unnamed.iter().map(|field| index.for_path(path).parse_type(&field.ty).unwrap_or(RustValueType::Unknown)).collect();
+                            index.variants.insert((owner.clone(), variant.ident.to_string()), values);
                         }
                     }
                 }
@@ -119,7 +149,8 @@ impl RustTypeIndex {
                 let Some(owner) = owner.path.get_ident() else {
                     continue;
                 };
-                if !index.unique_types.contains(&owner.to_string()) {
+                let owner = format!("{path}#{owner}");
+                if !index.unique_types.contains(&owner) {
                     continue;
                 }
                 for member in &item.items {
@@ -157,6 +188,86 @@ impl RustTypeIndex {
         result
     }
 
+    pub(super) fn with_generics(&self, generics: &syn::Generics) -> Self {
+        let mut result = self.clone();
+        result.generic_names.extend(generics.type_params().map(|parameter| parameter.ident.to_string()));
+        result
+    }
+
+    pub(super) fn is_generic(&self, name: &str) -> bool { self.generic_names.contains(name) || self.generic_names.contains("*") }
+
+    pub(super) fn is_declared_type(&self, name: &str) -> bool { self.shadowed_types.contains(name) }
+
+    pub(super) fn with_local_type_shadows(&self, block: &syn::Block) -> Self {
+        let mut result = self.clone();
+        for statement in &block.stmts {
+            let syn::Stmt::Item(item) = statement else { continue; };
+            let name = match item {
+                Item::Struct(item) => Some(item.ident.to_string()),
+                Item::Enum(item) => Some(item.ident.to_string()),
+                Item::Type(item) => Some(item.ident.to_string()),
+                Item::Mod(item) => Some(item.ident.to_string()),
+                Item::Use(item) => {
+                    fn collect_names(tree: &syn::UseTree, names: &mut BTreeSet<String>) {
+                        match tree {
+                            syn::UseTree::Name(item) => { names.insert(item.ident.to_string()); }
+                            syn::UseTree::Rename(item) => { names.insert(item.rename.to_string()); }
+                            syn::UseTree::Glob(_) => { names.insert("*".into()); }
+                            syn::UseTree::Path(item) => collect_names(&item.tree, names),
+                            syn::UseTree::Group(group) => { for item in &group.items { collect_names(item, names); } }
+                        }
+                    }
+                    collect_names(&item.tree, &mut result.generic_names);
+                    None
+                }
+                _ => None,
+            };
+            if let Some(name) = name { result.generic_names.insert(name); }
+        }
+        result
+    }
+
+    pub(super) fn standard_str_available(&self, signature: &Signature, block: &syn::Block) -> bool {
+        use syn::visit::{self, Visit};
+        fn shadows(tree: &syn::UseTree) -> bool {
+            match tree {
+                syn::UseTree::Glob(_) => true,
+                syn::UseTree::Name(name) => name.ident == "str",
+                syn::UseTree::Rename(name) => name.rename == "str",
+                syn::UseTree::Path(path) => shadows(&path.tree),
+                syn::UseTree::Group(group) => group.items.iter().any(shadows),
+            }
+        }
+        fn item_shadows(item: &Item) -> bool {
+            match item {
+                Item::Struct(item) => item.ident == "str",
+                Item::Enum(item) => item.ident == "str",
+                Item::Type(item) => item.ident == "str",
+                Item::Mod(item) => item.ident == "str",
+                Item::Trait(item) => item.ident == "str",
+                Item::Impl(item) => item.generics.type_params().any(|parameter| parameter.ident == "str"),
+                Item::ExternCrate(item) => item.rename.as_ref().map(|(_, name)| name == "str").unwrap_or(item.ident == "str"),
+                Item::Use(item) => shadows(&item.tree),
+                _ => false,
+            }
+        }
+        let Some(file) = self.sources.get(&self.path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
+        if file.items.iter().any(item_shadows) || signature.generics.type_params().any(|parameter| parameter.ident == "str") { return false; }
+        struct LocalShadows(bool);
+        impl<'ast> Visit<'ast> for LocalShadows {
+            fn visit_item(&mut self, item: &'ast Item) {
+                self.0 |= item_shadows(item);
+                visit::visit_item(self, item);
+            }
+            fn visit_type_param(&mut self, parameter: &'ast syn::TypeParam) {
+                self.0 |= parameter.ident == "str";
+            }
+        }
+        let mut local = LocalShadows(false);
+        local.visit_block(block);
+        !local.0
+    }
+
     fn parse_type(&self, value: &Type) -> Option<RustValueType> {
         match value {
             Type::Reference(reference) => self.parse_type(&reference.elem),
@@ -166,9 +277,8 @@ impl RustTypeIndex {
             Type::Path(path) if path.qself.is_none() => {
                 let segment = path.path.segments.last()?;
                 let name = segment.ident.to_string();
-                if matches!(segment.arguments, PathArguments::None)
-                    && self.unique_types.contains(&name)
-                {
+                if path.path.segments.len() == 1 && self.is_generic(&name) { return None; }
+                if matches!(segment.arguments, PathArguments::None) {
                     let reference = path
                         .path
                         .segments
@@ -176,8 +286,7 @@ impl RustTypeIndex {
                         .map(|s| s.ident.to_string())
                         .collect::<Vec<_>>()
                         .join("::");
-                    super::rust_exact_item_reference(&self.path, &reference, &self.sources, 0)?;
-                    return Some(RustValueType::Named(name));
+                    return self.resolve_named_type(&reference).map(RustValueType::Named);
                 }
                 if self.shadowed_types.contains(&name) {
                     return None;
@@ -243,12 +352,50 @@ impl RustTypeIndex {
         }
     }
 
+    fn resolve_named_type(&self, reference: &str) -> Option<String> {
+        fn imported_count(tree: &syn::UseTree, name: &str) -> usize {
+            match tree {
+                syn::UseTree::Name(item) => usize::from(item.ident == name),
+                syn::UseTree::Rename(item) => usize::from(item.rename == name),
+                syn::UseTree::Path(item) => imported_count(&item.tree, name),
+                syn::UseTree::Group(group) => group.items.iter().map(|item| imported_count(item, name)).sum(),
+                syn::UseTree::Glob(_) => 0,
+            }
+        }
+        let imports = |file: &syn::File, name: &str| {
+            let mut count = 0;
+            let mut conditional = false;
+            for item in &file.items {
+                if let Item::Use(item) = item {
+                    let current = imported_count(&item.tree, name);
+                    count += current;
+                    conditional |= current > 0 && !item.attrs.is_empty();
+                }
+            }
+            (count, conditional)
+        };
+        if !reference.contains("::") {
+            let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
+            let (count, conditional) = imports(&file, reference);
+            if count > 1 || conditional { return None; }
+        }
+        let exact = super::rust_exact_item_reference(&self.path, reference, &self.sources, 0)?;
+        if !self.unique_types.contains(&exact) { return None; }
+        let (path, name) = exact.split_once('#')?;
+        let file = syn::parse_file(self.sources.get(path)?).ok()?;
+        // A declaration plus an explicit same-name import is not a unique
+        // binding. Do not let the resolver's local-item preference hide it.
+        if imports(&file, name).0 > 0 { return None; }
+        Some(exact)
+    }
+
     pub(super) fn parameters(&self, signature: &Signature) -> BTreeMap<String, RustValueType> {
-        let generic_names = signature
+        let mut scope = self.clone();
+        scope.generic_names.extend(signature
             .generics
             .type_params()
             .map(|parameter| parameter.ident.to_string())
-            .collect::<BTreeSet<_>>();
+            .collect::<BTreeSet<_>>());
         signature
             .inputs
             .iter()
@@ -259,15 +406,9 @@ impl RustTypeIndex {
                 let Pat::Ident(name) = argument.pat.as_ref() else {
                     return None;
                 };
-                let value = self
+                let value = scope
                     .parse_type(&argument.ty)
                     .unwrap_or(RustValueType::Unknown);
-                if value
-                    .name()
-                    .is_some_and(|name| generic_names.contains(name))
-                {
-                    return None;
-                }
                 Some((name.ident.to_string(), value))
             })
             .collect()
@@ -279,8 +420,21 @@ impl RustTypeIndex {
             (Pat::Ident(name), value) => { bindings.insert(name.ident.to_string(), value.clone()); }
             (Pat::Reference(pattern), value) => { return self.pattern_bindings(&pattern.pat, value); }
             (Pat::TupleStruct(pattern), RustValueType::Optional(element))
-                if pattern.path.is_ident("Some") && pattern.elems.len() == 1 => {
+                if pattern.path.is_ident("Some") && pattern.elems.len() == 1 && !self.is_generic("Some") => {
                 return self.pattern_bindings(&pattern.elems[0], element);
+            }
+            (Pat::TupleStruct(pattern), RustValueType::Named(owner)) => {
+                if pattern.qself.is_some() || pattern.path.segments.iter().any(|segment| !matches!(segment.arguments, PathArguments::None)) { return bindings; }
+                let mut path = pattern.path.clone();
+                let Some(variant) = path.segments.pop() else { return bindings; };
+                if path.segments.is_empty() { return bindings; }
+                let reference = path.segments.iter().map(|segment| segment.ident.to_string()).collect::<Vec<_>>().join("::");
+                if path.segments.first().is_some_and(|segment| self.is_generic(&segment.ident.to_string())) { return bindings; }
+                if self.resolve_named_type(&reference).as_ref() != Some(owner) { return bindings; }
+                if let Some(values) = self.variants.get(&(owner.clone(), variant.value().ident.to_string()))
+                    .filter(|values| values.len() == pattern.elems.len()) {
+                    for (pattern, value) in pattern.elems.iter().zip(values) { bindings.extend(self.pattern_bindings(pattern, value)); }
+                }
             }
             (Pat::Tuple(pattern), RustValueType::Tuple(values)) if pattern.elems.len() == values.len() => {
                 for (pattern, value) in pattern.elems.iter().zip(values) { bindings.extend(self.pattern_bindings(pattern, value)); }
@@ -412,6 +566,11 @@ impl RustTypeIndex {
                         if matches!(method.as_str(), "values" | "into_values") =>
                     {
                         Some(RustValueType::Iterator(element))
+                    }
+                    RustValueType::Iterator(element)
+                        if method == "enumerate" && call.args.is_empty() =>
+                    {
+                        Some(RustValueType::Iterator(Box::new(RustValueType::Tuple(vec![RustValueType::Unknown, *element]))))
                     }
                     RustValueType::Iterator(element)
                         if matches!(method.as_str(), "filter" | "take" | "skip" | "copied" | "cloned") =>
