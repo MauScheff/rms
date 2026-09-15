@@ -22,6 +22,128 @@ fn cli_version_flag_uses_package_version() {
     assert!(version.ends_with(")\n"));
 }
 
+#[test]
+fn leaf_retirement_cli_preserves_native_code_and_checks_both_deltas() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("rms-cli-retirement-{unique}"));
+    fs::create_dir_all(root.join("modules/unused/src")).unwrap();
+    fs::write(root.join("modules/unused/module.yaml"), "spec: rms/module/v0.1\nmodule: {name: unused, version: 0.1.0, kind: adapter, purpose: Unused scaffold}\nowns: {}\nprovides: {}\nrequires: {}\neffects: []\n").unwrap();
+    fs::write(
+        root.join("modules/unused/src/history.txt"),
+        "historical bytes\n",
+    )
+    .unwrap();
+    fs::write(root.join("native.js"), "export const preserved = true;\n").unwrap();
+    fs::write(root.join(".gitignore"), ".rms/runs/\n.rms/cache/\n").unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.name", "Retirement CLI Test"]);
+    git(&["config", "user.email", "retirement@example.invalid"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "baseline"]);
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_rms"))
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let plan = run(&[
+        "retire-module",
+        "plan",
+        "modules/unused/module.yaml",
+        "--root",
+        ".",
+        "--reason",
+        "Retire unused scaffold and preserve native code",
+    ]);
+    assert!(
+        plan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    let plan: Value = serde_json::from_slice(&plan.stdout).unwrap();
+    let receipt = plan["route_receipt"].as_str().unwrap();
+    let dry = run(&[
+        "retire-module",
+        "apply",
+        "modules/unused/module.yaml",
+        "--root",
+        ".",
+        "--route-receipt",
+        receipt,
+        "--dry-run",
+    ]);
+    assert!(
+        dry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dry.stderr)
+    );
+    assert!(root.join("modules/unused/module.yaml").exists());
+    assert!(!root.join(".rms/retirements").exists());
+    let applied = run(&[
+        "retire-module",
+        "apply",
+        "modules/unused/module.yaml",
+        "--root",
+        ".",
+        "--route-receipt",
+        receipt,
+    ]);
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    let record = PathBuf::from(applied["record"].as_str().unwrap());
+    assert!(!root.join("modules/unused").exists());
+    assert_eq!(
+        fs::read(root.join("native.js")).unwrap(),
+        b"export const preserved = true;\n"
+    );
+    for mode in ["--changes", "--committed"] {
+        if mode == "--committed" {
+            git(&["add", "-A"]);
+            git(&["commit", "-qm", "retire leaf"]);
+        }
+        let check = run(&["check", mode, "--root", ".", "--json", "--details"]);
+        assert!(
+            check.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&check.stdout),
+            String::from_utf8_lossy(&check.stderr)
+        );
+        assert!(String::from_utf8_lossy(&check.stdout).contains("module-retirements"));
+    }
+    let check = run(&["retire-module", "check", "--root", "."]);
+    assert!(check.status.success());
+    fs::write(
+        record.parent().unwrap().join("archive/src/history.txt"),
+        "tampered",
+    )
+    .unwrap();
+    assert!(!run(&["retire-module", "check", "--root", "."])
+        .status
+        .success());
+    assert!(!run(&["check", "--changes", "--root", "."]).status.success());
+    fs::remove_dir_all(&root).unwrap();
+}
+
 fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()

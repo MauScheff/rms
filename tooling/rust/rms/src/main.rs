@@ -37,6 +37,7 @@ mod hunt;
 mod probe;
 mod proof_certificate;
 mod property;
+mod retirement;
 mod schema_generator;
 mod semantic_graph;
 mod swift_proof_calls;
@@ -210,6 +211,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Plan, archive, or validate an unreferenced leaf module retirement.
+    RetireModule {
+        #[command(subcommand)]
+        command: retirement::RetirementCommand,
+    },
     /// Validate RMS manifests and referenced artifacts.
     Validate {
         /// Root directory to scan when explicit paths are not supplied.
@@ -9558,6 +9564,7 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
             "machine",
             "surface",
             "add-module",
+            "retire-module",
             "add-binding",
             "add-capability-tree",
             "adoption",
@@ -9676,6 +9683,7 @@ fn run_main() -> Result<()> {
     let cli = parse_cli();
 
     match cli.command {
+        Commands::RetireModule { command } => retirement::run(command),
         Commands::Validate {
             root,
             module,
@@ -38792,12 +38800,13 @@ struct CheckReport {
     details: JsonValue,
 }
 
-const CHECK_SELECTION_SPEC: &str = "rms/check-selection/v0.1";
+const CHECK_SELECTION_SPEC: &str = "rms/check-selection/v0.2";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum ChangedPathCoverage {
     RmsOwned,
+    RetirementProvenance,
     NativeBoundary,
     OutsideCoverage,
 }
@@ -39098,6 +39107,9 @@ fn build_check_report_scoped_with_proof_cache(
             report.details["coverage"] = json!("complete");
             report.details["unowned_production_paths"] = json!(unowned);
         }
+    }
+    if mode != CheckMode::Environment {
+        retirement::append_check(&root, &mut report);
     }
     report.coverage = project_check_coverage(&root, mode, module, &report)?;
     report.proof = project_check_proof(&root, &report)?;
@@ -40125,7 +40137,9 @@ fn build_affected_check_report(
     let mut outside_coverage_changed_paths = Vec::new();
     for path in &selection.paths {
         match path.coverage {
-            ChangedPathCoverage::RmsOwned => rms_owned_changed_paths.push(path.path.clone()),
+            ChangedPathCoverage::RmsOwned | ChangedPathCoverage::RetirementProvenance => {
+                rms_owned_changed_paths.push(path.path.clone())
+            }
             ChangedPathCoverage::NativeBoundary => native_changed_paths.push(path.path.clone()),
             ChangedPathCoverage::OutsideCoverage => {
                 outside_coverage_changed_paths.push(path.path.clone())
@@ -40851,6 +40865,7 @@ fn transitive_reverse_dependents(
 
 fn build_check_selection(root: &Path, mode: CheckMode) -> Result<CheckSelectionReceipt> {
     let (changed, baseline, candidate) = changed_paths_for_check(root, mode)?;
+    let retirements = retirement::validate(root)?;
     let impact_modules = discover_impact_modules(root)?;
     let impact = build_impact_report_from_modules(root, None, &changed, &impact_modules);
     let config = load_workbench_config(root)?
@@ -40870,12 +40885,15 @@ fn build_check_selection(root: &Path, mode: CheckMode) -> Result<CheckSelectionR
 
     for path in &impact.changed_paths {
         let normalized = normalize_relative_path(Path::new(&path.path));
-        let native = if path.module.is_none() && !rms_owned_impact(path.category) {
+        let retired = retirement::covers(&retirements, &normalized);
+        let native = if !retired && path.module.is_none() && !rms_owned_impact(path.category) {
             native_workflow_for_path(&normalized, &config.native_workflows)?
         } else {
             None
         };
-        let coverage = if path.module.is_some() || rms_owned_impact(path.category) {
+        let coverage = if retired {
+            ChangedPathCoverage::RetirementProvenance
+        } else if path.module.is_some() || rms_owned_impact(path.category) {
             ChangedPathCoverage::RmsOwned
         } else if native.is_some() {
             ChangedPathCoverage::NativeBoundary
@@ -40914,6 +40932,9 @@ fn build_check_selection(root: &Path, mode: CheckMode) -> Result<CheckSelectionR
             native_workflow: native.map(|workflow| workflow.id.clone()),
             consumer_visible,
             reason: match coverage {
+                ChangedPathCoverage::RetirementProvenance => {
+                    "validated module retirement archive and historical provenance; no active behavior certification".to_string()
+                }
                 ChangedPathCoverage::RmsOwned if path.module.is_some() => {
                     "path is inside the exact discovered RMS module owner".to_string()
                 }
@@ -41029,9 +41050,12 @@ fn build_check_selection(root: &Path, mode: CheckMode) -> Result<CheckSelectionR
     native_handoffs.sort_by(|left, right| left.id.cmp(&right.id));
     selected_paths.sort_by(|left, right| left.path.cmp(&right.path));
     let partial = workspace_coverage(root) == WorkspaceCoverage::Progressive
-        || selected_paths
-            .iter()
-            .any(|path| path.coverage != ChangedPathCoverage::RmsOwned)
+        || selected_paths.iter().any(|path| {
+            !matches!(
+                path.coverage,
+                ChangedPathCoverage::RmsOwned | ChangedPathCoverage::RetirementProvenance
+            )
+        })
         || !native_handoffs.is_empty();
     let coverage_status = if partial { "partial" } else { "full" }.to_string();
     let material = json!({
@@ -50247,6 +50271,7 @@ fn build_audit_report_with_scope(
     append_command_log_audit_checks(&root, strict, &mut checks);
     append_blind_provenance_audit_checks(&root, strict, &mut checks);
     append_replacement_audit_checks(&root, strict, &mut checks);
+    retirement::append_audit(&root, &mut checks);
 
     let result = audit_result(&checks);
     Ok(AuditReport {

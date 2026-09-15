@@ -31,6 +31,7 @@ These JSON Schemas validate the structural shape of RMS 0.1 manifests:
 - `hunt-report-v0.2.schema.json`
 - `probe-counterexample.schema.json`
 - `conformance.schema.json`
+- `module-retirement.schema.json` (exact leaf plan and historical archive record)
 
 Schema validation is necessary but not sufficient. Semantic conformance also requires ownership, dependency, effect, compatibility, verification, and profile checks that cannot be expressed fully in JSON Schema.
 

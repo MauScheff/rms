@@ -41,6 +41,8 @@ rms view [OPTIONS]
 
 Every `next` and `design` invocation records its inputs and returns `run_id`, `receipt_id`, and `receipt_path`. Pass a ready receipt through `--route-receipt` to `add-module`, `add-capability-tree`, `add-binding`, and semantic, machine, or surface apply commands, including dry-runs. A receipt binds routing context; it grants neither source-edit nor Git authority.
 
+An explicitly approved unused leaf can use `rms retire-module plan`, `apply --dry-run`, `apply`, and `check`. The dedicated plan issues retirement-only authority. The exact directory becomes a tracked historical archive, not active proof. See [the retirement contract and recovery procedure](../../../MODULE_RETIREMENT.md).
+
 Default human output follows `Outcome/Answer → Why → Next → Done when`. `--details` includes complete canonical diagnostics. `--json` emits the versioned `rms.surface/v2` envelope with typed command or manual actions.
 
 ## Typical Flow
