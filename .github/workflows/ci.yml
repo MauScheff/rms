@@ -21,6 +21,8 @@ jobs:
       RMS_TEST_SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
@@ -58,6 +60,8 @@ jobs:
       CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
@@ -92,6 +96,8 @@ jobs:
         shell: pwsh
         run: git config --global core.longpaths true
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - name: Cross-platform behavioral-contract corpus
         run: cargo test -p rms --locked behavioral_contract::tests
@@ -107,6 +113,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:

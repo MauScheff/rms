@@ -152,6 +152,32 @@ fn repository_root() -> PathBuf {
         .to_path_buf()
 }
 
+#[test]
+fn ci_workflows_fetch_complete_provenance_history() {
+    for file in [".github/workflows/ci.yml", ".github/workflows/release.yml"] {
+        let workflow: serde_yaml::Value =
+            serde_yaml::from_str(&fs::read_to_string(repository_root().join(file)).unwrap())
+                .unwrap();
+        let mut checkouts = 0;
+        for job in workflow["jobs"].as_mapping().unwrap().values() {
+            for step in job["steps"].as_sequence().unwrap() {
+                if step["uses"]
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("actions/checkout@"))
+                {
+                    checkouts += 1;
+                    assert_eq!(
+                        step["with"]["fetch-depth"].as_u64(),
+                        Some(0),
+                        "{file}: retirement provenance requires full Git history"
+                    );
+                }
+            }
+        }
+        assert!(checkouts > 0, "{file}: no checkout found");
+    }
+}
+
 fn run_probe(arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_rms"))
         .current_dir(repository_root())
