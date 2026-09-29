@@ -42865,9 +42865,11 @@ fn task_requests_existing_contract_native_realization(task: &str) -> bool {
         .split_once(':')
         .map(|(preamble, _)| preamble)
         .unwrap_or(normalized.as_str());
-    let requests_direct_realization = ["implement", "realize", "realise", "wire"]
-        .iter()
-        .any(|verb| task_mentions_token(preamble, verb));
+    // A mention of the wire format is not a request to wire an implementation.
+    // Only an explicit leading action may narrow the provider's semantic intent.
+    let action = preamble.trim_start().strip_prefix("please ").unwrap_or(preamble.trim_start())
+        .split_whitespace().next().unwrap_or("");
+    let requests_direct_realization = matches!(action, "implement" | "realize" | "realise" | "wire");
     let names_native_boundary = [
         "native",
         "adapter",
@@ -42901,9 +42903,7 @@ fn task_requests_existing_contract_native_realization(task: &str) -> bool {
     ]
     .iter()
     .any(|phrase| preamble.contains(phrase));
-    let requests_preserving_repair = ["repair", "fix"]
-        .iter()
-        .any(|verb| task_mentions_token(preamble, verb))
+    let requests_preserving_repair = matches!(action, "repair" | "fix")
         && explicitly_preserves_existing_declaration;
     let requests_canonical_change = [
         "add a contract",
@@ -42929,7 +42929,9 @@ fn task_requests_existing_contract_native_realization(task: &str) -> bool {
         "new semantics",
     ]
     .iter()
-    .any(|phrase| preamble.contains(phrase));
+    .any(|phrase| preamble.contains(phrase))
+        || ["canonical mutators", "additive canonical", "new semantic binding", "new public callable", "new role"]
+            .iter().any(|phrase| normalized.contains(phrase));
 
     (requests_direct_realization || requests_preserving_repair)
         && names_native_boundary
@@ -88171,6 +88173,9 @@ mod tests {
         for semantic_task in [
             "Evolve the existing Connection ordered-install contract to add a new authenticated abort observation and new retirement ordering.",
             "Implement the native adapter for the existing Connection contract to add a new input and a new effect.",
+            "Add the minimal trusted internal construction API for the existing ObserveExpiry operation in the existing reusable agent-identity-boundary library. The backend runtime is its sole intended consumer in this program; reuse stays inside the existing Agent Identity boundary package and does not create another package or module. The current public wire parser must keep rejecting ObserveExpiry. The internal constructor creates an ordinary HandleLinkRequest envelope for the existing driver and verifies structural IDs/digest; authenticated clock and authoritative snapshots remain the backend executor's obligations. This additive canonical facade surface enables the already-declared expiry behavior, not new lifecycle rules. Record its exact public callable, role, semantic binding and focused parser-versus-internal-construction evidence through canonical mutators before source changes. Preserve all existing contracts and ownership. Constructor effects are none; backend consumers use PostgreSQL and trusted time separately. This is explicitly an additive change to agent-identity-boundary, not an inferred native-only owner. No app, route or production changes.",
+            "Add a constructor for existing behavior while preserving the public wire parser.",
+            "Implement the native adapter for the existing contract: record a new public callable and new semantic binding through canonical mutators before source changes.",
         ] {
             let mut evolution = parse_intent_model_source(source).unwrap();
             assert!(!normalize_provider_intent_for_task(
@@ -88178,6 +88183,13 @@ mod tests {
                 &mut evolution,
             ));
             assert_eq!(evolution.operation, IntentOperation::SemanticChange);
+        }
+        for native_task in [
+            "Wire the native adapter for the existing contract.",
+            "Please implement the native adapter for the existing contract.",
+            "Repair the native adapter without changing the existing contract.",
+        ] {
+            assert!(task_requests_existing_contract_native_realization(native_task), "{native_task}");
         }
     }
 
@@ -88341,6 +88353,37 @@ mod tests {
             assert!(cadence.description.contains(required), "{required}");
         }
         assert!(receipt.payload.allowed_action_families.is_empty());
+    }
+
+    #[test]
+    fn next_preserves_canonical_constructor_route_and_mutation_authority() {
+        let root = copy_minimal_fixture("next-canonical-constructor");
+        initialize_test_git_repository(&root);
+        let module = root.join("module.yaml");
+        let task = "Add a public constructor for the existing behavior. Preserve the public wire parser. Record the additive canonical facade, exact public callable, role and semantic binding through canonical mutators before source changes.";
+        let mut model = parse_intent_model_source(r#"{
+            "spec":"rms/intent-model/v0.1", "operation":"semantic-change",
+            "change_scope":"existing-module", "subjects":["public-constructor"],
+            "facts":{
+                "domain_decisions":{"disposition":"absent","basis":"inferred","rationale":"Existing behavior."},
+                "lifecycle":{"disposition":"absent","basis":"inferred","rationale":"Existing lifecycle."},
+                "effects":{"disposition":"absent","basis":"inferred","rationale":"Pure construction."},
+                "runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"Library API only."},
+                "reuse":{"disposition":"absent","basis":"inferred","rationale":"No new consumer."}
+            },
+            "responsibilities":[], "surface_kinds":[], "binding_preferences":[], "open_questions":[]
+        }"#).unwrap();
+        normalize_provider_intent_for_task(task, &mut model);
+        assert_eq!(model.operation, IntentOperation::SemanticChange);
+        let report = build_next_report_with_intent(&root, Some(&module), task,
+            RawIntentInput { yaml: Some(serde_yaml::to_string(&model).unwrap()), ..RawIntentInput::default() }, None).unwrap();
+        let receipt: RouteReceipt = serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
+        assert_eq!(report.result, NextResult::Ready, "{:#?}", report.blockers);
+        assert_eq!(report.task_classification.lane, TaskLane::Semantic);
+        assert!(report.steps.iter().flat_map(|group| &group.steps).any(|step|
+            step.display.as_deref().is_some_and(|display| display.contains("rms spec plan"))));
+        assert!(!receipt.payload.allowed_action_families.is_empty());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
