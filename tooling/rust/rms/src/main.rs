@@ -27566,27 +27566,43 @@ fn append_verified_dependency_sources(
         {
             continue;
         }
-        let Some(public_binding) = typed_yaml_sequence::<PublicBehaviorBinding>(
+        let public_bindings = typed_yaml_sequence::<PublicBehaviorBinding>(
             &provider_implementation.value,
             &["architecture", "public_behavior_bindings"],
         )
         .into_iter()
-        .find(|candidate| {
+        .filter(|candidate| {
             candidate.public_kind == "capability"
                 && candidate.public_name == dependency.capability
                 && candidate.contract == provider_contract
-        }) else {
-            continue;
-        };
-        if !semantic_function_items(&provider_implementation)
+        }).collect::<Vec<_>>();
+        let [public_binding] = public_bindings.as_slice() else { continue; };
+        let functions = semantic_function_items(&provider_implementation)
             .unwrap_or_default()
-            .iter()
-            .any(|function| {
+            .into_iter()
+            .filter(|function| {
                 get_str(function, &["id"]) == Some(public_binding.semantic_function.as_str())
-                    && get_str(function, &["purity"]) == Some("pure")
             })
-        {
+            .collect::<Vec<_>>();
+        let [function] = functions.as_slice() else { continue; };
+        let purity = get_str(function, &["purity"]);
+        if !matches!(purity, Some("pure" | "effectful" | "boundary")) {
             continue;
+        }
+        if purity != Some("pure") {
+            // Effectful dependencies are inspected, never added to the pure-call
+            // allowlist. Require one exact provider and byte-identical contracts.
+            if find_named_provider_modules_strict(root, &consumer, provider_name).len() != 1 {
+                continue;
+            }
+            let Some(contract) = dependency.contract.as_deref() else { continue; };
+            if !is_safe_relative_artifact_path(contract)
+                || !is_safe_relative_artifact_path(provider_contract)
+                || !fs::read(base.join(contract)).ok().zip(fs::read(provider_base.join(provider_contract)).ok())
+                    .is_some_and(|(consumer, provider)| consumer == provider)
+            {
+                continue;
+            }
         }
         let source_root = get_str(&provider_implementation.value, &["source", "root"])
             .map(|path| provider_base.join(path))
@@ -113614,6 +113630,73 @@ properties:
         assert!(repair.contains("`temporal` is exactly `{scope, expression}`"));
         assert!(repair.contains("never contains `kind`, `command`, `runner`, `generator`, `seed`, `state`, or `schedule`"));
         assert!(repair.contains("`observations: []`, `assumptions: []`, and `temporal: null`"));
+    }
+
+    #[test]
+    fn effectful_dependency_source_propagates_authority_and_rejects_mismatches() {
+        let root = unique_test_dir("effectful-dependency-source");
+        let provider = root.join("modules/provider");
+        let consumer = root.join("modules/consumer");
+        write_test_file(&root.join("system.yaml"), "spec: rms/system/v0.1\n");
+        for (path, name) in [(&provider, "provider"), (&consumer, "consumer")] {
+            write_test_file(&path.join("module.yaml"), &next_module_source(name, "Test exact dependency authority."));
+            write_test_file(&path.join("contracts/cap.yaml"), "spec: rms/contract/v0.3\nname: cap\n");
+        }
+        write_test_file(&provider.join("Cargo.toml"), "[package]\nname='provider'\nversion='0.1.0'\n");
+        write_test_file(&consumer.join("Cargo.toml"), "[package]\nname='consumer'\nversion='0.1.0'\n[dependencies]\nprovider={path='../provider'}\n");
+        write_test_file(&provider.join("src/lib.rs"), "mod port;\n/// Exact documented public facade.\npub fn invoke(a: &mut impl port::Adapter) { port::execute(a); }");
+        write_test_file(&provider.join("src/port.rs"), "pub trait Adapter { fn execute(&mut self); } pub fn execute(a: &mut impl Adapter) { a.execute(); }");
+        write_test_file(&consumer.join("src/lib.rs"), "pub fn call(a: &mut impl Unknown) { provider::invoke(a); }");
+        write_test_file(&provider.join("implementation.yaml"), r#"spec: rms/implementation/v0.2
+module: provider
+binding: rust
+source: {root: src}
+architecture:
+  public_behavior_bindings:
+  - {id: cap-public, public_kind: capability, public_name: cap, contract: contracts/cap.yaml, semantic_function: facade}
+semantic_functions:
+- {id: facade, symbol: 'src/lib.rs#invoke', purity: effectful, authorities: [dynamic-dispatch]}
+"#);
+        write_test_file(&consumer.join("implementation.yaml"), r#"spec: rms/implementation/v0.2
+module: consumer
+binding: rust
+source: {root: src}
+architecture:
+  dependency_behavior_bindings:
+  - {id: cap-provider, capability: cap, contract: contracts/cap.yaml, consumer: 'src/lib.rs#call', resolution: module, provider_module: provider, provider_contract: contracts/cap.yaml}
+semantic_functions:
+- {id: caller, symbol: 'src/lib.rs#call', purity: effectful, authorities: [dynamic-dispatch]}
+"#);
+        let mut provider_manifest = load_manifest(&provider.join("implementation.yaml")).unwrap();
+        write_test_file(&provider.join("seal.yaml"), "test: exact-provider\n");
+        seal_implementation_semantics(&mut provider_manifest, &provider.join("seal.yaml"), SemanticRevisionAuthority::SpecApply).unwrap();
+        let mut manifest = load_manifest(&consumer.join("implementation.yaml")).unwrap();
+        let check = |manifest: &LoadedManifest| build_effect_analysis(manifest).unwrap();
+        let report = check(&manifest);
+        assert_eq!(report.result, effect_analysis::AnalysisResult::Pass, "{report:#?}");
+        assert_eq!(report.functions[0].transitive_authorities, vec!["dynamic-dispatch"]);
+        assert!(trusted_pure_dependency_calls(&manifest).is_empty());
+        let original = manifest.value.clone();
+        set_yaml_value_path(&mut manifest.value, &["semantic_functions"], serde_yaml::from_str("[{id: caller, symbol: 'src/lib.rs#call', purity: pure, authorities: []}]").unwrap());
+        assert_eq!(check(&manifest).result, effect_analysis::AnalysisResult::Fail);
+        set_yaml_value_path(&mut manifest.value, &["semantic_functions"], serde_yaml::from_str("[{id: caller, symbol: 'src/lib.rs#call', purity: effectful, authorities: []}]").unwrap());
+        assert_eq!(check(&manifest).result, effect_analysis::AnalysisResult::Fail);
+        manifest.value = original;
+        write_test_file(&consumer.join("contracts/cap.yaml"), "different contract\n");
+        assert!(!check(&manifest).functions[0].unresolved_calls.is_empty());
+        write_test_file(&consumer.join("contracts/cap.yaml"), "spec: rms/contract/v0.3\nname: cap\n");
+        write_test_file(&consumer.join("Cargo.toml"), "[dependencies]\nprovider={path='../wrong'}\n");
+        assert!(!check(&manifest).functions[0].unresolved_calls.is_empty());
+        write_test_file(&consumer.join("Cargo.toml"), "[dependencies]\nprovider={path='../provider'}\n");
+        assert_eq!(check(&manifest).result, effect_analysis::AnalysisResult::Pass);
+        write_test_file(&provider.join("src/port.rs"), "pub trait Adapter { fn execute(&mut self); } pub fn execute(a: &mut impl Adapter) { a.execute(); std::fs::read_to_string(\"file\"); }");
+        let extra = check(&manifest);
+        assert_eq!(extra.result, effect_analysis::AnalysisResult::Fail);
+        assert!(extra.functions[0].transitive_authorities.contains(&"filesystem".to_string()));
+        write_test_file(&provider.join("src/port.rs"), "pub trait Adapter { fn execute(&mut self); } pub fn execute(a: &mut impl Adapter) { a.execute(); }");
+        write_test_file(&provider.join("seal.yaml"), "tampered: true\n");
+        assert!(!check(&manifest).functions[0].unresolved_calls.is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -2424,7 +2424,8 @@ fn rust_exact_item_reference(
         .iter()
         .filter_map(|item| match item {
             syn::Item::Fn(function)
-                if function.sig.ident == reference && function.attrs.is_empty() =>
+                if function.sig.ident == reference
+                    && function.attrs.iter().all(|attribute| attribute.path().is_ident("doc")) =>
             {
                 Some(())
             }
@@ -2482,7 +2483,11 @@ fn rust_exact_item_reference(
         for module in modules {
             // Expand only inspectable crate-local globs. Unknown external globs
             // cannot establish absence or a unique exported callable.
-            let module_path = module.strip_prefix("crate::")?.replace("::", "/");
+            let module_path = if module == "crate" {
+                "lib".to_string()
+            } else {
+                module.strip_prefix("crate::")?.replace("::", "/")
+            };
             let prefix = path
                 .split_once("/src/")
                 .map(|(prefix, _)| format!("{prefix}/"))
@@ -4456,6 +4461,23 @@ mod tests {
             let source = format!("{helper} fn pure_callback() {{}} fn effect_callback() {{ std::fs::read_to_string(\"x\").ok(); }} fn decide() {{ invoke(pure_callback); }}");
             assert_eq!(report("rust", "src/lib.rs", &source, expectation("decide", "pure", &[])).result, AnalysisResult::Fail, "{helper}");
         }
+    }
+
+    #[test]
+    fn rust_root_glob_and_documented_provider_keep_exact_crate_identity() {
+        let sources = BTreeMap::from([
+            ("src/lib.rs".into(), "mod transition; pub use crate::transition::transition_record;".into()),
+            ("src/driver.rs".into(), "use crate::*; fn run() { transition_record(); } fn external() { provider::invoke(); }".into()),
+            ("src/transition.rs".into(), "/// Pure local record.\npub fn transition_record() {}".into()),
+            ("dependencies/provider/src/lib.rs".into(), "/// Effectful facade.\npub fn invoke() { transition_record(); } fn transition_record() { std::fs::read_to_string(\"file\"); }".into()),
+            ("rms-metadata/rust-crate-alias/provider".into(), "dependencies/provider".into()),
+        ]);
+        let result = analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "test".into(), tool_digest: "test".into(), sources,
+            semantic_functions: vec![expectation("src/driver.rs#run", "pure", &[]), expectation("src/driver.rs#external", "effectful", &["filesystem"])],
+            authority_facades: Vec::new(), trusted_external_calls: BTreeSet::new(),
+        });
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
     }
 
     #[test]
