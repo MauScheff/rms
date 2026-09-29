@@ -79,7 +79,7 @@ const CONSTRAINED_PROVIDER_FEATURES: &[&str] = &[
     "unified_exec",
     "workspace_dependencies",
 ];
-const INTENT_NORMALIZATION_VERSION: &str = "rms-intent-normalization/v4";
+const INTENT_NORMALIZATION_VERSION: &str = "rms-intent-normalization/v5";
 const ROUTE_RECEIPT_SPEC: &str = "rms/route-receipt/v0.1";
 const DEFAULT_PROVIDER_TIMEOUT_SECONDS: u64 = 900;
 const DEFAULT_DOGFOOD_PHASE_TIMEOUT_SECONDS: u64 = 3600;
@@ -43166,7 +43166,8 @@ fn normalize_provider_intent_for_task(task: &str, model: &mut IntentModel) -> bo
     }
 
     if task_requests_declared_role_implementation_completion(task)
-        && model.facts.domain_decisions.basis == IntentBasis::Inferred
+        && (model.facts.domain_decisions.basis == IntentBasis::Inferred
+            || model.facts.domain_decisions.disposition == IntentDisposition::Absent)
     {
         if model.operation != IntentOperation::ImplementationChange {
             model.operation = IntentOperation::ImplementationChange;
@@ -43223,6 +43224,7 @@ fn task_requests_declared_role_implementation_completion(task: &str) -> bool {
         "preserve its product semantics",
         "preserve product semantics",
         "preserve existing semantics",
+        "preserve its current canonical contracts and source behavior",
         "semantics unchanged",
     ]
     .iter()
@@ -43234,6 +43236,7 @@ fn task_requests_declared_role_implementation_completion(task: &str) -> bool {
             "implementation",
             "declared role",
             "proof runner",
+            "property runner",
             "property test",
             "oracle check",
             "parser",
@@ -43254,6 +43257,10 @@ fn task_requests_declared_role_implementation_completion(task: &str) -> bool {
         "change semantics",
         "evolve semantics",
         "new semantics",
+        "add an oracle",
+        "add a new oracle",
+        "add an evidence declaration",
+        "add a new evidence declaration",
     ]
     .iter()
     .any(|phrase| normalized.contains(phrase));
@@ -88256,6 +88263,62 @@ mod tests {
             classify_intent_model(&model).lane,
             TaskLane::ImplementationCandidate
         );
+    }
+
+    #[test]
+    fn declared_proof_completion_normalizes_inferred_reuse_without_erasing_explicit_facts() {
+        let tasks = [
+            "Implement the declared enrollment durability and exact recovery property runners in modules/bleep-agent-sdk-boundary/tests/enrollment_durability.rs and enrollment_recovery.rs for bleep-agent-sdk-boundary; preserve its current canonical contracts and source behavior",
+            "Implement the existing declared proof runners in modules/bleep-agent-sdk-boundary/tests/machine_probe.rs and modules/bleep-agent-sdk-boundary/tests/trace_producer.rs for bleep-agent-sdk-boundary without changing product semantics. Fill only these declared role bodies so effect results and all reachable coordinator states can be replayed. Preserve all existing canonical contracts, input spaces, oracles, evidence declarations, dependencies, effects, ownership, and source behavior.",
+        ];
+        for task in tasks {
+            for basis in [IntentBasis::Inferred, IntentBasis::Explicit] {
+                let mut model = parse_intent_model_source(r#"{
+                    "spec":"rms/intent-model/v0.1",
+                    "operation":"semantic-change","change_scope":"existing-module",
+                    "subjects":["bleep-agent-sdk-boundary"],
+                    "facts":{
+                        "domain_decisions":{"disposition":"absent","basis":"inferred","rationale":"Existing decisions remain unchanged."},
+                        "lifecycle":{"disposition":"absent","basis":"inferred","rationale":"Existing lifecycle remains unchanged."},
+                        "effects":{"disposition":"absent","basis":"inferred","rationale":"Existing effects remain unchanged."},
+                        "runnable_surface":{"disposition":"absent","basis":"inferred","rationale":"Proof only."},
+                        "reuse":{"disposition":"unknown","basis":"inferred","rationale":"Other consumers unknown."}
+                    },
+                    "responsibilities":[{"id":"proof","kind":"monitor","summary":"Complete existing proof."}],
+                    "surface_kinds":[],"binding_preferences":[],
+                    "open_questions":["Are these proof runners consumed by other modules?"]
+                }"#).unwrap();
+                model.facts.domain_decisions.basis = basis;
+                let original = model.clone();
+                assert!(normalize_provider_intent_for_task(task, &mut model));
+                assert_eq!(model.operation, IntentOperation::ImplementationChange);
+                assert_eq!(model.facts.domain_decisions.basis, basis);
+                assert_eq!(model.facts.reuse.disposition, IntentDisposition::Absent);
+                assert!(model.open_questions.is_empty());
+                assert_eq!(classify_intent_model(&model).lane, TaskLane::ImplementationCandidate);
+
+                for disposition in [IntentDisposition::Unknown, IntentDisposition::Required] {
+                    let mut explicit = original.clone();
+                    explicit.facts.reuse.basis = IntentBasis::Explicit;
+                    explicit.facts.reuse.disposition = disposition;
+                    normalize_provider_intent_for_task(task, &mut explicit);
+                    assert_eq!(explicit.facts.reuse.disposition, disposition);
+                    assert_eq!(explicit.facts.reuse.basis, IntentBasis::Explicit);
+                    if disposition == IntentDisposition::Unknown {
+                        assert!(!explicit.open_questions.is_empty());
+                    }
+                }
+                let mut explicit_domain = original.clone();
+                explicit_domain.facts.domain_decisions.basis = IntentBasis::Explicit;
+                explicit_domain.facts.domain_decisions.disposition = IntentDisposition::Required;
+                normalize_provider_intent_for_task(task, &mut explicit_domain);
+                assert_eq!(explicit_domain.operation, IntentOperation::SemanticChange);
+                assert_eq!(explicit_domain.facts.reuse.disposition, IntentDisposition::Unknown);
+            }
+            for mutation in ["add a contract", "add an invariant", "add a transition", "add a new oracle", "add a new evidence declaration"] {
+                assert!(!task_requests_declared_role_implementation_completion(&format!("{task}; {mutation}")));
+            }
+        }
     }
 
     #[test]
