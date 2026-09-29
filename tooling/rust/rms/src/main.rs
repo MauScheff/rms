@@ -60205,17 +60205,19 @@ fn render_spec_plan_repair_prompt(
         .unwrap_or_default();
     format!(
         "# RMS Semantic Plan Repair\n\nApply every diagnostic literally to the candidate below and return only the corrected YAML or JSON object. Preserve all unaffected meaning. Canonical proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, and `implementation.yaml` changes require an applicable `rms/semantic-change/v0.1` object even when runtime behavior is unchanged. Canonical manifests are never declared source role files and must never be recommended for direct editing. Prefer JSON when any freeform string contains `:`, `#`, `{{`, `}}`, `[`, or `]`; otherwise quote every freeform YAML scalar with valid YAML double-quoted escaping. Never emit an unquoted freeform scalar containing a colon followed by whitespace. A requested fuzz target uses the existing `properties` change section with `kind: fuzz`: put an existing property ID under `properties.set` or a new ID under `properties.add`, and include its complete executable realization. `rms spec apply` maps that item into canonical module and implementation `fuzz_targets`; never invent a top-level `fuzz_targets` change field. For any `*-set-missing` diagnostic, move the named item unchanged from that section's `set` list to its `add` list. For any `*-add-exists` diagnostic, move the named item unchanged from `add` to `set`, except for `semantic.binding-dependency-add-exists`, which follows the complete-set rule below. Do not leave an item in both lists. A `public_behavior_bindings.*[].observation_source` has exactly two scalar fields: `{{kind: transition-record, command: trace}}` for transition-backed command or capability behavior or `{{kind: invocation-record, command: trace}}` for stateless query or non-transition boundary behavior. `command` names an existing implementation `commands` key. Never emit `name`, `value`, or `kind: semantic-function` inside `observation_source`. Do not inspect files or call tools.{diagnostic_scope_repair}{contract_proof_scope_repair}{realization_repair}{implementation_command_repair}{collection_preservation_repair}{temporal_repair}{contract_behavior_repair}{dependency_binding_repair}{binding_dependency_repair}{authority_repair}{public_capability_repair}{missing_implementation_owner_repair}{probe_trace_projection_repair}{proof_closure_repair}{contract_evidence_repair}{machine_closure_repair}{machine_identifier_repair}{machine_mode_repair}{pure_scaffold_replacement_repair}{required_role_repair}{surface_repair}{transition_output_repair}{transition_authority_repair}{resource_protocol_identifier_repair}{contract_identifier_repair}{evidence_obligation_repair}{capability_contract_repair}{runner_selection_repair}{bounded_context}\n\nCandidate response:\n```yaml\n{}\n```\n\nRMS diagnostics:\n```json\n{}\n```",
-        truncate_for_prompt(invalid_response, 48_000),
+        invalid_response,
         serde_json::to_string_pretty(diagnostics).unwrap_or_default()
     )
-    .replace(
+    .split_once("\n\nCandidate response:")
+    .map(|(instructions, candidate)| format!("{}\n\nCandidate response:{}", instructions.replace(
         "for transition-backed command or capability behavior",
         "when that command is a declared transition-record trace producer",
     )
     .replace(
         "for stateless query or non-transition boundary behavior",
         "for a stateless query or a command without a transition-record trace producer",
-    )
+    ), candidate))
+    .expect("repair template contains the candidate boundary")
 }
 
 fn extract_spec_plan_contract_context(prompt: &str) -> String {
@@ -113612,6 +113614,32 @@ properties:
         assert!(repair.contains("`temporal` is exactly `{scope, expression}`"));
         assert!(repair.contains("never contains `kind`, `command`, `runner`, `generator`, `seed`, `state`, or `schedule`"));
         assert!(repair.contains("`observations: []`, `assumptions: []`, and `temporal: null`"));
+    }
+
+    #[test]
+    fn semantic_plan_repair_preserves_large_complete_candidate() {
+        let candidate = serde_json::to_string_pretty(&json!({
+            "spec": "rms/semantic-change/v0.1",
+            "machine": {
+                "effect_protocols": (0..1800).map(|index| json!({
+                    "effect": format!("Request{index}"),
+                    "description": "Preserve exact request and result correlation: éλ; for transition-backed command or capability behavior.",
+                    "result": format!("Result{index}")
+                })).collect::<Vec<_>>(),
+                "transitions": [{"case": "unaffected-final-transition", "from": "Ready", "to": "Ready"}]
+            }
+        })).unwrap();
+        assert!(candidate.len() > 100_000);
+        let diagnostics = vec![error_diagnostic("semantic.property-set-missing",
+            Path::new("module.yaml"), "move the named property unchanged to add")];
+        let repair = render_spec_plan_repair_prompt("bounded schema", &candidate, &diagnostics);
+        let embedded = repair.split_once("Candidate response:\n```yaml\n").unwrap().1
+            .rsplit_once("\n```\n\nRMS diagnostics:").unwrap().0;
+        assert_eq!(embedded, candidate);
+        assert_eq!(serde_json::from_str::<JsonValue>(embedded).unwrap(),
+            serde_json::from_str::<JsonValue>(&candidate).unwrap());
+        assert!(embedded.contains("unaffected-final-transition"));
+        assert!(!embedded.contains("[truncated for prompt]"));
     }
 
     #[test]
