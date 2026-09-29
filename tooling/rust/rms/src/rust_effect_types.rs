@@ -271,6 +271,10 @@ impl RustTypeIndex {
     fn parse_type(&self, value: &Type) -> Option<RustValueType> {
         match value {
             Type::Reference(reference) => self.parse_type(&reference.elem),
+            Type::Array(array) => self.parse_type(&array.elem)
+                .map(|element| RustValueType::Sequence(Box::new(element))),
+            Type::Tuple(tuple) => Some(RustValueType::Tuple(tuple.elems.iter()
+                .map(|element| self.parse_type(element).unwrap_or(RustValueType::Unknown)).collect())),
             Type::Slice(slice) => self
                 .parse_type(&slice.elem)
                 .map(|element| RustValueType::Sequence(Box::new(element))),
@@ -350,6 +354,27 @@ impl RustTypeIndex {
             }
             _ => None,
         }
+    }
+
+    pub(super) fn standard_external_crate_available(&self, root: &str) -> bool {
+        use syn::visit::{self, Visit};
+        struct Rebound<'a> { root: &'a str, found: bool }
+        impl<'ast> Visit<'ast> for Rebound<'_> {
+            fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+                let binding = item.rename.as_ref().map(|(_, name)| name).unwrap_or(&item.ident);
+                self.found |= binding == self.root && item.ident != self.root;
+                visit::visit_item_extern_crate(self, item);
+            }
+        }
+        let mut rebound = Rebound { root, found: false };
+        // A crate-root extern alias also affects calls in another source file.
+        // Refuse ambiguous roots across the available Rust source closure.
+        for (path, source) in &self.sources {
+            if !path.ends_with(".rs") { continue; }
+            let Ok(file) = syn::parse_file(source) else { return false; };
+            rebound.visit_file(&file);
+        }
+        !rebound.found
     }
 
     fn resolve_named_type(&self, reference: &str) -> Option<String> {

@@ -248,6 +248,41 @@
           "type": "string",
           "minLength": 1
         },
+        "execution_binding": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["kind"],
+              "properties": {"kind": {"const": "synchronous"}},
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind", "runtime", "state_field", "records_field", "pending_field", "input_poll", "executors"],
+              "properties": {
+                "kind": {"const": "persistent-async"},
+                "runtime": {"type": "string", "pattern": "^[^#]+#[^#]+$"},
+                "state_field": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+                "records_field": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+                "pending_field": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+                "input_poll": {"type": "string", "pattern": "^[^#]+#[^#]+$"},
+                "executors": {
+                  "type": "array", "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["symbol", "request_parameter"],
+                    "properties": {
+                      "symbol": {"type": "string", "pattern": "^[^#]+#[^#]+$"},
+                      "request_parameter": {"type": "integer", "minimum": 0}
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
         "transition_record_function": {
           "type": "string",
           "minLength": 1

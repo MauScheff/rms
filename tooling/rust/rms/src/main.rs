@@ -33,6 +33,7 @@ mod binding_migration;
 mod composition_model;
 mod effect_analysis;
 mod effect_executor;
+mod persistent_async;
 mod hunt;
 mod probe;
 mod proof_certificate;
@@ -2221,6 +2222,7 @@ struct SemanticFunctionFinalStateReport {
 
 #[derive(Clone, Debug, Default, Serialize)]
 struct MachineFinalStateReport {
+    execution_binding: Option<persistent_async::ExecutionBinding>,
     mode: Option<String>,
     transition_signature: Option<String>,
     driver_function: Option<String>,
@@ -3720,6 +3722,8 @@ struct SurfaceDelegation {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SemanticMachineChange {
+    #[serde(default)]
+    execution_binding: Option<persistent_async::ExecutionBinding>,
     #[serde(default, deserialize_with = "deserialize_nullable_string_default")]
     mode: String,
     #[serde(default)]
@@ -3785,6 +3789,8 @@ struct MachineChange {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MachineChangeMachine {
+    #[serde(default)]
+    execution_binding: Option<persistent_async::ExecutionBinding>,
     mode: String,
     #[serde(default)]
     initial_state: Option<String>,
@@ -4117,6 +4123,7 @@ struct SystemTraceReport {
 
 #[derive(Clone, Debug, Default, Serialize)]
 struct StructureMachineReport {
+    execution_binding: Option<persistent_async::ExecutionBinding>,
     name: Option<String>,
     mode: Option<String>,
     transition_signature: Option<String>,
@@ -27234,6 +27241,18 @@ fn validate_context_map(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnos
 }
 
 fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    if get_path(&manifest.value, &["architecture", "machine", "execution_binding"]).is_some()
+        && (get_str(&manifest.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC)
+            || get_str(&manifest.value, &["binding"]) != Some("rust"))
+    {
+        diagnostics.push(error("structure.execution-binding-unsupported", &manifest.path, "execution_binding requires a Rust implementation v0.2 binding"));
+    }
+    if get_str(&manifest.value, &["architecture", "machine", "execution_binding", "kind"]) == Some("persistent-async")
+        && (get_str(&manifest.value, &["architecture", "machine", "mode"]).is_none_or(|mode| !is_stateful_machine_mode(mode))
+            || get_string_array(&manifest.value, &["architecture", "machine", "effects"]).is_empty())
+    {
+        diagnostics.push(error("structure.execution-binding-unsupported", &manifest.path, "persistent async execution requires a stateful machine with declared effects"));
+    }
     require_str(manifest, diagnostics, "module", &["module"]);
     require_str(manifest, diagnostics, "binding", &["binding"]);
     require_str(manifest, diagnostics, "source.root", &["source", "root"]);
@@ -33798,6 +33817,12 @@ fn inspect_rust_typing_file(
     parsed: &syn::File,
     summary: &mut RustTypingSummary,
 ) {
+    if get_str(&implementation.value, &["architecture", "machine", "execution_binding", "kind"])
+        == Some("persistent-async")
+    {
+        let base = implementation.path.parent().unwrap_or_else(|| Path::new("."));
+        summary.async_sources.insert(display_relative(base, path), parsed.clone());
+    }
     let allowed_public_field_structs: BTreeSet<_> = get_string_array(
         &implementation.value,
         &["architecture", "allowed_public_field_structs"],
@@ -34522,6 +34547,7 @@ fn collect_rust_imports(file: &syn::File) -> Vec<RustImport> {
 
 #[derive(Default)]
 struct RustTypingSummary {
+    async_sources: BTreeMap<String, syn::File>,
     public_types: BTreeSet<String>,
     private_types: BTreeSet<String>,
     public_structs_with_private_fields: BTreeSet<String>,
@@ -34953,6 +34979,39 @@ fn validate_rust_machine_execution_path(
     }
 
     let machine_types = machine_types_from_value(&implementation.value);
+    let execution_binding = get_path(&implementation.value, &["architecture", "machine", "execution_binding"])
+        .map(|value| serde_yaml::from_value::<persistent_async::ExecutionBinding>(value.clone()));
+    let persistent = match execution_binding {
+        Some(Ok(binding)) if binding.is_persistent() => {
+            if get_str(&implementation.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC) {
+                diagnostics.push(error("structure.persistent-async-binding", &implementation.path, "persistent async execution requires implementation v0.2"));
+            }
+            let types = persistent_async::Types {
+                state: machine_types.state.as_deref().unwrap_or(""),
+                input: machine_types.input.as_deref().unwrap_or(""),
+                record: machine_types.transition_record.as_deref().unwrap_or(""),
+                effect: machine_types.effect.as_deref().unwrap_or(""),
+                result: machine_types.effect_result.as_deref().unwrap_or(""),
+                request_envelope: machine_types.effect_envelope.as_deref().unwrap_or(""),
+                result_envelope: machine_types.effect_result_envelope.as_deref().unwrap_or(""),
+            };
+            let protocols = existing_effect_protocols(implementation).into_iter().filter_map(|protocol| protocol.executor_symbol).collect::<Vec<_>>();
+            for message in (persistent_async::Index { files: &summary.async_sources }).validate(
+                &binding,
+                get_str(&implementation.value, &["architecture", "machine", "driver_function"]).unwrap_or(""),
+                &protocols,
+                &types,
+            ) {
+                diagnostics.push(error("structure.persistent-async-binding", &implementation.path, message));
+            }
+            true
+        }
+        Some(Err(reason)) => {
+            diagnostics.push(error("structure.persistent-async-binding", &implementation.path, format!("invalid execution binding: {reason}")));
+            false
+        }
+        _ => false,
+    };
     if summary
         .function_signatures
         .get(transition_record_function)
@@ -34979,7 +35038,7 @@ fn validate_rust_machine_execution_path(
             ),
         ));
     }
-    if summary
+    if !persistent && summary
         .function_signatures
         .get(driver)
         .is_none_or(|signature| {
@@ -35000,7 +35059,7 @@ fn validate_rust_machine_execution_path(
             ),
         ));
     }
-    if summary
+    if !persistent && summary
         .function_signatures
         .get(driver)
         .and_then(|signature| signature.return_collection_item_type.as_deref())
@@ -35052,7 +35111,7 @@ fn validate_rust_machine_execution_path(
         if let Some(signature) = summary.function_signatures.get(executor) {
             let expected_input = machine_types.effect.as_deref();
             let expected_output = machine_types.effect_result.as_deref();
-            if !rust_executor_has_effect_signature(signature, expected_input, expected_output) {
+            if !persistent && !rust_executor_has_effect_signature(signature, expected_input, expected_output) {
                 diagnostics.push(error(
                     "structure.effect-protocol-executor-signature-mismatch",
                     &implementation.path,
@@ -53099,6 +53158,8 @@ fn build_structure_report(implementation: &Path) -> Result<StructureReport> {
 
 fn structure_machine_report(value: &YamlValue) -> StructureMachineReport {
     StructureMachineReport {
+        execution_binding: get_path(value, &["architecture", "machine", "execution_binding"])
+            .and_then(|value| serde_yaml::from_value(value.clone()).ok()),
         name: get_str(value, &["architecture", "machine", "name"]).map(str::to_string),
         mode: get_str(value, &["architecture", "machine", "mode"]).map(str::to_string),
         transition_signature: get_str(value, &["architecture", "machine", "transition_signature"])
@@ -53661,6 +53722,10 @@ fn prepare_machine_plan_provider_response(
     }
 }
 
+fn render_execution_binding_guidance(out: &mut String) -> std::fmt::Result {
+    writeln!(out, "Rust implementation v0.2 may explicitly set `machine.execution_binding`. Omission retains the existing binding; `{{kind: synchronous}}` restores the State/Input -> records and Effect -> EffectResult signature checks. The alternative is `{{kind: persistent-async, runtime: path#Runtime, state_field: state, records_field: records, pending_field: pending, input_poll: path#Adapters::poll_input, executors: [{{symbol: path#execute, request_parameter: 1}}]}}`. Parameter indices are zero-based. List every effect protocol executor exactly once. Runtime storage must retain the declared State, Vec<TransitionRecord>, and Vec<Future<Output = EffectResultEnvelope>>. The driver accepts &mut Runtime first; the input poll method returns Poll<Option<Input>>. Executor request parameters use the declared EffectEnvelope and futures yield the declared EffectResultEnvelope. Keep Effect and EffectResult closed enums separate. Unsupported source forms, unknown calls, and undeclared adapter authority remain blockers. This checks storage/signature representation, not cancellation, correlation, scheduling, or drop safety; executable lifecycle properties must prove those promises.")
+}
+
 fn render_machine_plan_prompt(
     implementation: &LoadedManifest,
     root: &Path,
@@ -53915,6 +53980,7 @@ fn render_machine_plan_prompt(
     writeln!(out)?;
     writeln!(out, "For each variant category, `set` replaces the complete list, then `remove` deletes named existing cases, then `add` appends new cases. Prefer `set` when replacing generated scaffold semantics; leave it `null` for an incremental change.")?;
     writeln!(out, "`machine.types.observed_event` names the binding-native enum for external observations entering the machine. Omit it only when observed inputs and emitted events intentionally share `machine.types.event`; older bindings without the field keep that fallback. Machine apply synchronizes a declared observed-event type into `representation.closed_variants`.")?;
+    render_execution_binding_guidance(&mut out)?;
     writeln!(out, "Transition items use `from`, `on`, `to`, stable `case`, optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every semantic branch has its own case, including multiple destinations or outputs for the same state and input.")?;
     writeln!(out, "For an `rms/machine-probe/v0.2` binding, verification evaluates the Cartesian product of every concrete representative state example and input example. A state/input pair with no declared transition may remain implicit only when the implementation preserves the complete state, emits no commands or effects, returns no reply, and produces a typed rejection. Once any transition for a state/input pair is declared, every branch exercised by representative examples for that pair must be declared separately.")?;
     writeln!(out, "Canonical machine transitions have no wildcard state syntax. Expand a source branch such as `case (_, input)` into every exact `from`/`on` pair where it changes state, emits output, replies, or otherwise accepts the input. A generic state-preserving typed-refusal default does not require enumeration for otherwise undeclared pairs. One source branch case name may be reused across several exact pairs; conformance scopes case identity by `from` plus `on` plus `case`.")?;
@@ -54056,6 +54122,18 @@ fn parse_machine_change(
 
 fn validate_machine_change(manifest: &LoadedManifest, change: &MachineChange) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
+    if change.machine.execution_binding.is_some()
+        && (get_str(&manifest.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC)
+            || get_str(&manifest.value, &["binding"]) != Some("rust"))
+    {
+        diagnostics.push(error("machine-change.execution-binding-unsupported", &manifest.path, "execution_binding requires a Rust implementation v0.2 binding"));
+    }
+    if change.machine.execution_binding.as_ref().is_some_and(persistent_async::ExecutionBinding::is_persistent)
+        && (!is_stateful_machine_mode(&change.machine.mode)
+            || final_machine_variants(manifest, "effects", &change.machine.effects, false).is_empty())
+    {
+        diagnostics.push(error("machine-change.execution-binding-unsupported", &manifest.path, "persistent async execution requires a stateful machine with declared effects"));
+    }
     if change.spec != "rms/machine-change/v0.1" {
         diagnostics.push(error(
             "machine-change.spec",
@@ -55970,6 +56048,9 @@ fn write_machine_change_record(
 }
 
 fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChange) {
+    if let Some(binding) = &change.machine.execution_binding {
+        set_yaml_value_path(value, &["architecture", "machine", "execution_binding"], serde_yaml::to_value(binding).expect("typed execution binding serializes"));
+    }
     let previous_types = machine_types_from_value(value);
     let module_name = get_str(value, &["module"])
         .map(str::to_string)
@@ -56345,9 +56426,7 @@ fn ensure_effect_executor_semantic_functions(value: &mut YamlValue) {
             continue;
         };
         if let Some(owner) = functions.iter_mut().find(|function| {
-            get_str(function, &["symbol"]).is_some_and(|candidate| {
-                semantic_symbol_name(candidate) == semantic_symbol_name(&symbol)
-            })
+            get_str(function, &["symbol"]) == Some(symbol.as_str())
         }) {
             set_yaml_string_path(owner, &["kind"], "effect-executor");
             set_yaml_string_path(owner, &["purity"], "effectful");
@@ -56370,6 +56449,10 @@ fn ensure_effect_executor_semantic_functions(value: &mut YamlValue) {
         set_yaml_string_path(&mut owner, &["symbol"], &symbol);
         set_yaml_string_path(&mut owner, &["kind"], "effect-executor");
         set_yaml_string_path(&mut owner, &["purity"], "effectful");
+        if get_str(value, &["spec"]) == Some(IMPLEMENTATION_V2_SPEC) {
+            set_yaml_string_path(&mut owner, &["trust"], "internal");
+            set_yaml_sequence_path(&mut owner, &["authorities"], Vec::new());
+        }
         functions.push(owner);
     }
     set_yaml_sequence_path(value, &["semantic_functions"], functions);
@@ -56429,6 +56512,10 @@ fn machine_final_state_report(
         })
         .collect::<Vec<_>>();
     MachineFinalStateReport {
+        execution_binding: change.machine.execution_binding.clone().or_else(|| {
+            get_path(&manifest.value, &["architecture", "machine", "execution_binding"])
+                .and_then(|value| serde_yaml::from_value(value.clone()).ok())
+        }),
         mode: Some(change.machine.mode.clone()),
         transition_signature: Some(change.machine.transition_signature.clone().unwrap_or_else(
             || {
@@ -56753,6 +56840,9 @@ fn print_machine_apply_report(report: &MachineApplyReport) {
 
 fn print_machine_final_state(final_machine: &MachineFinalStateReport) {
     println!("final_machine:");
+    if let Some(binding) = &final_machine.execution_binding {
+        println!("  execution_binding: {}", serde_json::to_string(binding).unwrap_or_default());
+    }
     println!(
         "  mode: {}",
         final_machine.mode.as_deref().unwrap_or("<not declared>")
@@ -60947,6 +61037,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Machine mode is independent of module shape. A `boundary-adapter` that performs one synchronous decision, retains no pointer, handle, resource, authority, or ordering state between calls, and always returns to `Ready` uses `machine.mode: stateless-decision-machine`, `machine.transition_signature: input-only`, one `Ready` state, `Ready -> Ready` transitions, and a concrete `machine.justification`. Do not use `boundary-machine` merely because the module has the `boundary` profile. Preserve the structured `declaration.boundary` for untrusted input and output obligations; never use `remove_boundary: true` while the boundary profile or trust boundary remains.")?;
     writeln!(out, "Machine transition items use `from`, `on`, `to`, stable ASCII identifier `case` values such as `valid_example_accepted` (not kebab-case), optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names. Every transition on a declared command also supplies `reply`, `rejection`, or a non-empty `no_reply_justification`; an asynchronous command normally states `effect result is pending` and its effect-result transition supplies the terminal response.")?;
     writeln!(out, "When external observations use a different binding enum from emitted events, set `machine.types.observed_event` to that exact type. Omit it only for an intentional shared event enum; older declarations continue to fall back to `machine.types.event`.")?;
+    render_execution_binding_guidance(&mut out)?;
     writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. One role kind cannot repeat the same path. If one implementation executes several private backend operations, model one aggregate boundary effect and one executor role, or use distinct declared effects with distinct executor paths. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. An explicitly effect-free replacement uses `stateful-transition-machine` when lifecycle state remains and omits the driver function and role. A rejection transition must follow one coherent terminal policy; it cannot preserve a declared success terminal while claiming movement to a separate rejection terminal. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use a scalar implementation identifier `resource` matching `^[A-Za-z_][A-Za-z0-9_]*$`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses the same exact `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings use exactly `{{authority, roles, safe_facade, evidence}}`. `roles` is a non-empty list of exact declared role kinds such as `effect_executor`, never method names. `safe_facade` is one exact relative `path#symbol`. `evidence` is always a non-empty list of module-relative paths, even when it contains one path. Role removal items use `kind` and optional `path`. A Swift public API or language library facade is a `public_facade` role, not a runnable surface. Role kinds are open stable identifiers for implementation ownership. Use `public_facade` for a maintained C header or language facade, `package_manifest` for `Package.swift` or another native package manifest, and `build_support` for a module-local build or link script. Declare each exact path through `roles.add` or `roles.set` before editing it. These files are not runnable product surfaces. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically. `set` is a complete replacement. Use `add` only for ids absent from the current complete set. If an existing dependency remains sufficient, leave this section unchanged; do not add it again.")?;
     writeln!(out, "Each `authorities.add[]` or `.set[]` item is exactly `{{id, kind, capabilities, rationale}}`. `id` is a unique stable kebab-case id. `kind` is exactly `privileged`, `unsafe`, or `foreign`; resource is not an authority kind. `capabilities` is a non-empty string list. `rationale` is non-empty. Add an authority only when a declared function needs it; then bind it through the exact authority-binding shape.")?;
@@ -61178,7 +61269,7 @@ fn run_spec_apply(
         .map(|(implementation, machine_change)| {
             machine_final_state_report(implementation, machine_change)
         });
-    let final_semantic_functions = context
+    let final_semantic_functions = candidate
         .implementation
         .as_ref()
         .zip(
@@ -61187,12 +61278,8 @@ fn run_spec_apply(
                 .as_ref()
                 .filter(|functions| semantic_functions_change_has_operations(functions)),
         )
-        .map(|(implementation, functions)| {
-            let mut value = implementation.value.clone();
-            if let Some(machine_change) = machine_change.as_ref() {
-                apply_machine_change_to_manifest(&mut value, machine_change);
-            }
-            final_semantic_function_declarations_from_value(&value, functions)
+        .map(|(implementation, _)| {
+            existing_semantic_function_declarations(implementation)
                 .into_iter()
                 .map(|function| SemanticFunctionFinalStateReport {
                     id: get_str(&function, &["id"])
@@ -64119,13 +64206,6 @@ fn existing_semantic_function_declarations_from_value(value: &YamlValue) -> Vec<
         .unwrap_or_default()
 }
 
-fn final_semantic_function_declarations(
-    implementation: &LoadedManifest,
-    change: &SemanticFunctionsChange,
-) -> Vec<YamlValue> {
-    final_semantic_function_declarations_from_value(&implementation.value, change)
-}
-
 fn final_semantic_function_declarations_from_value(
     value: &YamlValue,
     change: &SemanticFunctionsChange,
@@ -64144,6 +64224,16 @@ fn final_semantic_function_declarations_from_value(
     });
     functions.extend(change.add.iter().map(semantic_function_change_yaml));
     functions
+}
+
+fn apply_explicit_semantic_function_changes(
+    value: &mut YamlValue,
+    change: Option<&SemanticFunctionsChange>,
+) {
+    if let Some(change) = change.filter(|change| semantic_functions_change_has_operations(change)) {
+        let functions = final_semantic_function_declarations_from_value(value, change);
+        set_yaml_sequence_path(value, &["semantic_functions"], functions);
+    }
 }
 
 fn validate_semantic_functions(
@@ -64456,13 +64546,14 @@ fn validate_semantic_functions(
     }
 
     let mut candidate_implementation = implementation.value.clone();
+    apply_explicit_semantic_function_changes(&mut candidate_implementation, Some(request));
     if let Some(machine_change) =
         semantic_machine_change_to_machine_change(change, Some(implementation))
     {
         apply_machine_change_to_manifest(&mut candidate_implementation, &machine_change);
     }
     let final_functions =
-        final_semantic_function_declarations_from_value(&candidate_implementation, request);
+        existing_semantic_function_declarations_from_value(&candidate_implementation);
     let final_ids = final_functions
         .iter()
         .filter_map(|item| get_str(item, &["id"]))
@@ -64836,7 +64927,7 @@ fn semantic_machine_change_requests_change(
 }
 
 fn semantic_machine_change_has_structural_operations(machine: &SemanticMachineChange) -> bool {
-    machine.initial_state.is_some()
+    machine.execution_binding.is_some() || machine.initial_state.is_some()
         || [
             &machine.states,
             &machine.commands,
@@ -67154,18 +67245,11 @@ fn final_implementation_value(
 ) -> Option<YamlValue> {
     let implementation = context.implementation.as_ref()?;
     let mut value = implementation.value.clone();
+    apply_explicit_semantic_function_changes(&mut value, change.semantic_functions.as_ref());
     if let Some(machine_change) =
         semantic_machine_change_to_machine_change(change, Some(implementation))
     {
         apply_machine_change_to_manifest(&mut value, &machine_change);
-    }
-    if let Some(functions) = change
-        .semantic_functions
-        .as_ref()
-        .filter(|request| semantic_functions_change_has_operations(request))
-    {
-        let declarations = final_semantic_function_declarations_from_value(&value, functions);
-        set_yaml_sequence_path(&mut value, &["semantic_functions"], declarations);
     }
     if let Some(bindings) = change
         .public_behavior_bindings
@@ -68378,6 +68462,7 @@ fn semantic_machine_change_to_machine_change(
         }),
         machine: MachineChangeMachine {
             mode,
+            execution_binding: machine.execution_binding.clone(),
             initial_state,
             justification: machine.justification.clone(),
             transition_signature: machine.transition_signature.clone(),
@@ -68484,6 +68569,10 @@ fn spec_apply_candidate_context(
         {
             apply_implementation_command_changes(&mut implementation.value, commands);
         }
+        apply_explicit_semantic_function_changes(
+            &mut implementation.value,
+            change.semantic_functions.as_ref(),
+        );
         if let Some(machine_change) = machine_change {
             apply_machine_change_to_manifest(&mut implementation.value, machine_change);
         }
@@ -68517,18 +68606,6 @@ fn spec_apply_candidate_context(
                 &mut implementation.value,
                 &["architecture", "trace", "producers"],
                 final_producers.iter().map(trace_producer_yaml).collect(),
-            );
-        }
-        if let Some(functions) = change
-            .semantic_functions
-            .as_ref()
-            .filter(|functions| semantic_functions_change_has_operations(functions))
-        {
-            let declarations = final_semantic_function_declarations(implementation, functions);
-            set_yaml_sequence_path(
-                &mut implementation.value,
-                &["semantic_functions"],
-                declarations,
             );
         }
         if let Some(surfaces) = change.surfaces.as_ref() {
@@ -102828,6 +102905,220 @@ machine:
             &executor,
             "effect-executor"
         ));
+    }
+
+    fn effect_owner_v02_context() -> SpecTargetContext {
+        SpecTargetContext {
+            target: PathBuf::from("implementation.yaml"),
+            module: None,
+            implementation: Some(LoadedManifest {
+                path: PathBuf::from("implementation.yaml"),
+                value: serde_yaml::from_str(r#"spec: rms/implementation/v0.2
+module: delivery
+binding: rust
+source: {root: ., public_entrypoint: src/lib.rs}
+architecture:
+  shape: boundary-adapter
+  machine:
+    mode: boundary-machine
+    initial_state: Ready
+    states: [Ready, Waiting]
+    commands: [Send]
+    effects: [Send]
+    effect_results: [Sent]
+    effect_protocols: []
+    transition_function: transition
+    transitions: []
+semantic_functions:
+- {id: transition-model, symbol: transition, kind: transition, purity: pure, trust: internal, authorities: []}
+"#).unwrap(),
+            }),
+        }
+    }
+
+    #[test]
+    fn persistent_async_binding_is_an_explicit_machine_change() {
+        let change: MachineChange = serde_yaml::from_str(r#"
+spec: rms/machine-change/v0.1
+machine:
+  mode: workflow-effect-machine
+  execution_binding:
+    kind: persistent-async
+    runtime: src/driver.rs#Driver
+    state_field: state
+    records_field: records
+    pending_field: pending
+    input_poll: src/driver.rs#Adapters::poll_input
+    executors:
+    - symbol: src/executor.rs#execute
+      request_parameter: 1
+"#).expect("the explicit persistent async binding must be expressible");
+        let mut value = effect_owner_v02_context().implementation.unwrap().value;
+        apply_machine_change_to_manifest(&mut value, &change);
+        assert_eq!(get_str(&value, &["architecture", "machine", "execution_binding", "kind"]), Some("persistent-async"));
+        let mut unsupported = change.clone();
+        unsupported.machine.mode = "stateless-decision-machine".into();
+        let manifest = LoadedManifest { path: PathBuf::from("implementation.yaml"), value };
+        assert!(validate_machine_change(&manifest, &unsupported).iter().any(|diagnostic| diagnostic.check == "machine-change.execution-binding-unsupported"));
+    }
+
+    #[test]
+    #[ignore = "requires RMS_ASYNC_REPRODUCER_ROOT pointing to the authorized consumer module"]
+    fn persistent_async_consumer_reproducer_keeps_authority_blockers() {
+        let root = PathBuf::from(std::env::var("RMS_ASYNC_REPRODUCER_ROOT").unwrap());
+        let mut manifest = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let binding: persistent_async::ExecutionBinding = serde_yaml::from_str(r#"
+kind: persistent-async
+runtime: src/machine_driver.rs#AdmissionDriver
+state_field: state
+records_field: records
+pending_field: pending
+input_poll: src/machine_driver.rs#AdmissionAdapters::poll_input
+executors:
+- {symbol: 'src/start_media_executor.rs#execute_start_media', request_parameter: 1}
+- {symbol: 'src/stop_media_executor.rs#execute_stop_media', request_parameter: 1}
+- {symbol: 'src/release_grant_executor.rs#execute_release_grant', request_parameter: 1}
+"#).unwrap();
+        let before = build_effect_analysis(&manifest).unwrap();
+        set_yaml_value_path(&mut manifest.value, &["architecture", "machine", "execution_binding"], serde_yaml::to_value(binding).unwrap());
+        let mut summary = RustTypingSummary::default();
+        for file in ["representation.rs", "transition.rs", "machine_driver.rs", "start_media_executor.rs", "stop_media_executor.rs", "release_grant_executor.rs"] {
+            let path = root.join("src").join(file);
+            let source = fs::read_to_string(&path).unwrap();
+            println!("source {file}: {}", sha256_bytes(source.as_bytes()));
+            inspect_rust_typing_file(&manifest, &mut Vec::new(), &path, &syn::parse_file(&source).unwrap(), &mut summary);
+        }
+        let mut diagnostics = Vec::new();
+        validate_rust_machine_execution_path(&manifest, &mut diagnostics, &summary);
+        validate_against_embedded_schema(&manifest, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let mut legacy = manifest.clone();
+        remove_yaml_path(&mut legacy.value, &["architecture", "machine", "execution_binding"]);
+        let mut legacy_diagnostics = Vec::new();
+        validate_rust_machine_execution_path(&legacy, &mut legacy_diagnostics, &summary);
+        assert!(legacy_diagnostics.iter().any(|diagnostic| diagnostic.check == "structure.machine-driver-signature-mismatch"));
+        assert!(legacy_diagnostics.iter().any(|diagnostic| diagnostic.check == "structure.effect-protocol-executor-signature-mismatch"));
+        let after = build_effect_analysis(&manifest).unwrap();
+        assert_eq!(serde_json::to_value(&before).unwrap(), serde_json::to_value(&after).unwrap(), "execution binding must not change effect analysis");
+        // The consumer may now declare its real adapter authority. Removing
+        // that declaration in memory must still fail; async binding grants none.
+        let mut undeclared = manifest.clone();
+        let mut functions = existing_semantic_function_declarations(&undeclared);
+        for function in &mut functions {
+            set_yaml_sequence_path(function, &["authorities"], Vec::new());
+        }
+        set_yaml_sequence_path(&mut undeclared.value, &["semantic_functions"], functions);
+        let undeclared_analysis = build_effect_analysis(&undeclared).unwrap();
+        assert_eq!(undeclared_analysis.result, effect_analysis::AnalysisResult::Fail);
+        assert!(undeclared_analysis.functions.iter().any(|function|
+            function.transitive_authorities.contains(&"dynamic-dispatch".into())
+                && function.verdict == effect_analysis::FunctionVerdict::Fail));
+        println!("effect diagnostics preserved: {}", serde_json::to_string(&after).unwrap());
+    }
+
+    fn effect_owner_v02_change() -> SemanticChange {
+        serde_yaml::from_str(r#"spec: rms/semantic-change/v0.1
+machine:
+  mode: boundary-machine
+  effect_protocols:
+    set:
+    - {effect: Send, results: [Sent], executor_role: effect_executor, executor_symbol: 'src/send.rs#execute', atomicity: one-request-one-result}
+semantic_functions:
+  add:
+  - id: explicit-delivery-owner
+    symbol: src/send.rs#execute
+    kind: effect-executor
+    purity: effectful
+    trust: boundary
+    authorities: [network]
+    evidence: {laws: [verification/send.md]}
+"#).unwrap()
+    }
+
+    #[test]
+    fn effect_owner_v02_explicit_add_precedes_synthesis_and_preserves_metadata() {
+        for id in ["explicit-delivery-owner", "send-effect-executor"] {
+            let context = effect_owner_v02_context();
+            let mut change = effect_owner_v02_change();
+            change.semantic_functions.as_mut().unwrap().add[0].id = id.into();
+            let expected = semantic_function_change_yaml(&change.semantic_functions.as_ref().unwrap().add[0]);
+            let machine = semantic_machine_change_to_machine_change(&change, context.implementation.as_ref());
+            let candidate = spec_apply_candidate_context(&context, &change, machine.as_ref()).unwrap();
+            let value = &candidate.implementation.as_ref().unwrap().value;
+            let owners = existing_semantic_function_declarations_from_value(value).into_iter()
+                .filter(|f| get_str(f, &["symbol"]) == Some("src/send.rs#execute")).collect::<Vec<_>>();
+            assert_eq!(owners, vec![expected]);
+            let projected = final_implementation_value(&context, &change).unwrap();
+            assert_eq!(get_path(value, &["semantic_functions"]), get_path(&projected, &["semantic_functions"]));
+        }
+    }
+
+    #[test]
+    fn effect_owner_v02_explicit_set_and_remove_are_visible_before_synthesis() {
+        let mut context = effect_owner_v02_context();
+        let mut change = effect_owner_v02_change();
+        let mut previous = change.semantic_functions.as_ref().unwrap().add[0].clone();
+        previous.symbol = "src/previous.rs#execute".into();
+        previous.trust = Some("internal".into());
+        previous.authorities.clear();
+        let value = &mut context.implementation.as_mut().unwrap().value;
+        let mut functions = existing_semantic_function_declarations_from_value(value);
+        functions.push(semantic_function_change_yaml(&previous));
+        set_yaml_sequence_path(value, &["semantic_functions"], functions);
+        let request = change.semantic_functions.as_mut().unwrap();
+        request.replace = std::mem::take(&mut request.add);
+        let expected = semantic_function_change_yaml(&request.replace[0]);
+        let machine = semantic_machine_change_to_machine_change(&change, context.implementation.as_ref());
+        let candidate = spec_apply_candidate_context(&context, &change, machine.as_ref()).unwrap();
+        let functions = existing_semantic_function_declarations(candidate.implementation.as_ref().unwrap());
+        assert_eq!(functions.len(), 2);
+        assert_eq!(functions[1], expected);
+
+        let request = change.semantic_functions.as_mut().unwrap();
+        request.add = std::mem::take(&mut request.replace);
+        request.add[0].id = "replacement-delivery-owner".into();
+        request.remove.push(previous.id);
+        let expected = semantic_function_change_yaml(&request.add[0]);
+        let candidate = spec_apply_candidate_context(&context, &change, machine.as_ref()).unwrap();
+        let functions = existing_semantic_function_declarations(candidate.implementation.as_ref().unwrap());
+        assert_eq!(functions.len(), 2);
+        assert_eq!(functions[1], expected);
+    }
+
+    #[test]
+    fn effect_owner_v02_absent_owner_has_complete_non_authorizing_defaults() {
+        let context = effect_owner_v02_context();
+        let mut change = effect_owner_v02_change();
+        change.semantic_functions = None;
+        let machine = semantic_machine_change_to_machine_change(&change, context.implementation.as_ref()).unwrap();
+        let mut value = context.implementation.unwrap().value;
+        apply_machine_change_to_manifest(&mut value, &machine);
+        let functions = existing_semantic_function_declarations_from_value(&value);
+        let executor = functions.iter().find(|f| get_str(f, &["symbol"]) == Some("src/send.rs#execute")).unwrap();
+        assert_eq!(get_str(executor, &["trust"]), Some("internal"));
+        assert_eq!(get_path(executor, &["authorities"]), Some(&YamlValue::Sequence(vec![])));
+        assert_eq!(get_str(executor, &["purity"]), Some("effectful"));
+        let first = value.clone();
+        ensure_effect_executor_semantic_functions(&mut value);
+        assert_eq!(value, first);
+    }
+
+    #[test]
+    fn effect_owner_v02_never_conflates_distinct_qualified_symbols() {
+        let mut value: YamlValue = serde_yaml::from_str(r#"spec: rms/implementation/v0.2
+architecture:
+  machine:
+    effect_protocols:
+    - {effect: Send, executor_symbol: 'src/send.rs#execute'}
+semantic_functions:
+- {id: different-owner, symbol: 'src/other.rs#execute', kind: decision, purity: pure, trust: boundary, authorities: [network]}
+"#).unwrap();
+        let before = existing_semantic_function_declarations_from_value(&value)[0].clone();
+        ensure_effect_executor_semantic_functions(&mut value);
+        let functions = existing_semantic_function_declarations_from_value(&value);
+        assert_eq!(functions.len(), 2);
+        assert_eq!(functions[0], before);
+        assert_eq!(get_str(&functions[1], &["symbol"]), Some("src/send.rs#execute"));
     }
 
     #[test]

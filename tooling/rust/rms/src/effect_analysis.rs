@@ -958,6 +958,7 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
+    if call == "<rust-standard-poll-fn>" { return true; }
     if matches!(call, "<rust-iterator-max-by-key>" | "<rust-str-ascii-uppercase>") { return true; }
     let name = symbol_name(call).trim_end_matches('!');
     (name == "try_from"
@@ -1497,6 +1498,18 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 .collect::<Vec<_>>()
                 .join("::");
             let leaf = symbol_name(&call);
+            if path.path.leading_colon.is_some()
+                && matches!(call.as_str(), "std::future::poll_fn" | "core::future::poll_fn")
+                && node.args.len() == 1
+                && matches!(node.args.first(), Some(Expr::Closure(closure)) if closure.inputs.len() == 1)
+                && self.type_index.standard_external_crate_available(&path.path.segments[0].ident.to_string())
+            {
+                self.calls.insert("<rust-standard-poll-fn>".into());
+                // poll_fn supplies scheduling, not an authority exemption. All
+                // callback calls and captured dynamic dispatch remain visible.
+                visit::visit_expr_call(self, node);
+                return;
+            }
             if let Some(callback) = self.callback_bindings.get(&call) {
                 self.calls.insert(callback.clone());
                 visit::visit_expr_call(self, node);
@@ -5688,6 +5701,68 @@ mod tests {
                 .collect::<Vec<_>>();
             assert!(dynamic.is_empty(), "{path} dynamic nodes: {dynamic:?}");
         }
+    }
+
+    #[test]
+    fn rust_array_tuple_callback_preserves_exact_receiver() {
+        let source = r#"
+struct Readiness;
+impl Readiness { fn owner(&self) -> bool { true } }
+struct Data { facts: [Option<(Readiness, u64)>; 4] }
+fn ready(data: &Data) -> bool {
+    data.facts.iter().enumerate().all(|(_, fact)| {
+        fact.as_ref().is_some_and(|(readiness, _)| readiness.owner())
+    })
+}
+"#;
+        let result = report("rust", "src/array.rs", source, expectation("src/array.rs#ready", "pure", &[]));
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        let effectful = source.replace("fn owner(&self) -> bool { true }", "fn owner(&self) -> bool { std::fs::read_to_string(\"file\").is_ok() }");
+        let result = report("rust", "src/array.rs", &effectful, expectation("src/array.rs#ready", "pure", &[]));
+        assert_eq!(result.result, AnalysisResult::Fail);
+        assert!(result.functions[0].transitive_authorities.contains(&"filesystem".into()), "{result:#?}");
+        let unknown = source.replace("(Readiness, u64)", "(Readiness, Box<dyn Fn() -> bool>)")
+            .replace("|(readiness, _)| readiness.owner()", "|(_, callback)| callback()");
+        let result = report("rust", "src/array.rs", &unknown, expectation("src/array.rs#ready", "pure", &[]));
+        assert_eq!(result.result, AnalysisResult::Fail);
+        assert!(result.functions[0].transitive_authorities.contains(&"dynamic-dispatch".into()), "{result:#?}");
+    }
+
+    #[test]
+    fn rust_standard_poll_fn_keeps_closure_effects_and_unknown_callbacks() {
+        for root in ["std", "core"] {
+            let source = format!("fn run() {{ ::{root}::future::poll_fn(|_| ::{root}::task::Poll::<()>::Pending); }}");
+            let result = report("rust", "src/poll.rs", &source, expectation("src/poll.rs#run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for source in [
+            "fn run() { ::std::future::poll_fn(|_| { std::fs::read_to_string(\"file\"); }); }",
+            "fn run(callback: impl FnMut()) { ::std::future::poll_fn(callback); }",
+            "fn run(callback: impl FnMut()) { ::std::future::poll_fn(|_| callback()); }",
+            "extern crate custom as std; fn run() { ::std::future::poll_fn(|_| true); }",
+            "mod std { pub mod future { pub fn poll_fn<T>(_: T) {} } } fn run() { std::future::poll_fn(|_| true); }",
+        ] {
+            let result = report("rust", "src/poll.rs", source, expectation("src/poll.rs#run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+        }
+    }
+
+    #[test]
+    fn rust_standard_poll_fn_rejects_cross_file_external_rebinding() {
+        let result = analyze(AnalysisInput {
+            binding: "rust".into(),
+            source_digest: "source".into(),
+            tool_digest: "tool".into(),
+            sources: BTreeMap::from([
+                ("src/lib.rs".into(), "extern crate custom as std; mod driver;".into()),
+                ("src/driver.rs".into(), "fn run() { ::std::future::poll_fn(|_| ::core::task::Poll::<()>::Pending); }".into()),
+            ]),
+            semantic_functions: vec![expectation("src/driver.rs#run", "pure", &[])],
+            authority_facades: Vec::new(),
+            trusted_external_calls: BTreeSet::new(),
+        });
+        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+        assert!(result.functions[0].unresolved_calls.contains(&"std::future::poll_fn".into()), "{result:#?}");
     }
 
     #[test]

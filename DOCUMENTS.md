@@ -10,6 +10,7 @@
 | `EXPLAINED.md` | Conceptual explanation of RMS modules, machines, effects, and evidence | No |
 | `UNDERSTANDABILITY.md` | RMS design criteria, state-space review, comprehension evidence, and future self-hosting foundations | No; maintainer guidance |
 | `MODULE_RETIREMENT.md` | Accepted exact-leaf retirement RFC, authority, archive contract, recovery, and proof | Yes for the versioned retirement workflow |
+| `PERSISTENT_ASYNC_BINDING.md` | Candidate Rust persistent-driver binding, compatibility, and structural proof boundary | Candidate; not a release claim |
 | `QUICKSTART.md` | Runnable onboarding and first complete RMS change | No |
 | `SPEC.md` | Core requirements and profiles | **Yes** |
 | `MANIFEST.md` | Manifest semantics and examples | Yes where it restates the spec |
