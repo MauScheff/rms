@@ -614,6 +614,18 @@ fn rust_regex_match_offset_query(call: &str, regex_match_names: &BTreeSet<String
 fn resolve_local_call(index: usize, call: &str, nodes: &[FunctionNode]) -> Vec<usize> {
     let name = symbol_name(call);
     let expected_path = symbol_path(call);
+    if nodes[index].binding == "rust" {
+        if let Some(path) = expected_path {
+            let qualified = symbol_qualified_name(call);
+            let has_exact_path = nodes.iter().any(|candidate| candidate.path == path);
+            let exact = nodes.iter().enumerate().filter(|(_, candidate)|
+                (if has_exact_path { candidate.path == path } else { normalized_path_matches(&candidate.path, path) })
+                    && candidate.qualified_name == qualified)
+                .map(|(index, _)| index).collect::<Vec<_>>();
+            // An exact source identity never falls back to a same-leaf helper.
+            return if exact.len() == 1 { exact } else { Vec::new() };
+        }
+    }
     if nodes[index].binding == "rust" && expected_path.is_none() {
         if let Some((root, _)) = call.split_once("::") {
             if root.chars().next().is_some_and(char::is_lowercase)
@@ -958,6 +970,8 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
+    if call == "<rust-integer-byte-conversion>" { return true; }
+    if call == "<rust-sequence-last-mut>" { return true; }
     if call == "<rust-standard-poll-fn>" { return true; }
     if matches!(call, "<rust-iterator-max-by-key>" | "<rust-str-ascii-uppercase>") { return true; }
     let name = symbol_name(call).trim_end_matches('!');
@@ -1498,6 +1512,14 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 .collect::<Vec<_>>()
                 .join("::");
             let leaf = symbol_name(&call);
+            if path.path.segments.len() == 2 && node.args.len() == 1
+                && matches!(leaf, "from_be_bytes" | "from_le_bytes" | "from_ne_bytes" | "to_be_bytes" | "to_le_bytes" | "to_ne_bytes")
+                && self.type_index.standard_integer_available(&path.path.segments[0].ident.to_string())
+            {
+                self.calls.insert("<rust-integer-byte-conversion>".into());
+                visit::visit_expr_call(self, node);
+                return;
+            }
             if path.path.leading_colon.is_some()
                 && matches!(call.as_str(), "std::future::poll_fn" | "core::future::poll_fn")
                 && node.args.len() == 1
@@ -1601,7 +1623,14 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 .filter(|name| !self.type_index.is_generic(name) && !self.type_index.is_declared_type(name)),
             _ => None,
         });
-        let call = if matches!(inferred_receiver, Some(RustValueType::Iterator(_)))
+        let call = if node.args.is_empty()
+            && matches!(node.method.to_string().as_str(), "to_be_bytes" | "to_le_bytes" | "to_ne_bytes")
+            && typed_receiver.is_some_and(|receiver| self.type_index.standard_integer_available(receiver)) {
+            "<rust-integer-byte-conversion>".to_string()
+        } else if matches!(inferred_receiver, Some(RustValueType::Sequence(_)))
+            && node.method == "last_mut" && node.args.is_empty() {
+            "<rust-sequence-last-mut>".to_string()
+        } else if matches!(inferred_receiver, Some(RustValueType::Iterator(_)))
             && node.method == "max_by_key" && node.args.len() == 1
             && matches!(&node.args[0], Expr::Closure(closure) if closure.inputs.len() == 1) {
             "<rust-iterator-max-by-key>".to_string()
@@ -1751,10 +1780,10 @@ impl<'ast> Visit<'ast> for RustCallCollector {
     }
 
     fn visit_local(&mut self, node: &'ast Local) {
-        let inferred = node.init.as_ref().and_then(|init| {
+        let inferred = self.type_index.sequence_annotation(&node.pat).or_else(|| node.init.as_ref().and_then(|init| {
             self.type_index
                 .expression_type(&init.expr, &self.value_types)
-        }).or_else(|| {
+        })).or_else(|| {
             let Pat::Ident(name) = &node.pat else { return None; };
             node.init.as_ref().filter(|init| self.type_index.is_standard_empty_vec(&init.expr))
                 .and_then(|_| self.sequence_constraints.get(&name.ident.to_string()).cloned())
@@ -2004,6 +2033,7 @@ struct RustFunctionCollector {
     nodes: Vec<FunctionNode>,
     path: String,
     owner: Vec<String>,
+    inherent_self: Option<RustValueType>,
     test_depth: usize,
     type_index: RustTypeIndex,
     helpers: BTreeMap<String, ItemFn>,
@@ -2063,6 +2093,13 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             parameter_types: rust_parameter_types(node.sig.inputs.iter()),
             ..RustCallCollector::default()
         };
+        if node.sig.receiver().is_some() {
+            if let Some(value) = &self.inherent_self {
+                calls.value_types.insert("self".into(), value.clone());
+            } else {
+                calls.dynamic_symbols.insert("self".into());
+            }
+        }
         if node.sig.unsafety.is_some() {
             calls.authorities.insert("unsafe".to_string());
         }
@@ -2084,7 +2121,11 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
 
     fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
         let prior_index = self.type_index.clone();
+        let prior_self = self.inherent_self.take();
         self.type_index = self.type_index.with_generics(&node.generics);
+        if node.trait_.is_none() && self.owner.is_empty() {
+            self.inherent_self = self.type_index.inherent_self_type(&node.self_ty);
+        }
         let owner = match node.self_ty.as_ref() {
             Type::Path(path) => path
                 .path
@@ -2101,6 +2142,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             syn::visit::visit_item_impl(self, node);
         }
         self.type_index = prior_index;
+        self.inherent_self = prior_self;
     }
 
     fn visit_item_mod(&mut self, node: &'ast ItemMod) {
@@ -2222,6 +2264,7 @@ fn extract_rust_functions_with_types(
         }
     }
     let mut collector = RustFunctionCollector {
+        inherent_self: None,
         nodes: Vec::new(),
         path: path.to_string(),
         owner: Vec::new(),
@@ -5700,6 +5743,115 @@ mod tests {
                 .map(|node| node.qualified_name)
                 .collect::<Vec<_>>();
             assert!(dynamic.is_empty(), "{path} dynamic nodes: {dynamic:?}");
+        }
+    }
+
+    #[test]
+    fn rust_exact_source_path_precedes_dependency_suffixes() {
+        let result = analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "test".into(), tool_digest: "test".into(),
+            sources: BTreeMap::from([
+                ("src/transition.rs".into(), "fn run() { transition_record(); } fn transition_record() {}".into()),
+                ("dependencies/other/src/transition.rs".into(), "fn transition_record() { std::fs::read_to_string(\"file\"); }".into()),
+            ]),
+            semantic_functions: vec![expectation("src/transition.rs#run", "pure", &[])],
+            authority_facades: Vec::new(), trusted_external_calls: BTreeSet::new(),
+        });
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+    }
+
+    #[test]
+    fn rust_local_struct_construction_preserves_exact_receiver() {
+        for source in [
+            "struct Writer(Vec<u8>); impl Writer { fn policy(&self) {} } fn policy() { std::fs::read_to_string(\"file\"); } fn run() { let w = Writer(Vec::new()); w.policy(); }",
+            "struct Reader<'a> { bytes: &'a [u8] } impl Reader<'_> { fn policy(&self) {} } fn policy() { std::fs::read_to_string(\"file\"); } fn run(bytes: &[u8]) { let r = Reader { bytes }; r.policy(); }",
+        ] {
+            let result = report("rust", "src/codec.rs", source, expectation("src/codec.rs#run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for source in [
+            "struct Writer(Vec<u8>); impl Writer { fn policy(&self) { std::fs::read_to_string(\"file\"); } } fn run() { let w = Writer(Vec::new()); w.policy(); }",
+            "struct Writer(Vec<u8>); fn run(Writer: impl Fn() -> Unknown) { let w = Writer(); w.unknown(); }",
+            "struct Writer(Vec<u8>); struct Writer; fn run() { let w = Writer(Vec::new()); w.unknown(); }",
+            "struct Writer(Vec<u8>); fn Writer() -> Unknown { todo!() } fn run() { let w = Writer(); w.unknown(); }",
+            "struct Reader { field: u8 } fn run() { struct Reader; let r = Reader {}; r.unknown(); }",
+            "struct Writer<T>(T); fn run() { let w = Writer(0); w.unknown(); }",
+        ] {
+            let result = report("rust", "src/codec.rs", source, expectation("src/codec.rs#run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+        }
+    }
+
+    #[test]
+    fn rust_integer_byte_conversions_require_unshadowed_primitives() {
+        for source in [
+            "fn run(n: u32) -> u32 { u32::from_be_bytes(n.to_be_bytes()) }",
+            "fn run(n: u64) -> u64 { u64::from_le_bytes(u64::to_le_bytes(n)) }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("src/lib.rs#run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for source in [
+            "struct u32; impl u32 { fn from_be_bytes(_: [u8; 4]) { std::fs::read_to_string(\"file\"); } } fn run() { u32::from_be_bytes([0;4]); }",
+            "fn run<u32>() { u32::from_be_bytes([0;4]); }",
+            "use unknown::*; fn run(n: u32) { n.to_be_bytes(); }",
+            "fn run(value: impl Unknown) { value.to_be_bytes(); }",
+            "fn run() { type u32 = Unknown; u32::from_be_bytes([0;4]); }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("src/lib.rs#run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+        }
+        for (representation, expected) in [("struct Domain;", AnalysisResult::Pass), ("pub struct u32;", AnalysisResult::Fail)] {
+            let result = analyze(AnalysisInput {
+                binding: "rust".into(), source_digest: "test".into(), tool_digest: "test".into(),
+                sources: BTreeMap::from([
+                    ("src/codec.rs".into(), "use crate::representation::*; fn run(n: u32) { u32::from_be_bytes(n.to_be_bytes()); }".into()),
+                    ("src/representation.rs".into(), representation.into()),
+                ]),
+                semantic_functions: vec![expectation("src/codec.rs#run", "pure", &[])],
+                authority_facades: Vec::new(), trusted_external_calls: BTreeSet::new(),
+            });
+            assert_eq!(result.result, expected, "{result:#?}");
+        }
+    }
+
+    #[test]
+    fn rust_inherent_self_calls_do_not_reach_same_leaf_probe_helpers() {
+        let source = "struct Reader; impl Reader { fn policy(&self) -> bool { true } fn run(&self) -> bool { self.policy() } } fn policy() { std::fs::read_to_string(\"file\"); }";
+        let result = report("rust", "src/codec.rs", source, expectation("src/codec.rs#Reader::run", "pure", &[]));
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        for source in [
+            source.replace("fn policy(&self) -> bool { true }", "fn policy(&self) -> bool { std::fs::read_to_string(\"file\").is_ok() }"),
+            "struct Reader; impl Unknown for Reader { fn run(&self) { self.policy(); } } fn policy() {}".into(),
+            "struct Reader<T>(T); impl<T> Reader<T> { fn run(&self) { self.policy(); } } fn policy() {}".into(),
+            "struct Reader; impl Reader { fn run(&self) { self.policy(); } fn policy(&self) {} } impl Reader { fn policy(&self) {} }".into(),
+        ] {
+            let result = report("rust", "src/codec.rs", &source, expectation("src/codec.rs#Reader::run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+        }
+    }
+
+    #[test]
+    fn rust_last_mut_requires_a_concrete_unshadowed_sequence() {
+        for source in [
+            "fn run(values: &mut Vec<u8>) { let _ = values.last_mut(); }",
+            "fn run(values: &mut [u8]) { let _ = values.last_mut(); }",
+            "fn run() { let mut values: Vec<Option<std::collections::BTreeSet<String>>> = Vec::new(); let _ = values.last_mut().and_then(Option::as_mut); }",
+            "struct Item; impl Item { fn score(&self) -> bool { true } } fn run(values: &mut Vec<Item>) { values.last_mut().is_some_and(|item| item.score()); }",
+        ] {
+            let result = report("rust", "src/test.rs", source, expectation("src/test.rs#run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{source}: {result:#?}");
+        }
+        for source in [
+            "trait Unknown { fn last_mut(&mut self); } fn run(values: &mut impl Unknown) { values.last_mut(); }",
+            "mod std { pub mod vec { pub struct Vec<T>(T); } } use std::vec::Vec; fn run(values: &mut Vec<u8>) { values.last_mut(); }",
+            "fn run<T>(values: &mut Vec<T>) { values.last_mut().is_some_and(|item| item.unknown()); }",
+            "struct Vec<T>(T); impl<T> Vec<T> { fn last_mut(&mut self) { std::fs::read_to_string(\"file\"); } } fn run(values: &mut Vec<u8>) { values.last_mut(); }",
+            "struct Local; impl Local { fn last_mut(&mut self) { std::fs::read_to_string(\"file\"); } } fn run(values: &mut Local) { values.last_mut(); }",
+            "struct Item; impl Item { fn score(&self) -> bool { std::fs::read_to_string(\"file\").is_ok() } } fn run(values: &mut Vec<Item>) { values.last_mut().is_some_and(|item| item.score()); }",
+        ] {
+            let result = report("rust", "src/test.rs", source, expectation("src/test.rs#run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
         }
     }
 

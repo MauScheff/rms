@@ -43,6 +43,24 @@ The runtime fields must contain the existing state type, `Vec<TransitionRecord>`
 
 ## Proof boundary
 
+### Synchronous envelope executors
+
+Rust implementation v0.2 also supports `kind: synchronous-envelopes`:
+
+```yaml
+execution_binding:
+  kind: synchronous-envelopes
+  executors:
+    - symbol: src/link_io.rs#execute_link_io
+      request_parameter: 1
+```
+
+Each executor consumes the declared `effect_envelope` at the zero-based request index and synchronously returns the declared `effect_result_envelope`. The entries must cover every declared protocol executor exactly once. Resource parameters may precede or follow the request. Async functions, future returns, borrowed requests, wrong indices, and ambiguous symbols fail this binding.
+
+This variant retains the existing synchronous driver and transition-record checks. It retains the separate closed effect enums and exact envelope payload types. It grants no authority. Native properties must still prove correlation preservation and one-request-one-result behavior. Select this variant through receipt-gated machine or spec apply. Omission and `kind: synchronous` keep the legacy bare-effect executor checks.
+
+### Evidence limits
+
 Native regressions cover explicit opt-in, legacy signatures, wrong storage types, wrong envelope output, alias cycles, ambiguous symbols, and preserved authority failures. Consumer lifecycle tests must cover cancellation during pending start, late completion, repeated operations, exact correlation, and retained work after driving-future suspension or drop.
 
-The state-space delta is one closed binding alternative. No runtime state or authority is added. A candidate binary may inspect this binding. It does not certify the consumer until all structural, authority, and lifecycle proof passes.
+The binding is a closed choice: legacy synchronous, synchronous envelopes, or persistent async. No runtime state or authority is added by the declaration. A candidate binary may inspect these bindings. It does not certify the consumer until all structural, authority, and lifecycle proof passes.

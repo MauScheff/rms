@@ -271,13 +271,12 @@ impl RustTypeIndex {
     fn parse_type(&self, value: &Type) -> Option<RustValueType> {
         match value {
             Type::Reference(reference) => self.parse_type(&reference.elem),
-            Type::Array(array) => self.parse_type(&array.elem)
-                .map(|element| RustValueType::Sequence(Box::new(element))),
+            Type::Array(array) => Some(RustValueType::Sequence(Box::new(
+                self.parse_type(&array.elem).unwrap_or(RustValueType::Unknown)))),
             Type::Tuple(tuple) => Some(RustValueType::Tuple(tuple.elems.iter()
                 .map(|element| self.parse_type(element).unwrap_or(RustValueType::Unknown)).collect())),
-            Type::Slice(slice) => self
-                .parse_type(&slice.elem)
-                .map(|element| RustValueType::Sequence(Box::new(element))),
+            Type::Slice(slice) => Some(RustValueType::Sequence(Box::new(
+                self.parse_type(&slice.elem).unwrap_or(RustValueType::Unknown)))),
             Type::Path(path) if path.qself.is_none() => {
                 let segment = path.path.segments.last()?;
                 let name = segment.ident.to_string();
@@ -323,6 +322,14 @@ impl RustTypeIndex {
                     return None;
                 }
                 let aliases = super::rust_import_aliases(&file);
+                if name == "Vec" && aliases.contains_key(&name)
+                    && (aliases.get(&name).map(String::as_str) != Some("std::vec::Vec")
+                        || aliases.contains_key("std")
+                        || file.items.iter().any(|item| matches!(item, Item::Mod(item) if item.ident == "std"))
+                        || !self.standard_external_crate_available("std"))
+                {
+                    return None;
+                }
                 if aliases.get(&name).is_some_and(|target| {
                     !matches!(
                         target.as_str(),
@@ -343,7 +350,9 @@ impl RustTypeIndex {
                 let GenericArgument::Type(element) = &arguments.args[element_index] else {
                     return None;
                 };
-                let element = Box::new(self.parse_type(element)?);
+                let element = Box::new(if name == "Vec" {
+                    self.parse_type(element).unwrap_or(RustValueType::Unknown)
+                } else { self.parse_type(element)? });
                 match name.as_str() {
                     "Vec" => Some(RustValueType::Sequence(element)),
                     "Option" => Some(RustValueType::Optional(element)),
@@ -375,6 +384,59 @@ impl RustTypeIndex {
             rebound.visit_file(&file);
         }
         !rebound.found
+    }
+
+    pub(super) fn standard_integer_available(&self, name: &str) -> bool {
+        if !matches!(name, "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
+            "i8" | "i16" | "i32" | "i64" | "i128" | "isize") || self.is_generic(name) { return false; }
+        use syn::visit::{self, Visit};
+        struct Shadows<'a> { name: &'a str, found: bool, globs: Vec<String> }
+        impl Shadows<'_> {
+            fn imports(&mut self, tree: &syn::UseTree, prefix: &str) {
+                match tree {
+                    syn::UseTree::Name(item) => self.found |= item.ident == self.name,
+                    syn::UseTree::Rename(item) => self.found |= item.rename == self.name,
+                    syn::UseTree::Path(item) => self.imports(&item.tree, &format!("{prefix}{}::", item.ident)),
+                    syn::UseTree::Group(group) => { for item in &group.items { self.imports(item, prefix); } }
+                    syn::UseTree::Glob(_) => self.globs.push(prefix.trim_end_matches("::").into()),
+                }
+            }
+        }
+        impl<'ast> Visit<'ast> for Shadows<'_> {
+            fn visit_item(&mut self, item: &'ast Item) {
+                self.found |= match item {
+                    Item::Struct(item) => item.ident == self.name,
+                    Item::Enum(item) => item.ident == self.name,
+                    Item::Type(item) => item.ident == self.name,
+                    Item::Trait(item) => item.ident == self.name,
+                    Item::Mod(item) => item.ident == self.name,
+                    Item::ExternCrate(item) => item.rename.as_ref().map(|(_, id)| id).unwrap_or(&item.ident) == self.name,
+                    _ => false,
+                };
+                if let Item::Use(item) = item { self.imports(&item.tree, ""); }
+                visit::visit_item(self, item);
+            }
+            fn visit_type_param(&mut self, parameter: &'ast syn::TypeParam) {
+                self.found |= parameter.ident == self.name;
+            }
+        }
+        let mut pending = vec![self.path.clone()];
+        let mut seen = BTreeSet::new();
+        while let Some(path) = pending.pop() {
+            if !seen.insert(path.clone()) { continue; }
+            let Some(file) = self.sources.get(&path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
+            let mut shadows = Shadows { name, found: false, globs: Vec::new() };
+            shadows.visit_file(&file);
+            if shadows.found { return false; }
+            for glob in shadows.globs {
+                // Only exact source-owned crate-module globs are inspectable here.
+                let Some(module) = glob.strip_prefix("crate::").filter(|module| !module.contains("::")) else { return false; };
+                let target = format!("src/{module}.rs");
+                if !self.sources.contains_key(&target) { return false; }
+                pending.push(target);
+            }
+        }
+        true
     }
 
     fn resolve_named_type(&self, reference: &str) -> Option<String> {
@@ -444,6 +506,7 @@ impl RustTypeIndex {
         match (pattern, value) {
             (Pat::Ident(name), value) => { bindings.insert(name.ident.to_string(), value.clone()); }
             (Pat::Reference(pattern), value) => { return self.pattern_bindings(&pattern.pat, value); }
+            (Pat::Type(pattern), value) => { return self.pattern_bindings(&pattern.pat, value); }
             (Pat::TupleStruct(pattern), RustValueType::Optional(element))
                 if pattern.path.is_ident("Some") && pattern.elems.len() == 1 && !self.is_generic("Some") => {
                 return self.pattern_bindings(&pattern.elems[0], element);
@@ -533,6 +596,47 @@ impl RustTypeIndex {
             matches!(item, Item::Use(item) if glob(&item.tree)) || matches!(item, Item::Mod(item) if item.ident == "Vec"))
     }
 
+    pub(super) fn sequence_annotation(&self, pattern: &Pat) -> Option<RustValueType> {
+        let Pat::Type(pattern) = pattern else { return None; };
+        self.parse_type(&pattern.ty).filter(|value| matches!(value, RustValueType::Sequence(_)))
+    }
+
+    pub(super) fn inherent_self_type(&self, ty: &Type) -> Option<RustValueType> {
+        let Type::Path(path) = ty else { return None; };
+        if path.qself.is_some() || path.path.segments.len() != 1 { return None; }
+        let segment = &path.path.segments[0];
+        if self.is_generic(&segment.ident.to_string()) { return None; }
+        match &segment.arguments {
+            PathArguments::None => {},
+            PathArguments::AngleBracketed(arguments) if arguments.args.iter().all(|arg| matches!(arg, GenericArgument::Lifetime(_))) => {},
+            _ => return None,
+        }
+        let exact = format!("{}#{}", self.path, segment.ident);
+        self.unique_types.contains(&exact).then_some(RustValueType::Named(exact))
+    }
+
+    fn local_constructed_type(&self, path: &syn::Path, tuple_arity: Option<usize>) -> Option<RustValueType> {
+        if path.segments.len() != 1 || path.leading_colon.is_some() { return None; }
+        let name = path.segments[0].ident.to_string();
+        if self.is_generic(&name) { return None; }
+        let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
+        if super::rust_import_aliases(&file).contains_key(&name)
+            || file.items.iter().any(|item| matches!(item, Item::Fn(item) if item.sig.ident == name)) { return None; }
+        let exact = format!("{}#{name}", self.path);
+        if !self.unique_types.contains(&exact) { return None; }
+        let item = file.items.iter().find_map(|item| match item {
+            Item::Struct(item) if item.ident == name => Some(item), _ => None,
+        })?;
+        if item.generics.type_params().next().is_some() || item.generics.const_params().next().is_some()
+            || item.attrs.iter().any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")) { return None; }
+        match (&item.fields, tuple_arity) {
+            (syn::Fields::Unnamed(fields), Some(arity)) if fields.unnamed.len() == arity => {},
+            (syn::Fields::Named(_), None) => {},
+            _ => return None,
+        }
+        Some(RustValueType::Named(exact))
+    }
+
     pub(super) fn expression_type(
         &self,
         expression: &Expr,
@@ -544,6 +648,7 @@ impl RustTypeIndex {
             Expr::Paren(paren) => self.expression_type(&paren.expr, values),
             Expr::Tuple(tuple) => Some(RustValueType::Tuple(tuple.elems.iter().map(|expr|
                 self.expression_type(expr, values).unwrap_or(RustValueType::Unknown)).collect())),
+            Expr::Struct(value) if value.qself.is_none() => self.local_constructed_type(&value.path, None),
             Expr::Field(field) => {
                 let RustValueType::Named(owner) = self.expression_type(&field.base, values)? else { return None; };
                 let member = match &field.member {
@@ -562,6 +667,11 @@ impl RustTypeIndex {
                 };
                 if values.contains_key(&path.path.segments.first()?.ident.to_string()) {
                     return None;
+                }
+                if path.qself.is_none() {
+                    if let Some(value) = self.local_constructed_type(&path.path, Some(call.args.len())) {
+                        return Some(value);
+                    }
                 }
                 let reference = path
                     .path
@@ -584,7 +694,7 @@ impl RustTypeIndex {
                     RustValueType::Sequence(element) => match method.as_str() {
                         "iter" | "into_iter" => Some(RustValueType::Iterator(element)),
                         "to_vec" | "as_slice" | "clone" => Some(RustValueType::Sequence(element)),
-                        "first" | "last" => Some(RustValueType::Optional(element)),
+                        "first" | "last" | "last_mut" => Some(RustValueType::Optional(element)),
                         _ => None,
                     },
                     RustValueType::MapValues(element)

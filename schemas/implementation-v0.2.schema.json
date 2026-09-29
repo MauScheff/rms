@@ -258,6 +258,26 @@
             },
             {
               "type": "object",
+              "required": ["kind", "executors"],
+              "properties": {
+                "kind": {"const": "synchronous-envelopes"},
+                "executors": {
+                  "type": "array", "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["symbol", "request_parameter"],
+                    "properties": {
+                      "symbol": {"type": "string", "pattern": "^[^#]+#[^#]+$"},
+                      "request_parameter": {"type": "integer", "minimum": 0}
+                    },
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
               "required": ["kind", "runtime", "state_field", "records_field", "pending_field", "input_poll", "executors"],
               "properties": {
                 "kind": {"const": "persistent-async"},

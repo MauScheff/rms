@@ -33,6 +33,7 @@ mod binding_migration;
 mod composition_model;
 mod effect_analysis;
 mod effect_executor;
+mod invocation_trace;
 mod persistent_async;
 mod hunt;
 mod probe;
@@ -16878,7 +16879,7 @@ fn execute_trace_producers(
             ));
             status = "fail".to_string();
         } else if process.status.success() {
-            match build_trace_report(&output_path) {
+            match build_producer_trace_report(&output_path, &manifest, producer) {
                 Ok(generated) if !trace_has_errors(&generated) => {
                     let committed_path = root.join(&producer.bundle);
                     if record {
@@ -16906,13 +16907,13 @@ fn execute_trace_producers(
                         }
                     }
                 }
-                Ok(_) => {
+                Ok(generated) => {
                     diagnostics.push(error(
                         "trace.generated-bundle-invalid",
                         &output_path,
                         format!(
-                            "trace producer `{}` generated a bundle that failed trace conformance",
-                            producer.id
+                            "trace producer `{}` generated a bundle that failed trace conformance{}",
+                            producer.id, trace_error_suffix(&generated)
                         ),
                     ));
                     status = "fail".to_string();
@@ -22703,8 +22704,61 @@ fn load_yaml_value(path: &Path) -> Result<YamlValue> {
     serde_yaml::from_str(&source).with_context(|| format!("failed to parse `{}`", path.display()))
 }
 
+fn build_producer_trace_report(
+    bundle: &Path,
+    implementation: &LoadedManifest,
+    producer: &TraceProducer,
+) -> Result<TraceReport> {
+    let value = serde_json::to_value(load_trace_bundle(bundle)?)?;
+    if !trace_command_uses_invocation_records(implementation, &producer.command) {
+        if invocation_trace::is_invocation(&value) {
+            bail!("a transition producer cannot substitute invocation evidence");
+        }
+        return build_trace_report(bundle);
+    }
+    let base = implementation.path.parent().unwrap_or_else(|| Path::new("."));
+    let mut bindings = Vec::new();
+    for binding in typed_yaml_sequence::<PublicBehaviorBinding>(&implementation.value, &["architecture", "public_behavior_bindings"]) {
+        if !binding.observation_source.as_ref().is_some_and(|source|
+            source.kind == "invocation-record" && source.command == producer.command) { continue; }
+        if !is_safe_relative_artifact_path(&binding.contract) {
+            bail!("invocation binding has an unsafe contract path");
+        }
+        let contract_path = base.join(&binding.contract);
+        let bytes = fs::read(&contract_path)?;
+        let contract: YamlValue = serde_yaml::from_slice(&bytes)?;
+        let name = get_str(&contract, &["name"]).filter(|name| !name.is_empty())
+            .ok_or_else(|| anyhow!("invocation contract must declare its name"))?;
+        bindings.push(invocation_trace::Binding {
+            id: binding.id,
+            contract: name.to_string(),
+            digest: format!("sha256:{}", sha256_bytes(&bytes)),
+        });
+    }
+    Ok(build_invocation_trace_report(bundle, &value, Some(&bindings)))
+}
+
+fn build_invocation_trace_report(
+    bundle: &Path,
+    value: &JsonValue,
+    bindings: Option<&[invocation_trace::Binding]>,
+) -> TraceReport {
+    let mut diagnostics = Vec::new();
+    for message in invocation_trace::validate(value, bindings) {
+        push_trace_diagnostic(&mut diagnostics, Severity::Error, "trace.invocation-invalid", bundle, None, message);
+    }
+    let records = invocation_trace::records(value).unwrap_or_default().into_iter().enumerate()
+        .filter_map(|(index, record)| serde_yaml::to_value(record).ok().map(|record| trace_record_summary(index, &record)))
+        .collect();
+    trace_report(bundle, value.get("spec").and_then(JsonValue::as_str).map(str::to_string), None, records, diagnostics, None)
+}
+
 fn build_trace_report(bundle: &Path) -> Result<TraceReport> {
     let value = load_trace_bundle(bundle)?;
+    let json_value = serde_json::to_value(&value)?;
+    if invocation_trace::is_invocation(&json_value) {
+        return Ok(build_invocation_trace_report(bundle, &json_value, None));
+    }
     let mut diagnostics = Vec::new();
     let spec = get_str(&value, &["spec"]).map(ToString::to_string);
     if spec.as_deref() != Some("rms/trace-bundle/v0.1") {
@@ -25491,7 +25545,10 @@ fn verify_declared_trace_bundles(
         if probe::verify_evidence(&bundle, DEFAULT_PROOF_TIMEOUT_SECONDS)?.is_some() {
             continue;
         }
-        let report = build_trace_report(&bundle)?;
+        let report = if let Some(producer) = trace_producers_from_implementation(manifest).iter()
+            .find(|producer| module_root.join(&producer.bundle) == bundle) {
+            build_producer_trace_report(&bundle, manifest, producer)?
+        } else { build_trace_report(&bundle)? };
         if trace_has_errors(&report) {
             bail!(
                 "trace bundle `{}` failed RMS trace check{}",
@@ -27247,11 +27304,11 @@ fn validate_implementation(manifest: &LoadedManifest, diagnostics: &mut Vec<Diag
     {
         diagnostics.push(error("structure.execution-binding-unsupported", &manifest.path, "execution_binding requires a Rust implementation v0.2 binding"));
     }
-    if get_str(&manifest.value, &["architecture", "machine", "execution_binding", "kind"]) == Some("persistent-async")
+    if matches!(get_str(&manifest.value, &["architecture", "machine", "execution_binding", "kind"]), Some("persistent-async" | "synchronous-envelopes"))
         && (get_str(&manifest.value, &["architecture", "machine", "mode"]).is_none_or(|mode| !is_stateful_machine_mode(mode))
             || get_string_array(&manifest.value, &["architecture", "machine", "effects"]).is_empty())
     {
-        diagnostics.push(error("structure.execution-binding-unsupported", &manifest.path, "persistent async execution requires a stateful machine with declared effects"));
+        diagnostics.push(error("structure.execution-binding-unsupported", &manifest.path, "envelope execution requires a stateful machine with declared effects"));
     }
     require_str(manifest, diagnostics, "module", &["module"]);
     require_str(manifest, diagnostics, "binding", &["binding"]);
@@ -33817,8 +33874,8 @@ fn inspect_rust_typing_file(
     parsed: &syn::File,
     summary: &mut RustTypingSummary,
 ) {
-    if get_str(&implementation.value, &["architecture", "machine", "execution_binding", "kind"])
-        == Some("persistent-async")
+    if matches!(get_str(&implementation.value, &["architecture", "machine", "execution_binding", "kind"]),
+        Some("persistent-async" | "synchronous-envelopes"))
     {
         let base = implementation.path.parent().unwrap_or_else(|| Path::new("."));
         summary.async_sources.insert(display_relative(base, path), parsed.clone());
@@ -34981,10 +35038,11 @@ fn validate_rust_machine_execution_path(
     let machine_types = machine_types_from_value(&implementation.value);
     let execution_binding = get_path(&implementation.value, &["architecture", "machine", "execution_binding"])
         .map(|value| serde_yaml::from_value::<persistent_async::ExecutionBinding>(value.clone()));
-    let persistent = match execution_binding {
-        Some(Ok(binding)) if binding.is_persistent() => {
+    let persistent = execution_binding.as_ref().is_some_and(|binding| binding.as_ref().is_ok_and(|binding| binding.is_persistent()));
+    let envelope_executors = match execution_binding {
+        Some(Ok(binding)) if binding.uses_envelopes() => {
             if get_str(&implementation.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC) {
-                diagnostics.push(error("structure.persistent-async-binding", &implementation.path, "persistent async execution requires implementation v0.2"));
+                diagnostics.push(error("structure.execution-binding-unsupported", &implementation.path, "envelope execution requires implementation v0.2"));
             }
             let types = persistent_async::Types {
                 state: machine_types.state.as_deref().unwrap_or(""),
@@ -35002,7 +35060,7 @@ fn validate_rust_machine_execution_path(
                 &protocols,
                 &types,
             ) {
-                diagnostics.push(error("structure.persistent-async-binding", &implementation.path, message));
+                diagnostics.push(error(if persistent { "structure.persistent-async-binding" } else { "structure.synchronous-envelope-binding" }, &implementation.path, message));
             }
             true
         }
@@ -35111,7 +35169,7 @@ fn validate_rust_machine_execution_path(
         if let Some(signature) = summary.function_signatures.get(executor) {
             let expected_input = machine_types.effect.as_deref();
             let expected_output = machine_types.effect_result.as_deref();
-            if !persistent && !rust_executor_has_effect_signature(signature, expected_input, expected_output) {
+            if !envelope_executors && !rust_executor_has_effect_signature(signature, expected_input, expected_output) {
                 diagnostics.push(error(
                     "structure.effect-protocol-executor-signature-mismatch",
                     &implementation.path,
@@ -53723,6 +53781,7 @@ fn prepare_machine_plan_provider_response(
 }
 
 fn render_execution_binding_guidance(out: &mut String) -> std::fmt::Result {
+    writeln!(out, "Synchronous envelope executors may opt into `{{kind: synchronous-envelopes, executors: [{{symbol: path#execute, request_parameter: 1}}]}}`. Each exact executor must consume the declared EffectEnvelope at its zero-based request index and synchronously return the declared EffectResultEnvelope. List every protocol executor exactly once. This variant retains all synchronous driver and transition-record checks, closed effect enums, envelope payload checks, and authority analysis. Correlation and one-request-one-result behavior still require executable proof.")?;
     writeln!(out, "Rust implementation v0.2 may explicitly set `machine.execution_binding`. Omission retains the existing binding; `{{kind: synchronous}}` restores the State/Input -> records and Effect -> EffectResult signature checks. The alternative is `{{kind: persistent-async, runtime: path#Runtime, state_field: state, records_field: records, pending_field: pending, input_poll: path#Adapters::poll_input, executors: [{{symbol: path#execute, request_parameter: 1}}]}}`. Parameter indices are zero-based. List every effect protocol executor exactly once. Runtime storage must retain the declared State, Vec<TransitionRecord>, and Vec<Future<Output = EffectResultEnvelope>>. The driver accepts &mut Runtime first; the input poll method returns Poll<Option<Input>>. Executor request parameters use the declared EffectEnvelope and futures yield the declared EffectResultEnvelope. Keep Effect and EffectResult closed enums separate. Unsupported source forms, unknown calls, and undeclared adapter authority remain blockers. This checks storage/signature representation, not cancellation, correlation, scheduling, or drop safety; executable lifecycle properties must prove those promises.")
 }
 
@@ -54128,11 +54187,11 @@ fn validate_machine_change(manifest: &LoadedManifest, change: &MachineChange) ->
     {
         diagnostics.push(error("machine-change.execution-binding-unsupported", &manifest.path, "execution_binding requires a Rust implementation v0.2 binding"));
     }
-    if change.machine.execution_binding.as_ref().is_some_and(persistent_async::ExecutionBinding::is_persistent)
+    if change.machine.execution_binding.as_ref().is_some_and(persistent_async::ExecutionBinding::uses_envelopes)
         && (!is_stateful_machine_mode(&change.machine.mode)
             || final_machine_variants(manifest, "effects", &change.machine.effects, false).is_empty())
     {
-        diagnostics.push(error("machine-change.execution-binding-unsupported", &manifest.path, "persistent async execution requires a stateful machine with declared effects"));
+        diagnostics.push(error("machine-change.execution-binding-unsupported", &manifest.path, "envelope execution requires a stateful machine with declared effects"));
     }
     if change.spec != "rms/machine-change/v0.1" {
         diagnostics.push(error(
@@ -98757,6 +98816,78 @@ fn produce_transition_trace() {
     }
 
     #[test]
+    fn invocation_trace_run_records_replays_and_rejects_wrong_evidence() {
+        let root = unique_test_dir("invocation-trace-run");
+        fs::create_dir_all(root.join("contracts")).unwrap();
+        fs::write(root.join("contracts/codec.yaml"), "spec: rms/contract/v0.3\nname: codec\n").unwrap();
+        fs::write(root.join("runner.py"), r#"
+import hashlib, json, os
+from pathlib import Path
+def encode(value):
+    return str(value)
+def run():
+    assert os.environ['RMS_TRACE_RUNNER'] == 'runner.py#run'
+    request = {'value': 7}
+    record = {'spec': 'rms/invocation-record/v0.1', 'contract': 'codec', 'binding': 'codec-public',
+              'contract_digest': 'sha256:' + hashlib.sha256(Path('contracts/codec.yaml').read_bytes()).hexdigest(),
+              'input': request, 'output': {'encoded': encode(request['value'])},
+              'source': {'file': 'runner.py', 'function': 'encode'}}
+    mode = Path('mode').read_text()
+    if mode == 'wrong-binding': record['binding'] = 'other'
+    if mode == 'wrong-contract': record['contract'] = 'other'
+    if mode == 'wrong-digest': record['contract_digest'] = 'sha256:' + '0' * 64
+    if mode == 'malformed': del record['output']
+    document = {'spec': 'rms/trace-bundle/v0.1', 'records': [record]} if mode == 'bundle' else record
+    Path(os.environ['RMS_TRACE_OUTPUT']).write_text(json.dumps(document))
+run()
+"#).unwrap();
+        let mut manifest = LoadedManifest { path: root.join("implementation.yaml"), value: serde_yaml::from_str(r#"
+spec: rms/implementation/v0.2
+binding: executable
+commands:
+  codec: python3 runner.py
+architecture:
+  public_behavior_bindings:
+  - id: codec-public
+    public_kind: capability
+    public_name: codec
+    contract: contracts/codec.yaml
+    semantic_function: encode
+    observation_source: {kind: invocation-record, command: codec}
+"#).unwrap() };
+        set_yaml_value_path(&mut manifest.value, &["architecture", "trace", "producers"], serde_yaml::to_value(vec![TraceProducer {
+            id: "codec-invocations".into(), profile: "smoke".into(), bundle: "verification/traces/codec.json".into(),
+            command: "codec".into(), runner: "runner.py#run".into(),
+        }]).unwrap());
+        write_yaml_manifest(&manifest).unwrap();
+        for mode in ["standalone", "bundle"] {
+            fs::write(root.join("mode"), mode).unwrap();
+            let recorded = execute_trace_producers(&manifest.path, PropertyProfile::Smoke, true, false, 30).unwrap();
+            assert_eq!(recorded.result, "pass", "{recorded:#?}");
+            let replayed = execute_trace_producers(&manifest.path, PropertyProfile::Smoke, false, false, 30).unwrap();
+            assert_eq!(replayed.result, "pass", "{replayed:#?}");
+            let reports = verify_declared_trace_bundles(&manifest, &root).unwrap();
+            assert_eq!(reports.len(), 1);
+            assert!(reports[0].diagnostics.is_empty(), "{:?}", reports[0].diagnostics);
+        }
+        let recorded_path = root.join("verification/traces/codec.json");
+        let recorded_bytes = fs::read(&recorded_path).unwrap();
+        for mode in ["wrong-binding", "wrong-contract", "wrong-digest", "malformed"] {
+            fs::write(root.join("mode"), mode).unwrap();
+            let report = execute_trace_producers(&manifest.path, PropertyProfile::Smoke, true, false, 30).unwrap();
+            assert_eq!(report.result, "fail", "{mode}: {report:#?}");
+            assert_eq!(fs::read(&recorded_path).unwrap(), recorded_bytes);
+        }
+        // Context-free inspection accepts record shape; producer checks pin meaning.
+        fs::write(root.join("contracts/codec.yaml"), "spec: rms/contract/v0.3\nname: codec\nversion: 2\n").unwrap();
+        assert!(verify_declared_trace_bundles(&manifest, &root).is_err());
+        remove_yaml_path(&mut manifest.value, &["architecture", "public_behavior_bindings"]);
+        let producer = trace_producers_from_implementation(&manifest).remove(0);
+        assert!(build_producer_trace_report(&recorded_path, &manifest, &producer).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn failed_trace_preflight_does_not_replace_committed_evidence() {
         let root = unique_test_dir("trace-record-preflight-transaction");
         run_add_module(
@@ -102934,6 +103065,64 @@ semantic_functions:
 "#).unwrap(),
             }),
         }
+    }
+
+    #[test]
+    fn synchronous_envelopes_binding_is_an_explicit_machine_change() {
+        let change: MachineChange = serde_yaml::from_str(r#"
+spec: rms/machine-change/v0.1
+machine:
+  mode: workflow-effect-machine
+  execution_binding:
+    kind: synchronous-envelopes
+    executors:
+    - symbol: src/executor.rs#execute
+      request_parameter: 1
+"#).unwrap();
+        let mut value = effect_owner_v02_context().implementation.unwrap().value;
+        apply_machine_change_to_manifest(&mut value, &change);
+        assert_eq!(get_str(&value, &["architecture", "machine", "execution_binding", "kind"]), Some("synchronous-envelopes"));
+        let mut unsupported = change.clone();
+        unsupported.machine.mode = "stateless-decision-machine".into();
+        let manifest = LoadedManifest { path: PathBuf::from("implementation.yaml"), value };
+        assert!(validate_machine_change(&manifest, &unsupported).iter().any(|diagnostic| diagnostic.check == "machine-change.execution-binding-unsupported"));
+    }
+
+    #[test]
+    #[ignore = "requires RMS_SYNC_REPRODUCER_ROOT pointing to the authorized consumer module"]
+    fn synchronous_envelopes_consumer_preserves_driver_and_authority_checks() {
+        let root = PathBuf::from(std::env::var("RMS_SYNC_REPRODUCER_ROOT").unwrap());
+        let mut manifest = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let binding: persistent_async::ExecutionBinding = serde_yaml::from_str("kind: synchronous-envelopes\nexecutors:\n- symbol: src/link_io.rs#execute_link_io\n  request_parameter: 1").unwrap();
+        let before = build_effect_analysis(&manifest).unwrap();
+        set_yaml_value_path(&mut manifest.value, &["architecture", "machine", "execution_binding"], serde_yaml::to_value(binding).unwrap());
+        let mut summary = RustTypingSummary::default();
+        for file in ["representation.rs", "transition.rs", "driver.rs", "link_io.rs", "parser.rs", "projection.rs", "lib.rs"] {
+            let path = root.join("src").join(file);
+            let source = fs::read_to_string(&path).unwrap();
+            println!("source {file}: {}", sha256_bytes(source.as_bytes()));
+            inspect_rust_typing_file(&manifest, &mut Vec::new(), &path, &syn::parse_file(&source).unwrap(), &mut summary);
+        }
+        let mut diagnostics = Vec::new();
+        validate_rust_machine_execution_path(&manifest, &mut diagnostics, &summary);
+        validate_against_embedded_schema(&manifest, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let after = build_effect_analysis(&manifest).unwrap();
+        assert_eq!(after.result, effect_analysis::AnalysisResult::Pass, "{after:#?}");
+        assert_eq!(serde_json::to_value(&before).unwrap(), serde_json::to_value(&after).unwrap());
+        let mut legacy = manifest.clone();
+        remove_yaml_path(&mut legacy.value, &["architecture", "machine", "execution_binding"]);
+        validate_rust_machine_execution_path(&legacy, &mut diagnostics, &summary);
+        assert!(diagnostics.iter().any(|d| d.check == "structure.effect-protocol-executor-signature-mismatch"));
+        diagnostics.clear();
+        summary.function_signatures.get_mut("drive_link_request").unwrap().parameter_types[0] = None;
+        validate_rust_machine_execution_path(&manifest, &mut diagnostics, &summary);
+        assert!(diagnostics.iter().any(|d| d.check == "structure.machine-driver-signature-mismatch"));
+        let mut functions = existing_semantic_function_declarations(&manifest);
+        for function in &mut functions { set_yaml_sequence_path(function, &["authorities"], Vec::new()); }
+        set_yaml_sequence_path(&mut manifest.value, &["semantic_functions"], functions);
+        assert_eq!(build_effect_analysis(&manifest).unwrap().result, effect_analysis::AnalysisResult::Fail);
+        println!("consumer synchronous envelope, schema, legacy refusal, driver guard, and authority guard passed");
     }
 
     #[test]

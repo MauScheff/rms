@@ -7,6 +7,9 @@ use syn::{FnArg, GenericArgument, Item, PathArguments, ReturnType, Type, TypePar
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) enum ExecutionBinding {
     Synchronous {},
+    SynchronousEnvelopes {
+        executors: Vec<ExecutorBinding>,
+    },
     PersistentAsync {
         runtime: String,
         state_field: String,
@@ -27,6 +30,9 @@ pub(crate) struct ExecutorBinding {
 impl ExecutionBinding {
     pub(crate) fn is_persistent(&self) -> bool {
         matches!(self, Self::PersistentAsync { .. })
+    }
+    pub(crate) fn uses_envelopes(&self) -> bool {
+        !matches!(self, Self::Synchronous {})
     }
 }
 
@@ -242,6 +248,9 @@ impl<'a> Index<'a> {
         protocols: &[String],
         types: &Types<'_>,
     ) -> Vec<String> {
+        if let ExecutionBinding::SynchronousEnvelopes { executors } = binding {
+            return self.validate_executors(executors, protocols, types, false);
+        }
         let ExecutionBinding::PersistentAsync {
             runtime,
             state_field,
@@ -320,7 +329,19 @@ impl<'a> Index<'a> {
         {
             errors.push("exact input poll method must return Poll<Option<Input>>".into());
         }
-        // Every protocol must remain bound. The new variant does not erase enum ownership.
+        errors.extend(self.validate_executors(executors, protocols, types, true));
+        errors
+    }
+
+    fn validate_executors(
+        &self,
+        executors: &[ExecutorBinding],
+        protocols: &[String],
+        types: &Types<'_>,
+        asynchronous: bool,
+    ) -> Vec<String> {
+        let mut errors = Vec::new();
+        // Every protocol must remain bound. Neither variant erases enum ownership.
         for name in [types.effect, types.result] {
             if !matches!(self.named_items(name).as_slice(), [(_, Item::Enum(_))]) {
                 errors.push(format!("{name} must remain one declared closed enum"));
@@ -349,10 +370,17 @@ impl<'a> Index<'a> {
         }
         for executor in executors {
             let signature = self.signature(&executor.symbol);
+            let generic_envelope = signature.is_some_and(|sig| {
+                sig.generics.type_params().any(|parameter| {
+                    parameter.ident == types.request_envelope
+                        || parameter.ident == types.result_envelope
+                })
+            });
             let request = signature
                 .and_then(|sig| sig.inputs.iter().nth(executor.request_parameter))
                 .and_then(parameter_type);
             if !executor.symbol.contains('#')
+                || generic_envelope
                 || request.is_none_or(|ty| !self.nominal(ty, types.request_envelope))
             {
                 errors.push(format!(
@@ -361,16 +389,24 @@ impl<'a> Index<'a> {
                 ));
             }
             let output = signature.and_then(return_type).and_then(|ty| {
-                if signature.is_some_and(|sig| sig.asyncness.is_some()) {
+                if !asynchronous {
+                    signature.filter(|sig| sig.asyncness.is_none()).map(|_| ty)
+                } else if signature.is_some_and(|sig| sig.asyncness.is_some()) {
                     Some(ty)
                 } else {
                     self.future_output(ty, 0)
                 }
             });
-            if output.is_none_or(|ty| !self.nominal(ty, types.result_envelope)) {
+            if generic_envelope || output.is_none_or(|ty| !self.nominal(ty, types.result_envelope))
+            {
                 errors.push(format!(
-                    "{} Future::Output must be the exact EffectResultEnvelope",
-                    executor.symbol
+                    "{} {} must be the exact EffectResultEnvelope",
+                    executor.symbol,
+                    if asynchronous {
+                        "Future::Output"
+                    } else {
+                        "synchronous return"
+                    }
                 ));
             }
         }
@@ -463,6 +499,55 @@ executors:
                 result_envelope: "ResultEnvelope",
             },
         )
+    }
+
+    #[test]
+    fn synchronous_envelope_executor_keeps_exact_types() {
+        let binding: ExecutionBinding = serde_yaml::from_str("kind: synchronous-envelopes\nexecutors:\n- symbol: src/driver.rs#execute\n  request_parameter: 1").unwrap();
+        let check_sync = |source: &str, binding: &ExecutionBinding| {
+            let files =
+                BTreeMap::from([("src/driver.rs".into(), syn::parse_file(source).unwrap())]);
+            Index { files: &files }.validate(
+                binding,
+                "src/driver.rs#drive",
+                &["src/driver.rs#execute".into()],
+                &Types {
+                    state: "State",
+                    input: "Input",
+                    record: "Record",
+                    effect: "Effect",
+                    result: "EffectResult",
+                    request_envelope: "RequestEnvelope",
+                    result_envelope: "ResultEnvelope",
+                },
+            )
+        };
+        let source = SOURCE.replace(
+            "request: RequestEnvelope) -> EffectFuture",
+            "request: RequestEnvelope) -> ResultEnvelope",
+        );
+        assert!(check_sync(&source, &binding).is_empty());
+        for invalid in [
+            source.replace("request: RequestEnvelope", "request: Effect"),
+            source.replace("request: RequestEnvelope", "request: &RequestEnvelope"),
+            source.replace("fn execute(", "async fn execute("),
+            source.replace("fn execute(", "fn execute<RequestEnvelope>("),
+            source.replace("fn execute(", "fn execute<ResultEnvelope>("),
+            source.replace("-> ResultEnvelope {", "-> EffectResult {"),
+            source.replace("result: EffectResult", "result: Effect"),
+            source.replace("enum Effect { Start }", "struct Effect;"),
+            format!("{source}\nstruct RequestEnvelope;"),
+            SOURCE.to_string(),
+        ] {
+            assert!(!check_sync(&invalid, &binding).is_empty(), "{invalid}");
+        }
+        for yaml in [
+            "kind: synchronous-envelopes\nexecutors: []",
+            "kind: synchronous-envelopes\nexecutors:\n- {symbol: 'src/driver.rs#execute', request_parameter: 0}",
+            "kind: synchronous-envelopes\nexecutors:\n- {symbol: 'src/driver.rs#execute', request_parameter: 9}",
+            "kind: synchronous-envelopes\nexecutors:\n- {symbol: 'src/other.rs#execute', request_parameter: 1}",
+            "kind: synchronous-envelopes\nexecutors:\n- {symbol: 'src/driver.rs#execute', request_parameter: 1}\n- {symbol: 'src/driver.rs#execute', request_parameter: 1}",
+        ] { assert!(!check_sync(&source, &serde_yaml::from_str(yaml).unwrap()).is_empty(), "{yaml}"); }
     }
 
     #[test]
