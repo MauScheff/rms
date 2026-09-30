@@ -1481,6 +1481,20 @@ enum AdoptionCommands {
 
 #[derive(Subcommand)]
 enum BindingCommands {
+    /// Replace allowed Rust public reexport crate roots without changing dependencies or source.
+    SetPublicReexports {
+        implementation: PathBuf,
+        /// Expected complete current set as a JSON string array; absent means [].
+        #[arg(long, value_name = "JSON_ARRAY")]
+        from: String,
+        /// Complete replacement set as a JSON string array; [] removes all permissions.
+        #[arg(long, value_name = "JSON_ARRAY")]
+        set: String,
+        #[arg(long = "route-receipt")]
+        route_receipt: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Set the native Rust package identity without renaming its RMS module or Cargo files.
     SetPackage {
         implementation: PathBuf,
@@ -10792,6 +10806,13 @@ fn run_main() -> Result<()> {
             Ok(())
         }
         Commands::Binding { command } => match command {
+            BindingCommands::SetPublicReexports { implementation, from, set, route_receipt, dry_run } => {
+                let root = repository_root_for_target(&implementation)?;
+                let receipt = require_route_receipt(&root, &route_receipt, "binding-public-reexports-set", &implementation, None);
+                run_set_rust_public_reexports(&implementation, &from, &set, &receipt.receipt_id, dry_run)?;
+                println!("route receipt: {}", receipt.receipt_id);
+                Ok(())
+            }
             BindingCommands::SetPackage { implementation, from, package, route_receipt, dry_run } => {
                 let root = repository_root_for_target(&implementation)?;
                 let receipt = require_route_receipt(&root, &route_receipt, "binding-package-set", &implementation, None);
@@ -42345,6 +42366,17 @@ fn build_next_report_with_optional_program(
         ];
     }
     let external_rust_crate_declaration = task_requests_external_rust_crate_declaration(task);
+    let rust_public_reexports_change = task_requests_rust_public_reexports_change(task)
+        && intent.as_ref().is_some_and(|intent| {
+            intent.change_scope == IntentChangeScope::ExistingModule
+                && [&intent.facts.domain_decisions, &intent.facts.lifecycle, &intent.facts.effects, &intent.facts.runnable_surface]
+                    .iter().all(|fact| fact.disposition == IntentDisposition::Absent)
+        });
+    if rust_public_reexports_change {
+        classification.lane = TaskLane::ImplementationCandidate;
+        classification.confidence = "deterministic".to_string();
+        classification.reasons = vec!["task changes only Rust public reexport permissions for already-declared dependencies of an existing binding".to_string()];
+    }
     let rust_package_identity_change = task_requests_rust_package_identity_change(task)
         && intent.as_ref().is_some_and(|intent| {
             intent.change_scope == IntentChangeScope::ExistingModule
@@ -42497,6 +42529,8 @@ fn build_next_report_with_optional_program(
     let bounded_existing_implementation = classification.lane == TaskLane::ImplementationCandidate
         && task_requests_declared_role_implementation_completion(task)
         && owner.status() == OwnerStatus::Selected;
+    let bounded_binding_metadata = (rust_package_identity_change || rust_public_reexports_change)
+        && owner.status() == OwnerStatus::Selected;
     let bounded_proof_support_roles =
         exact_owner_scoped_proof_support_role_change_ready(task, intent.as_ref(), &owner);
     let owner_scoped_existing_semantic_change =
@@ -42558,6 +42592,9 @@ fn build_next_report_with_optional_program(
     if bounded_existing_implementation {
         warnings.push("The exact existing module is eligible for bounded implementation and declared-proof completion without canonical mutation authority. Unrelated and task-addressed validation debt remains visible and must still pass the candidate and committed gates.".to_string());
     }
+    if bounded_binding_metadata {
+        warnings.push("This route authorizes only the named Rust binding metadata mutator. Existing source and authority-evidence debt remains visible and must pass final candidate and committed gates. Inferred reuse uncertainty is not material to this bounded mutation; the mutator still requires an intact prior revision and exact current value.".to_string());
+    }
     if bounded_proof_support_roles {
         warnings.push("The exact existing module is eligible for a bounded canonical proof-support role addition. Unrelated validation debt remains visible and must still pass the candidate and committed gates.".to_string());
     } else if owner_scoped_existing_semantic_change {
@@ -42578,6 +42615,8 @@ fn build_next_report_with_optional_program(
                         diagnostic.check.starts_with("intent.")
                     } else if matches!(owner.status(), OwnerStatus::Ambiguous | OwnerStatus::None) {
                         unresolved_owner_route_hard_blocker(&root, diagnostic)
+                    } else if bounded_binding_metadata {
+                        bounded_binding_metadata_route_hard_blocker(&root, diagnostic, &owner)
                     } else if bounded_proof_support_roles {
                         bounded_owner_scoped_semantic_route_hard_blocker(&root, diagnostic, &owner)
                     } else if bounded_observation_source_repair || bounded_existing_implementation {
@@ -42631,7 +42670,10 @@ fn build_next_report_with_optional_program(
     let material_unknown = validation
         .diagnostics
         .iter()
-        .any(|item| item.check == "intent.material-unknown");
+        .any(|item| item.check == "intent.material-unknown"
+            && !(bounded_binding_metadata
+                && item.message == "material fact `reuse` remains unknown"
+                && intent.as_ref().is_some_and(|model| model.facts.reuse.basis == IntentBasis::Inferred)));
     let existing_owner_unresolved = intent.as_ref().is_some_and(|model| {
         model.change_scope == IntentChangeScope::ExistingModule
             && !profile.report.module_manifests.is_empty()
@@ -42769,6 +42811,9 @@ fn build_next_report_with_optional_program(
         }
         if context.implementation.is_some() && rust_package_identity_change {
             allowed_actions.push("binding-package-set");
+        }
+        if context.implementation.is_some() && rust_public_reexports_change {
+            allowed_actions.push("binding-public-reexports-set");
         }
     }
     let owner_path = owner
@@ -42990,6 +43035,12 @@ fn task_requests_rust_package_identity_change(task: &str) -> bool {
     let normalized = task.to_ascii_lowercase();
     normalized.contains("toolchain.package") && task_mentions_token(task, "rust")
         && ["set", "rename", "change"].iter().any(|verb| task_mentions_token(task, verb))
+}
+
+fn task_requests_rust_public_reexports_change(task: &str) -> bool {
+    task.to_ascii_lowercase().contains("architecture.allowed_public_reexports")
+        && task_mentions_token(task, "rust")
+        && ["set", "replace", "change"].iter().any(|verb| task_mentions_token(task, verb))
 }
 
 fn task_requests_external_rust_crate_declaration(task: &str) -> bool {
@@ -43680,6 +43731,18 @@ fn exact_public_observation_source_repair_ready(task: &str, owner: &OwnerResolut
     })
     .count()
         > 0
+}
+
+fn bounded_binding_metadata_route_hard_blocker(root: &Path, diagnostic: &Diagnostic, owner: &OwnerResolution) -> bool {
+    // These findings concern realization, not the immutable semantic payload the setter preserves.
+    // All schema, intent, revision, and other owner-scoped canonical errors remain hard blockers.
+    if diagnostic.check == "effects.transitive-purity"
+        || diagnostic.check.starts_with("implementation.rust.")
+        || diagnostic.check.starts_with("structure.")
+        || diagnostic.check == "semantic.authority-without-evidence" {
+        return false;
+    }
+    bounded_owner_scoped_semantic_route_hard_blocker(root, diagnostic, owner)
 }
 
 fn bounded_existing_owner_route_hard_blocker(
@@ -45947,7 +46010,9 @@ fn build_next_steps(
                 None,
             )),
             TaskLane::ImplementationCandidate => declare.push(manual_next_step(
-                if task_requests_rust_package_identity_change(task) {
+                if task_requests_rust_public_reexports_change(task) {
+                    "Use `rms binding set-public-reexports <implementation.yaml> --from '<CURRENT_JSON_ARRAY>' --set '<NEW_JSON_ARRAY>' --route-receipt <RUN_ID>`, with --dry-run first. Absent current permissions mean []. The command requires an intact prior seal and permits only already-declared Rust dependency roots. It changes only public reexport permissions and provenance, not dependencies, source, contracts, or topology. If public contract meaning changes, route that semantic change separately."
+                } else if task_requests_rust_package_identity_change(task) {
                     "Declare the package identity with `rms binding set-package <implementation.yaml> --from <CURRENT_PACKAGE> --package <NEW_PACKAGE> --route-receipt <RUN_ID>`. Review with `--dry-run` first. This changes only toolchain.package, not RMS module identity, Cargo.toml, dependencies, contracts, or topology. Then update native Cargo package/import references and run native verification plus rms structure."
                 } else if task_requests_external_rust_crate_declaration(task) {
                     "Declare the external Rust dependency with `rms binding add-external-crate <implementation.yaml> --crate <IMPORT_ID> --package <CARGO_PACKAGE> --version-requirement <CARGO_REQUIREMENT> --route-receipt <RUN_ID>`. Review with `--dry-run` first. Then edit Cargo.toml normally inside the declared native role; use the exact dependency key, package, and version requirement that RMS recorded. This command does not edit Cargo.toml and does not change `dependencies.local_modules`."
@@ -69719,6 +69784,7 @@ enum SemanticRevisionAuthority {
     MachineApply,
     SurfaceApply,
     BindingPackageSet,
+    BindingPublicReexportsSet,
     RepositoryMaintainerSeal,
 }
 
@@ -69729,6 +69795,7 @@ impl SemanticRevisionAuthority {
             Self::MachineApply => "rms machine apply",
             Self::SurfaceApply => "rms surface apply",
             Self::BindingPackageSet => "rms binding set-package",
+            Self::BindingPublicReexportsSet => "rms binding set-public-reexports",
             Self::RepositoryMaintainerSeal => "repository maintainer seal",
         }
     }
@@ -69739,6 +69806,7 @@ impl SemanticRevisionAuthority {
             "rms machine apply" => Some(Self::MachineApply),
             "rms surface apply" => Some(Self::SurfaceApply),
             "rms binding set-package" => Some(Self::BindingPackageSet),
+            "rms binding set-public-reexports" => Some(Self::BindingPublicReexportsSet),
             "repository maintainer seal" => Some(Self::RepositoryMaintainerSeal),
             _ => None,
         }
@@ -77637,6 +77705,76 @@ fn validate_external_rust_crate_declaration(
             "external Cargo version requirement must be nonblank and contain no control characters"
         );
     }
+    Ok(())
+}
+
+fn rust_reexport_set(value: &JsonValue) -> Result<BTreeSet<String>> {
+    let values: Vec<String> = serde_json::from_value(value.clone())
+        .context("public reexports must be a JSON array of exact Rust crate roots")?;
+    let mut names = BTreeSet::new();
+    for name in values {
+        if !valid_rust_crate_identity(&name)
+            || matches!(name.as_str(), "crate" | "self" | "super" | "std" | "core" | "alloc")
+            || syn::parse_str::<syn::Ident>(&name).is_err()
+            || !names.insert(name.clone()) {
+            bail!("invalid or duplicate public reexport crate root `{name}`");
+        }
+    }
+    Ok(names)
+}
+
+fn run_set_rust_public_reexports(
+    implementation: &Path,
+    from: &str,
+    replacement: &str,
+    receipt_id: &str,
+    dry_run: bool,
+) -> Result<()> {
+    let mut manifest = load_manifest(implementation)?;
+    if get_str(&manifest.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC)
+        || get_str(&manifest.value, &["binding"]) != Some("rust") {
+        bail!("public reexport changes require an rms/implementation/v0.2 Rust binding");
+    }
+    let expected = rust_reexport_set(&serde_json::from_str(from)?)?;
+    let replacement = rust_reexport_set(&serde_json::from_str(replacement)?)?;
+    let current_value = get_path(&manifest.value, &["architecture", "allowed_public_reexports"])
+        .map(serde_json::to_value).transpose()?.unwrap_or_else(|| json!([]));
+    let current = rust_reexport_set(&current_value)?;
+    if current != expected {
+        bail!("public reexports are {current:?}, not expected {expected:?}; no change was written");
+    }
+    let dependencies = get_string_array(&manifest.value, &["dependencies", "allowed_external_crates"])
+        .into_iter().map(|name| canonical_rust_crate_name(&name)).collect::<BTreeSet<_>>();
+    for name in &replacement {
+        if !dependencies.contains(name) {
+            bail!("public reexport crate `{name}` is not an already-declared dependency; declare its dependency separately");
+        }
+    }
+    let mut checks = Vec::new();
+    append_semantic_revision_audit_check(&manifest, true, &mut checks);
+    if let Some(check) = checks.iter().find(|check| check.result != "pass") {
+        bail!("public reexports require an intact prior revision: {}: {}", check.id, check.note);
+    }
+    let previous_revision = get_path(&manifest.value, &["x-rms", "semantic_revision"]).cloned();
+    set_yaml_value_path(&mut manifest.value, &["architecture", "allowed_public_reexports"], serde_yaml::to_value(&replacement)?);
+    if dry_run {
+        print!("{}", serde_yaml::to_string(&manifest.value)?);
+        return Ok(());
+    }
+    let directory = implementation.parent().unwrap_or_else(|| Path::new("."))
+        .join("verification/binding-changes");
+    fs::create_dir_all(&directory)?;
+    let record = directory.join(format!("public-reexports-{}.yaml", SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()));
+    let content = serde_yaml::to_string(&json!({
+        "spec": "rms/binding-public-reexports-change/v0.1",
+        "from": current,
+        "set": replacement,
+        "route_receipt": receipt_id,
+        "previous_revision": previous_revision,
+    }))?;
+    fs::OpenOptions::new().write(true).create_new(true).open(&record)?.write_all(content.as_bytes())?;
+    seal_implementation_semantics(&mut manifest, &record, SemanticRevisionAuthority::BindingPublicReexportsSet)?;
+    println!("declared Rust public reexports in {}; dependencies, source, and contracts are unchanged", implementation.display());
     Ok(())
 }
 
@@ -88719,6 +88857,74 @@ mod tests {
     }
 
     #[test]
+    fn rust_public_reexports_set_is_bounded_sealed_and_reversible() {
+        let root = unique_test_dir("rust-public-reexports-set");
+        fs::create_dir_all(root.join("src")).unwrap();
+        let path = root.join("implementation.yaml");
+        fs::write(&path, "spec: rms/implementation/v0.2\nmodule: stable-owner\nbinding: rust\ndependencies: {allowed_external_crates: [provider, other]}\narchitecture: {roles: {representation: [src/lib.rs]}}\n").unwrap();
+        let source = "pub use provider::DomainValue;\npub use other::OtherValue;\n";
+        fs::write(root.join("src/lib.rs"), source).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname = 'owner'\n").unwrap();
+        assert!(run_set_rust_public_reexports(&path, "[]", "[\"provider\"]", "receipt", false).is_err());
+        fs::write(root.join("module.yaml"), "spec: rms/module/v0.1\nmodule: {name: stable-owner}\n").unwrap();
+        let prior = root.join("prior.yaml");
+        fs::write(&prior, "prior: immutable\n").unwrap();
+        seal_implementation_semantics(&mut load_manifest(&path).unwrap(), &prior, SemanticRevisionAuthority::SpecApply).unwrap();
+        let original = fs::read_to_string(&path).unwrap();
+        let module_original = fs::read_to_string(root.join("module.yaml")).unwrap();
+        run_set_rust_public_reexports(&path, "[]", "[\"provider\"]", "receipt", true).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(fs::read_to_string(root.join("module.yaml")).unwrap(), module_original);
+        assert!(!root.join("verification/binding-changes").exists());
+        for replacement in ["null", "{}", "[1]", "[\"provider\",\"provider\"]", "[\"provider::Type\"]", "[\"*\"]", "[\"new_crate\"]", "[\"std\"]", "[\" provider\"]", "[\"provider-name\"]"] {
+            assert!(run_set_rust_public_reexports(&path, "[]", replacement, "receipt", false).is_err(), "{replacement}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        }
+        assert!(run_set_rust_public_reexports(&path, "[\"provider\"]", "[]", "receipt", false).is_err());
+        run_set_rust_public_reexports(&path, "[]", "[\"provider\"]", "receipt", false).unwrap();
+        let applied = load_manifest(&path).unwrap();
+        let mut actual = applied.value.clone();
+        let mut expected: YamlValue = serde_yaml::from_str(&original).unwrap();
+        set_yaml_value_path(&mut expected, &["architecture", "allowed_public_reexports"], serde_yaml::to_value(vec!["provider"]).unwrap());
+        remove_yaml_path(&mut actual, &["x-rms", "semantic_revision"]);
+        remove_yaml_path(&mut expected, &["x-rms", "semantic_revision"]);
+        assert_eq!(actual, expected);
+        let mut checks = Vec::new();
+        append_semantic_revision_audit_check(&applied, true, &mut checks);
+        assert!(checks.iter().all(|check| check.result == "pass"), "{checks:?}");
+        let record_path = root.join(get_str(&applied.value, &["x-rms", "semantic_revision", "change_record"]).unwrap());
+        let record_bytes = fs::read(&record_path).unwrap();
+        let record: YamlValue = serde_yaml::from_slice(&record_bytes).unwrap();
+        assert_eq!(get_str(&record, &["route_receipt"]), Some("receipt"));
+        assert_eq!(fs::read_to_string(&prior).unwrap(), "prior: immutable\n");
+        let mut diagnostics = Vec::new();
+        validate_rust_source_boundaries(&applied, &mut diagnostics, &root, &"[package]\nname='owner'".parse::<TomlValue>().unwrap());
+        let reexports = diagnostics.iter().filter(|diagnostic| diagnostic.check == "implementation.rust.reexports.external").collect::<Vec<_>>();
+        assert_eq!(reexports.len(), 1, "{diagnostics:?}");
+        assert!(reexports[0].message.contains("`other`"));
+        assert!(run_set_rust_public_reexports(&path, "[]", "[]", "receipt", false).is_err());
+        run_set_rust_public_reexports(&path, "[\"provider\"]", "[\"other\",\"provider\"]", "receipt2", false).unwrap();
+        // Preconditions are sets, not order-sensitive lists. Removal is explicit.
+        run_set_rust_public_reexports(&path, "[\"provider\",\"other\"]", "[]", "receipt3", false).unwrap();
+        assert_eq!(fs::read(&record_path).unwrap(), record_bytes);
+        assert_eq!(fs::read_to_string(root.join("src/lib.rs")).unwrap(), source);
+        assert_eq!(fs::read_to_string(root.join("Cargo.toml")).unwrap(), "[package]\nname = 'owner'\n");
+        assert_eq!(fs::read_dir(root.join("verification/binding-changes")).unwrap().count(), 3);
+        let clean = fs::read_to_string(&path).unwrap();
+        for invalid in [clean.replace("binding: rust", "binding: swift"), clean.replace("v0.2", "v0.1"), clean.replace("stable-owner", "drifted-owner"), clean.replace("allowed_public_reexports: []", "allowed_public_reexports: null")] {
+            fs::write(&path, &invalid).unwrap();
+            assert!(run_set_rust_public_reexports(&path, "[]", "[\"provider\"]", "receipt", false).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+        }
+        fs::write(&path, clean).unwrap();
+        let final_manifest = load_manifest(&path).unwrap();
+        let final_record = root.join(get_str(&final_manifest.value, &["x-rms", "semantic_revision", "change_record"]).unwrap());
+        fs::write(final_record, "tampered: true\n").unwrap();
+        assert!(run_set_rust_public_reexports(&path, "[]", "[\"provider\"]", "receipt", false).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn rust_package_set_changes_only_identity_and_compares_expected_value() {
         let root = unique_test_dir("rust-package-set");
         fs::create_dir_all(&root).unwrap();
@@ -88772,7 +88978,7 @@ mod tests {
     }
 
     #[test]
-    fn next_routes_rust_package_set_without_semantic_or_other_owner_authority() {
+    fn next_routes_rust_binding_metadata_without_semantic_or_other_owner_authority() {
         let root = unique_test_dir("next-rust-package-set");
         run_add_module(add_module_request(&root, "package-owner", "Own package behavior.", "library", &[], Some(ScaffoldShape::DomainEngine), Some("rust")), &no_provider_options()).unwrap();
         initialize_test_git_repository(&root);
@@ -88792,20 +88998,45 @@ surface_kinds: []
 binding_preferences: [rust]
 open_questions: []
 "#;
+        let intent = intent.replace("reuse: {disposition: absent", "reuse: {disposition: unknown");
+        let transition_path = root.join("src/transition.rs");
+        let mut transition = fs::read_to_string(&transition_path).unwrap();
+        let function = transition.find("pub fn transition(").unwrap();
+        let body = function + transition[function..].find('{').unwrap() + 1;
+        transition.insert_str(body, "\nstd::fs::read(\"source-debt\").ok();\n");
+        fs::write(&transition_path, transition).unwrap();
+        for (task, family, command) in [
+            (task, "binding-package-set", "rms binding set-package"),
+            ("Set the Rust architecture.allowed_public_reexports for package-owner to its already-declared dependency provider. Preserve contracts, behavior, effects, module identity, and topology.", "binding-public-reexports-set", "rms binding set-public-reexports"),
+        ] {
         let report = build_next_report_with_intent(&root, Some(&root.join("module.yaml")), task,
             RawIntentInput { yaml: Some(intent.to_string()), ..Default::default() }, None).unwrap();
         assert_eq!(report.result, NextResult::Ready, "{report:#?}");
+        assert!(report.validation.diagnostics.iter().any(|diagnostic| diagnostic.check == "structure.hidden-effect-in-domain"), "{report:#?}");
+        for check in ["effects.transitive-purity", "implementation.rust.reexports.external", "semantic.authority-without-evidence", "structure.runnable-surface-machine-bypass"] {
+            assert!(!bounded_binding_metadata_route_hard_blocker(&root, &error(check, &root.join("implementation.yaml"), "retained debt"), &report.owner));
+        }
+        for check in ["schema.validate", "semantic.revision-drift", "intent.contradiction", "semantic.executable-property-invalid"] {
+            assert!(bounded_binding_metadata_route_hard_blocker(&root, &error(check, &root.join("implementation.yaml"), "must remain blocking"), &report.owner));
+        }
         assert_eq!(report.task_classification.lane, TaskLane::ImplementationCandidate);
-        assert!(report.steps.iter().flat_map(|group| &group.steps).any(|step| step.description.contains("rms binding set-package")));
+        assert!(report.steps.iter().flat_map(|group| &group.steps).any(|step| step.description.contains(command)));
         let receipt = Path::new(&report.receipt_path);
-        assert!(validate_route_receipt(&root, receipt, "binding-package-set", &root.join("implementation.yaml"), None).is_ok());
-        assert!(validate_route_receipt(&root, receipt, "binding-package-set", &root.join("other/implementation.yaml"), None).is_err());
+        assert!(validate_route_receipt(&root, receipt, family, &root.join("implementation.yaml"), None).is_ok());
+        assert!(validate_route_receipt(&root, receipt, family, &root.join("other/implementation.yaml"), None).is_err());
         assert!(validate_route_receipt(&root, receipt, "spec-apply", &root.join("module.yaml"), None).is_err());
+        let other_family = if family == "binding-package-set" { "binding-public-reexports-set" } else { "binding-package-set" };
+        assert!(validate_route_receipt(&root, receipt, other_family, &root.join("implementation.yaml"), None).is_err());
+        let explicit_unknown = intent.replace("reuse: {disposition: unknown, basis: inferred, rationale: native package metadata only}", "reuse: {disposition: unknown, basis: explicit, source_quote: Rust}");
+        let unknown_report = build_next_report_with_intent(&root, Some(&root.join("module.yaml")), task,
+            RawIntentInput { yaml: Some(explicit_unknown), ..Default::default() }, None).unwrap();
+        assert_eq!(unknown_report.result, NextResult::ClarificationRequired, "{unknown_report:#?}");
         let semantic_intent = intent.replace("domain_decisions: {disposition: absent", "domain_decisions: {disposition: required");
         let semantic_report = build_next_report_with_intent(&root, Some(&root.join("module.yaml")), task,
             RawIntentInput { yaml: Some(semantic_intent), ..Default::default() }, None).unwrap();
         let semantic_receipt: RouteReceipt = serde_json::from_slice(&fs::read(&semantic_report.receipt_path).unwrap()).unwrap();
-        assert!(!semantic_receipt.payload.allowed_action_families.contains(&"binding-package-set".to_string()));
+        assert!(!semantic_receipt.payload.allowed_action_families.contains(&family.to_string()));
+        }
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -120833,6 +121064,7 @@ open_questions: []
             &["add-capability-tree"][..],
             &["binding", "add-external-crate"][..],
             &["binding", "set-package"][..],
+            &["binding", "set-public-reexports"][..],
             &["machine", "apply"][..],
             &["surface", "apply"][..],
             &["spec", "apply"][..],
