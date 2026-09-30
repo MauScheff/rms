@@ -42490,6 +42490,15 @@ fn build_next_report_with_optional_program(
         ];
     }
     let external_rust_crate_declaration = task_requests_external_rust_crate_declaration(task);
+    let authority_alignment_requested = task_requests_authority_alignment(task)
+        && intent.as_ref().is_some_and(|intent| intent.change_scope == IntentChangeScope::ExistingModule
+            && intent.facts.domain_decisions.disposition == IntentDisposition::Absent
+            && intent.facts.lifecycle.disposition == IntentDisposition::Absent);
+    if authority_alignment_requested {
+        classification.lane = TaskLane::ImplementationCandidate;
+        classification.confidence = "deterministic".into();
+        classification.reasons = vec!["task requests only canonical alignment of existing closed effect authority rows".into()];
+    }
     let integration_package_rebind = task_requests_integration_package_rebind(task)
         && intent.as_ref().is_some_and(|intent| {
             intent.change_scope == IntentChangeScope::ExistingModule
@@ -42629,6 +42638,13 @@ fn build_next_report_with_optional_program(
         )
     };
     let mut context = build_next_context(&root, &profile.report, owner.selected_module())?;
+    let authority_alignment_repair = if authority_alignment_requested {
+        owner.selected_module().and_then(|selected| load_spec_target(Path::new(&selected.path)).ok())
+            .and_then(|context| build_authority_alignment_repair(&context).ok())
+    } else { None };
+    if authority_alignment_repair.is_some() {
+        context.edit_authority = "Only receipt-guarded authority declarations, added raw authority bindings with evidence, and exact existing effectful authority rows may change. Source, purity, behavior, contracts, topology, and existing facades must remain unchanged.".into();
+    }
     if native_existing_realization && owner.status() == OwnerStatus::Selected {
         context.edit_authority = "The selected RMS owner supplies canonical meaning only. This route grants no canonical edit authority. Native implementation paths remain governed by the project workflow and are reported as native or outside RMS coverage by progressive checks."
             .to_string();
@@ -42752,6 +42768,8 @@ fn build_next_report_with_optional_program(
                         unresolved_owner_route_hard_blocker(&root, diagnostic)
                     } else if bounded_binding_metadata {
                         bounded_binding_metadata_route_hard_blocker(&root, diagnostic, &owner)
+                    } else if authority_alignment_repair.is_some() {
+                        authority_alignment_route_hard_blocker(&root, diagnostic, &owner)
                     } else if bounded_proof_support_roles {
                         bounded_owner_scoped_semantic_route_hard_blocker(&root, diagnostic, &owner)
                     } else if bounded_observation_source_repair || bounded_existing_implementation {
@@ -42778,6 +42796,9 @@ fn build_next_report_with_optional_program(
     };
     if owner.status() == OwnerStatus::Invalid {
         blockers.push(owner.reason.clone());
+    }
+    if authority_alignment_requested && authority_alignment_repair.is_none() {
+        blockers.push("Authority-only alignment requires an intact existing Rust binding with closed calls and an effectful authority-row mismatch. Unknown calls and pure-function violations require native repair first.".into());
     }
     blockers.sort();
     blockers.dedup();
@@ -42921,6 +42942,8 @@ fn build_next_report_with_optional_program(
         allowed_actions.push("spec-repair-apply");
     } else if machine_repair.is_some() {
         allowed_actions.extend(["machine-apply", "binding-migrate"]);
+    } else if result == NextResult::Ready && authority_alignment_repair.is_some() {
+        allowed_actions.push("authority-alignment");
     } else if result == NextResult::Ready {
         match classification.lane {
             TaskLane::Semantic => {
@@ -42971,7 +42994,7 @@ fn build_next_report_with_optional_program(
         (Some(SpecRepairRoute::ContractBehaviorCases), Some(target)) => Some(
             build_contract_behavior_case_repair_authority(&root, target, &validation.diagnostics)?,
         ),
-        _ => None,
+        _ => authority_alignment_repair,
     };
     let route = issue_route_receipt(
         &root,
@@ -43184,6 +43207,22 @@ fn task_requests_rust_public_reexports_change(task: &str) -> bool {
 fn task_requests_integration_package_rebind(task: &str) -> bool {
     task.to_ascii_lowercase().contains("integration test realization package selectors")
         && ["update", "set", "change"].iter().any(|verb| task_mentions_token(task, verb))
+}
+
+fn task_requests_authority_alignment(task: &str) -> bool {
+    let task = task.to_ascii_lowercase();
+    (task.contains("align only canonical authority") || task.contains("reconcile only canonical authority"))
+        && task.contains("existing") && task.contains("no new behavior")
+}
+
+fn authority_alignment_route_hard_blocker(root: &Path, diagnostic: &Diagnostic, owner: &OwnerResolution) -> bool {
+    if matches!(diagnostic.check.as_str(), "effects.transitive-purity" | "semantic.function-authority-missing" | "semantic.authority-without-evidence") {
+        if let Some(selected) = owner.selected_module() {
+            let directory = Path::new(&selected.path).parent().unwrap_or(root);
+            if Path::new(&diagnostic.path) == directory.join("implementation.yaml") || Path::new(&diagnostic.path) == Path::new(&selected.path) { return false; }
+        }
+    }
+    bounded_owner_scoped_semantic_route_hard_blocker(root, diagnostic, owner)
 }
 
 fn task_requests_external_rust_crate_declaration(task: &str) -> bool {
@@ -46153,7 +46192,9 @@ fn build_next_steps(
                 None,
             )),
             TaskLane::ImplementationCandidate => declare.push(manual_next_step(
-                if task_requests_integration_package_rebind(task) {
+                if task_requests_authority_alignment(task) {
+                    "Use `rms spec apply <implementation.yaml> --change-file <change.yaml> --route-receipt <RUN_ID> --dry-run`, then apply. Supply complete existing semantic_functions.set items; change only authorities to their exact sorted inferred rows. Preserve purity, symbols, kind, assumptions, discharges, and function evidence. Add only observed raw authorities and exact existing effectful facade bindings with containment evidence. Do not set or remove authorities/bindings, add named facades, change source, or waive unknown calls. This receipt fingerprints the current source and canonical declarations. All ordinary candidate and release checks remain required."
+                } else if task_requests_integration_package_rebind(task) {
                     "Use receipt-gated `rms spec apply <module.yaml> --change-file <change.yaml> --route-receipt <RUN_ID> --dry-run`, then apply. Supply only complete existing properties.set items. Change only owner-local integration-test realization package fields to the current toolchain.package. The guarded receipt rejects every other property, runner, command, owner, working-directory, or semantic change. Preserve all unrelated fields."
                 } else if task_requests_rust_public_reexports_change(task) {
                     "Use `rms binding set-public-reexports <implementation.yaml> --from '<CURRENT_JSON_ARRAY>' --set '<NEW_JSON_ARRAY>' --route-receipt <RUN_ID>`, with --dry-run first. Absent current permissions mean []. The command requires an intact prior seal and permits only already-declared Rust dependency roots. It changes only public reexport permissions and provenance, not dependencies, source, contracts, or topology. If public contract meaning changes, route that semantic change separately."
@@ -46191,10 +46232,15 @@ fn build_next_steps(
         {
             if classification.lane == TaskLane::ImplementationCandidate
                 && (task_requests_integration_package_rebind(task)
+                    || task_requests_authority_alignment(task)
                     || task_requests_rust_public_reexports_change(task))
             {
                 implement.push(manual_next_step(
-                    "This route changes binding metadata only. No role or native source implementation is required. After the prescribed canonical mutation, run the affected native proof and progressive checks.",
+                    if task_requests_authority_alignment(task) {
+                        "This route aligns authority declarations with unchanged native behavior. Do not edit source or existing semantic meaning. After canonical apply, run native proof and all candidate and committed checks."
+                    } else {
+                        "This route changes binding metadata only. No role or native source implementation is required. After the prescribed canonical mutation, run the affected native proof and progressive checks."
+                    },
                     None,
                 ));
             } else if classification.lane == TaskLane::ImplementationCandidate
@@ -67493,6 +67539,13 @@ fn libfuzzer_execution_count(stdout: &str, stderr: &str) -> Option<u64> {
 
 fn proof_command_is_test_backed(command: &str) -> bool {
     let command = command.to_ascii_lowercase();
+    let words = command.split_whitespace().collect::<Vec<_>>();
+    if let ["cargo", toolchain, "test", ..] = words.as_slice() {
+        if toolchain.strip_prefix('+').is_some_and(|name| !name.is_empty()
+            && name.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))) {
+            return true;
+        }
+    }
     [
         "cargo test",
         "swift test",
@@ -87549,6 +87602,19 @@ fn validate_spec_change_route_receipt(
         Ok(receipt) => return Ok(receipt),
         Err(error) => error,
     };
+    if let Ok(receipt) = validate_route_receipt(root, reference, "authority-alignment", target, None) {
+        let context = load_spec_target(target)?;
+        let current = build_authority_alignment_repair(&context)?;
+        if receipt.payload.repair_authority.as_ref() != Some(&current) {
+            bail!("authority alignment source or canonical declarations changed; reroute the exact task");
+        }
+        let change = parse_semantic_change(change_json, change_yaml, change_file)?;
+        validate_authority_alignment_change(root, &context, &change)?;
+        let mut prepared = prepare_semantic_change_for_apply(&context, change);
+        prepared.supersedes.clear();
+        validate_authority_alignment_change(root, &context, &prepared)?;
+        return Ok(receipt);
+    }
     if let Ok(receipt) = validate_route_receipt(root, reference, "integration-package-rebind", target, None) {
         let context = load_spec_target(target)?;
         let change = parse_semantic_change(change_json, change_yaml, change_file)?;
@@ -87604,6 +87670,89 @@ fn validate_spec_change_route_receipt(
     );
     validate_contract_behavior_case_repair_change(root, &context, &change, expected)?;
     Ok(receipt)
+}
+
+fn authority_alignment_analysis(context: &SpecTargetContext) -> Result<effect_analysis::EffectAnalysis> {
+    let implementation = context.implementation.as_ref().ok_or_else(|| anyhow!("authority alignment requires an existing implementation"))?;
+    if get_str(&implementation.value, &["binding"]) != Some("rust")
+        || get_str(&implementation.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC)
+        || get_str(&implementation.value, &["architecture", "static_inspection"]) == Some("opaque") {
+        bail!("authority alignment requires an inspectable Rust v0.2 binding");
+    }
+    let mut checks = Vec::new();
+    append_semantic_revision_audit_check(implementation, true, &mut checks);
+    if checks.iter().any(|check| check.result != "pass") { bail!("authority alignment requires an intact prior semantic revision"); }
+    let analysis = build_effect_analysis(implementation)?;
+    if analysis.result == effect_analysis::AnalysisResult::Unsupported || analysis.functions.is_empty()
+        || analysis.functions.iter().any(|function| !function.unresolved_calls.is_empty()
+            || function.transitive_authorities.iter().any(|authority| authority == "dynamic-dispatch")
+            || (function.declared_purity != "effectful" && function.verdict != effect_analysis::FunctionVerdict::Pass)) {
+        bail!("authority alignment cannot waive unknown calls, dynamic dispatch, or pure-function violations");
+    }
+    if !analysis.functions.iter().any(|function| function.declared_purity == "effectful"
+        && function.declared_authorities != function.transitive_authorities) {
+        bail!("authority alignment requires an existing effectful authority-row mismatch");
+    }
+    Ok(analysis)
+}
+
+fn build_authority_alignment_repair(context: &SpecTargetContext) -> Result<SpecRepairAuthority> {
+    let analysis = authority_alignment_analysis(context)?;
+    let module = context.module.as_ref().ok_or_else(|| anyhow!("authority alignment requires a module"))?;
+    let implementation = context.implementation.as_ref().unwrap();
+    let fingerprint = serde_json::to_vec(&json!({"analysis":analysis,"module":module.value,"implementation":implementation.value}))?;
+    Ok(SpecRepairAuthority { kind: "effect-authority-alignment".into(), diagnostic_fingerprint: sha256_bytes(&fingerprint), contracts: Vec::new() })
+}
+
+fn validate_authority_alignment_change(root: &Path, context: &SpecTargetContext, change: &SemanticChange) -> Result<()> {
+    let analysis = authority_alignment_analysis(context)?;
+    let implementation = context.implementation.as_ref().unwrap();
+    let module = context.module.as_ref().ok_or_else(|| anyhow!("authority alignment requires a module"))?;
+    for (field, value) in serde_json::to_value(change)?.as_object().unwrap() {
+        if !matches!(field.as_str(), "spec" | "module" | "intent" | "authorities" | "authority_bindings" | "semantic_functions")
+            && json_value_has_material_operation(value) { bail!("authority alignment forbids `{field}` changes"); }
+    }
+    if let Some(reference) = change.module.as_deref() {
+        if Some(reference) != get_str(&module.value, &["module", "name"])
+            && !fs::canonicalize(root.join(reference)).is_ok_and(|requested| [&module.path, &implementation.path].iter()
+                .any(|path| fs::canonicalize(path).is_ok_and(|path| path == requested))) { bail!("authority alignment owner mismatch"); }
+    }
+    let rows = analysis.functions.iter().map(|function| (function.id.as_str(), function)).collect::<BTreeMap<_, _>>();
+    let inferred = analysis.functions.iter().flat_map(|function| &function.transitive_authorities).collect::<BTreeSet<_>>();
+    if let Some(authorities) = &change.authorities {
+        if authorities.replace.is_some() || !authorities.remove.is_empty() { bail!("authority alignment permits only added raw authority declarations"); }
+        for authority in &authorities.add {
+            if !effect_analysis::is_raw_authority(&authority.id) || authority.id == "dynamic-dispatch" || !inferred.contains(&authority.id) {
+                bail!("authority `{}` is not an observed closed raw effect", authority.id);
+            }
+        }
+    }
+    if let Some(bindings) = &change.authority_bindings {
+        if bindings.replace.is_some() || !bindings.remove.is_empty() { bail!("authority alignment preserves existing facade bindings"); }
+        for binding in &bindings.add {
+            if !effect_analysis::is_raw_authority(&binding.authority) || binding.authority == "dynamic-dispatch"
+                || !analysis.functions.iter().any(|function| function.symbol == binding.safe_facade
+                    && function.declared_purity == "effectful" && function.transitive_authorities.contains(&binding.authority)) {
+                bail!("new raw authority binding must name an existing exact effectful function that already uses it");
+            }
+        }
+    }
+    let functions = change.semantic_functions.as_ref().ok_or_else(|| anyhow!("authority alignment requires semantic_functions.set"))?;
+    if functions.replace.is_empty() || !functions.add.is_empty() || !functions.remove.is_empty() { bail!("authority alignment only updates existing effectful rows"); }
+    let current = typed_yaml_sequence::<SemanticFunctionChange>(&implementation.value, &["semantic_functions"]);
+    let mut seen = BTreeSet::new();
+    for proposed in &functions.replace {
+        if !seen.insert(&proposed.id) { bail!("duplicate authority-alignment function"); }
+        let candidates = current.iter().filter(|function| function.id == proposed.id).collect::<Vec<_>>();
+        let [existing] = candidates.as_slice() else { bail!("authority alignment requires an exact existing function"); };
+        if existing.purity != "effectful" { bail!("authority alignment cannot change a pure function"); }
+        let mut expected = (*existing).clone();
+        expected.authorities = rows.get(proposed.id.as_str()).ok_or_else(|| anyhow!("missing exact inferred function row"))?.transitive_authorities.clone();
+        if serde_json::to_value(&expected)? != serde_json::to_value(proposed)? {
+            bail!("authority alignment changes more than the exact inferred authority row of `{}`", proposed.id);
+        }
+    }
+    Ok(())
 }
 
 fn validate_integration_package_rebind(root: &Path, context: &SpecTargetContext, change: &SemanticChange) -> Result<()> {
@@ -89147,6 +89296,70 @@ mod tests {
         change.supersedes.push("unrelated.yaml".into());
         assert!(validate_integration_package_rebind(&root, &context, &change).is_err());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn authority_alignment_guard_preserves_source_purity_and_canonical_meaning() {
+        let root = unique_test_dir("authority-alignment-guard");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("module.yaml"), "spec: rms/module/v0.1\nmodule: {name: owner}\n").unwrap();
+        let function = json!({"id":"execute", "symbol":"src/lib.rs#execute", "kind":"effect-executor", "purity":"effectful", "authorities":[]});
+        let path = root.join("implementation.yaml");
+        fs::write(&path, serde_yaml::to_string(&json!({"spec":IMPLEMENTATION_V2_SPEC,"module":"owner","binding":"rust","semantic_functions":[function.clone()]})).unwrap()).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn execute() { std::fs::read(\"x\"); }").unwrap();
+        fs::write(root.join("prior.yaml"), "prior: immutable\n").unwrap();
+        seal_implementation_semantics(&mut load_manifest(&path).unwrap(), &root.join("prior.yaml"), SemanticRevisionAuthority::SpecApply).unwrap();
+        let context = load_spec_target(&path).unwrap();
+        let before = build_authority_alignment_repair(&context).unwrap();
+        let mut aligned = function.clone();
+        aligned["authorities"] = json!(["filesystem"]);
+        let make = |function: JsonValue| serde_json::from_value::<SemanticChange>(json!({"spec":"rms/semantic-change/v0.1","module":"owner","semantic_functions":{"set":[function]}})).unwrap();
+        validate_authority_alignment_change(&root, &context, &make(aligned.clone())).unwrap();
+        for (field, value) in [("purity", json!("pure")), ("symbol", json!("src/lib.rs#other")), ("kind", json!("transition")), ("authorities", json!(["filesystem","dynamic-dispatch"])), ("evidence", json!({"properties":["unrelated"]}))] {
+            let mut invalid = aligned.clone(); invalid[field] = value;
+            assert!(validate_authority_alignment_change(&root, &context, &make(invalid)).is_err(), "{field}");
+        }
+        let mut change = make(aligned.clone());
+        change.module = Some("another-owner".into());
+        assert!(validate_authority_alignment_change(&root, &context, &change).is_err());
+        change = make(aligned.clone()); change.supersedes.push("unrelated".into());
+        assert!(validate_authority_alignment_change(&root, &context, &change).is_err());
+        change = make(aligned.clone());
+        change.authorities = Some(serde_json::from_value(json!({"add":[{"id":"filesystem","kind":"privileged","capabilities":["read-file"],"rationale":"The executor reads a file."}]})).unwrap());
+        validate_authority_alignment_change(&root, &context, &change).unwrap();
+        change.authorities.as_mut().unwrap().add[0].id = "new-named-facade".into();
+        assert!(validate_authority_alignment_change(&root, &context, &change).is_err());
+        change = make(aligned.clone());
+        change.authority_bindings = Some(serde_json::from_value(json!({"add":[{"authority":"filesystem","roles":["effect_executor"],"safe_facade":"src/lib.rs#other","evidence":["proof.md"]}]})).unwrap());
+        assert!(validate_authority_alignment_change(&root, &context, &change).is_err());
+        fs::write(root.join("src/lib.rs"), "fn execute() { std::fs::read(\"x\"); std::env::var(\"X\"); }").unwrap();
+        assert_ne!(before, build_authority_alignment_repair(&context).unwrap());
+        assert!(validate_authority_alignment_change(&root, &context, &make(aligned)).is_err());
+        fs::write(root.join("src/lib.rs"), "fn execute(callback: fn()) { callback(); }").unwrap();
+        assert!(build_authority_alignment_repair(&context).is_err());
+        fs::write(root.join("src/lib.rs"), "fn execute() { std::fs::read(\"x\"); }").unwrap();
+        let mut pure = load_manifest(&path).unwrap();
+        set_yaml_value_path(&mut pure.value, &["semantic_functions"], serde_yaml::to_value(vec![json!({"id":"execute","symbol":"src/lib.rs#execute","kind":"transition","purity":"pure"})]).unwrap());
+        write_yaml_manifest(&pure).unwrap();
+        seal_implementation_semantics(&mut load_manifest(&path).unwrap(), &root.join("prior.yaml"), SemanticRevisionAuthority::SpecApply).unwrap();
+        assert!(build_authority_alignment_repair(&load_spec_target(&path).unwrap()).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn authority_alignment_route_exception_is_exact_owner_only() {
+        let root = Path::new("/repository");
+        let owner = OwnerResolution::selected("exact owner".into(), RouteModuleSummary {
+            name:"owner".into(), path:"/repository/modules/owner/module.yaml".into(), kind:"adapter".into(), shape:"boundary-adapter".into(), visibility:None,
+        }, Vec::new(), Vec::new(), Vec::new());
+        assert!(task_requests_authority_alignment("In existing owner align only canonical authority declarations. No new behavior is requested."));
+        assert!(!task_requests_authority_alignment("Add new filesystem behavior to existing owner."));
+        assert!(!authority_alignment_route_hard_blocker(root, &error("effects.transitive-purity", Path::new("/repository/modules/owner/implementation.yaml"), "row mismatch"), &owner));
+        let unrelated = error("effects.transitive-purity", Path::new("/repository/modules/other/implementation.yaml"), "retained other-owner debt");
+        assert_eq!(authority_alignment_route_hard_blocker(root, &unrelated, &owner), bounded_owner_scoped_semantic_route_hard_blocker(root, &unrelated, &owner));
+        for (check, path) in [("semantic.revision-drift", "/repository/modules/owner/implementation.yaml"), ("schema.validate", "/repository/modules/owner/module.yaml")] {
+            assert!(authority_alignment_route_hard_blocker(root, &error(check, Path::new(path), "must remain blocked"), &owner));
+        }
     }
 
     #[test]
@@ -101057,6 +101270,13 @@ architecture:
 
     #[test]
     fn selected_test_count_rejects_zero_and_parses_supported_runners() {
+        for command in ["cargo +stable test -p decisions --test exhaustive exact -- --exact", "cargo +nightly-2026-09-01 test"] {
+            assert!(proof_command_is_test_backed(command));
+            assert!(command_can_produce_hunt_lane_result(Path::new("."), command));
+        }
+        for command in ["cargo +stable check", "cargo + test", "echo cargo +stable test", "cargo +stable; test"] {
+            assert!(!proof_command_is_test_backed(command));
+        }
         assert!(proof_command_is_test_backed(
             "swift test --package-path . --filter exact"
         ));
