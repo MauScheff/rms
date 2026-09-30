@@ -27578,6 +27578,59 @@ fn append_nested_owning_crate_aliases(manifest: &LoadedManifest, sources: &mut B
     }
 }
 
+fn pinned_git2_identity(cargo: &TomlValue, lock: &TomlValue) -> Option<&'static str> {
+    let dependency = cargo.get("dependencies")?.get("git2")?;
+    if dependency.as_table().is_some_and(|table| table.keys().any(|key| !matches!(key.as_str(), "version" | "features" | "default-features" | "optional"))) { return None; }
+    let version = dependency.as_str().or_else(|| dependency.get("version").and_then(TomlValue::as_str));
+    if !matches!(version, Some("0.20" | "^0.20" | "0.20.4" | "^0.20.4" | "=0.20.4"))
+        || cargo.get("target").is_some() || cargo.get("patch").is_some() || cargo.get("replace").is_some() { return None; }
+    let package = cargo.get("package")?.get("name")?.as_str()?;
+    let package_version = cargo.get("package")?.get("version")?.as_str()?;
+    let packages = lock.get("package")?.as_array()?;
+    let owners = packages.iter().filter(|value| value.get("name").and_then(TomlValue::as_str) == Some(package)
+        && value.get("version").and_then(TomlValue::as_str) == Some(package_version)).collect::<Vec<_>>();
+    let [owner] = owners.as_slice() else { return None; };
+    if !owner.get("dependencies").and_then(TomlValue::as_array).is_some_and(|dependencies|
+        dependencies.iter().any(|dependency| matches!(dependency.as_str(), Some("git2" | "git2 0.20.4")))) { return None; }
+    let candidates = packages.iter().filter(|value| value.get("name").and_then(TomlValue::as_str) == Some("git2")).collect::<Vec<_>>();
+    let [git2] = candidates.as_slice() else { return None; };
+    let checksum = "7b88256088d75a56f8ecfa070513a775dd9107f6530ef14919dac831af9cfe2b";
+    (git2.get("version").and_then(TomlValue::as_str) == Some("0.20.4")
+        && git2.get("source").and_then(TomlValue::as_str) == Some("registry+https://github.com/rust-lang/crates.io-index")
+        && git2.get("checksum").and_then(TomlValue::as_str) == Some(checksum)).then_some(checksum)
+}
+
+fn append_pinned_rust_external_api(manifest: &LoadedManifest, sources: &mut BTreeMap<String, String>) {
+    // This first catalog deliberately supports only an unredirected crates.io
+    // git2 0.20.4 dependency. Missing or ambiguous resolution means no facts.
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")));
+    if cargo_home.is_some_and(|path| path.join("config").exists() || path.join("config.toml").exists())
+        || ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"].iter().any(|key| std::env::var_os(key).is_some_and(|value| !value.is_empty())) { return; }
+    let prefixes = sources.keys().filter(|path| path.ends_with(".rs"))
+        .filter_map(|path| path.split_once("src/").map(|(prefix, _)| prefix.to_string())).collect::<BTreeSet<_>>();
+    for prefix in prefixes {
+        let directory = base.join(&prefix);
+        let read_toml = |path: &Path| fs::read_to_string(path).ok().and_then(|text| text.parse::<TomlValue>().ok());
+        let Some(cargo) = read_toml(&directory.join("Cargo.toml")) else { continue; };
+        if cargo.get("dependencies").and_then(|value| value.get("git2")).is_none() { continue; }
+        let Ok(directory) = fs::canonicalize(&directory) else { continue; };
+        let mut lock = None;
+        let mut redirected = false;
+        for ancestor in directory.ancestors() {
+            redirected |= ancestor.join(".cargo/config").exists() || ancestor.join(".cargo/config.toml").exists();
+            if let Some(cargo) = read_toml(&ancestor.join("Cargo.toml")) {
+                redirected |= cargo.get("patch").is_some() || cargo.get("replace").is_some();
+            }
+            if lock.is_none() { lock = read_toml(&ancestor.join("Cargo.lock")); }
+        }
+        if redirected { continue; }
+        let Some(checksum) = lock.as_ref().and_then(|lock| pinned_git2_identity(&cargo, lock)) else { continue; };
+        sources.insert(format!("rms-metadata/rust-external-api/{prefix}git2-0.20.4"), checksum.into());
+    }
+}
+
 fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::EffectAnalysis> {
     let binding = get_str(&manifest.value, &["binding"])
         .unwrap_or_default()
@@ -27635,7 +27688,10 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
         }
     }
     append_verified_dependency_sources(manifest, &binding, extensions, &mut sources);
-    if binding == "rust" { append_nested_owning_crate_aliases(manifest, &mut sources); }
+    if binding == "rust" {
+        append_nested_owning_crate_aliases(manifest, &mut sources);
+        append_pinned_rust_external_api(manifest, &mut sources);
+    }
     let digest_input = sources
         .iter()
         .flat_map(|(path, source)| [path.as_bytes(), b"\0", source.as_bytes(), b"\0"])
@@ -99623,6 +99679,28 @@ architecture:
             let item: syn::ItemFn = syn::parse_str(&format!("#[cfg({cfg})] fn fixture() {{}} ")).unwrap();
             assert_eq!(has_cfg_test_attr(&item.attrs), test_only, "item {cfg}");
         }
+    }
+
+    #[test]
+    fn git2_external_facts_require_exact_unredirected_lock_identity() {
+        let cargo = "[package]\nname='fixture'\nversion='0.1.0'\n[dependencies]\ngit2='0.20'\n";
+        let lock = "[[package]]\nname='fixture'\nversion='0.1.0'\ndependencies=['git2']\n[[package]]\nname='git2'\nversion='0.20.4'\nsource='registry+https://github.com/rust-lang/crates.io-index'\nchecksum='7b88256088d75a56f8ecfa070513a775dd9107f6530ef14919dac831af9cfe2b'\n";
+        let parse = |value: &str| value.parse::<TomlValue>().unwrap();
+        assert!(pinned_git2_identity(&parse(cargo), &parse(lock)).is_some());
+        for changed in [
+            cargo.replace("git2='0.20'", "git2={path='../git2', version='0.20'}"),
+            cargo.replace("git2='0.20'", "git2={git='https://example.invalid/git2', version='0.20'}"),
+            cargo.replace("git2='0.20'", "git2={workspace=true}"),
+            cargo.replace("git2='0.20'", "git2='0.19'"),
+            format!("{cargo}\n[patch.crates-io]\ngit2={{path='../git2'}}"),
+        ] { assert!(pinned_git2_identity(&parse(&changed), &parse(lock)).is_none()); }
+        for changed in [
+            lock.replace("0.20.4", "0.20.3"),
+            lock.replace("7b882560", "00000000"),
+            lock.replace("registry+https://github.com/rust-lang/crates.io-index", "git+https://example.invalid/git2"),
+            lock.replace("dependencies=['git2']", "dependencies=[]"),
+            format!("{lock}\n[[package]]\nname='git2'\nversion='0.19.0'"),
+        ] { assert!(pinned_git2_identity(&parse(cargo), &parse(&changed)).is_none()); }
     }
 
     #[test]

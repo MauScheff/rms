@@ -7,6 +7,9 @@ pub(super) enum RustValueType {
     Unknown,
     Text,
     Byte,
+    Integer,
+    Usize,
+    External(ExternalType),
     Named(String), // Exact source-path#type identity, never a global leaf name.
     Sequence(Box<Self>),
     Set(Box<Self>),
@@ -14,7 +17,61 @@ pub(super) enum RustValueType {
     Optional(Box<Self>),
     MapValues(Box<Self>),
     ResultOk(Box<Self>),
+    ResultKnown(Box<Self>, Box<Self>),
     Tuple(Vec<Self>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ExternalType {
+    Stdin, IoError, GitRepository, GitReference, GitCommit, GitTree,
+    GitTreeEntry, GitDiff, GitDiffLine, GitOid, GitError, GitIndex, GitTreeWalkResult,
+    GitStatusOptions, GitDiffOptions,
+}
+
+impl ExternalType {
+    // This closed catalog preserves foreign Git authority even for getters.
+    fn method(self, method: &str, arity: usize) -> Option<RustValueType> {
+        use ExternalType::*;
+        use RustValueType::{External as E, Unknown as U};
+        let result = |value| RustValueType::ResultKnown(Box::new(value), Box::new(E(GitError)));
+        let optional = |value| RustValueType::Optional(Box::new(value));
+        Some(match (self, method, arity) {
+            (Stdin, "read_to_string", 1) => RustValueType::ResultKnown(Box::new(U), Box::new(E(IoError))),
+            (IoError, "kind", 0) => U,
+            (GitRepository, "head", 0) | (GitRepository, "find_reference", 1) => result(E(GitReference)),
+            (GitRepository, "find_commit", 1) | (GitReference, "peel_to_commit", 0) => result(E(GitCommit)),
+            (GitRepository, "find_tree", 1) | (GitCommit, "tree", 0) => result(E(GitTree)),
+            (GitRepository, "index", 0) => result(E(GitIndex)),
+            (GitRepository, "workdir", 0) => optional(RustValueType::Named("std::path::Path".into())),
+            (GitRepository, "diff_tree_to_workdir_with_index", 2) | (GitRepository, "diff_tree_to_index", 3) => result(E(GitDiff)),
+            (GitReference, "target", 0) => optional(E(GitOid)),
+            (GitReference, "symbolic_target", 0) | (GitCommit, "summary", 0) => optional(RustValueType::Text),
+            (GitCommit, "id" | "tree_id", 0) => E(GitOid),
+            (GitCommit, "parent_ids", 0) => RustValueType::Iterator(Box::new(E(GitOid))),
+            (GitOid, "to_string", 0) => RustValueType::Text,
+            (GitTree, "walk", 2) | (GitDiff, "print", 2) => result(U),
+            (GitTreeEntry, "filemode", 0) => RustValueType::Integer,
+            (GitDiffLine, "content", 0) | (GitError, "code", 0) => U,
+            (GitStatusOptions, "include_untracked" | "recurse_untracked_dirs" | "include_ignored", 1) => E(GitStatusOptions),
+            (GitDiffOptions, "include_untracked" | "recurse_untracked_dirs" | "show_untracked_content" | "pathspec", 1) => E(GitDiffOptions),
+            (GitRepository, "is_bare" | "is_worktree" | "state" | "path" | "revwalk" | "signature", 0)
+            | (GitRepository, "statuses" | "blob", 1)
+            | (GitRepository, "commit", 6) | (GitRepository, "reference", 4) | (GitRepository, "reference_matching", 5)
+            | (GitIndex, "iter" | "len" | "has_conflicts" | "write", 0)
+            | (GitIndex, "read_tree" | "add" | "remove_path" | "write_tree_to", 1)
+            | (GitDiff, "deltas", 0) => U,
+            _ => return None,
+        })
+    }
+
+    fn callbacks(self, method: &str, argument: usize) -> Option<Vec<RustValueType>> {
+        use RustValueType::{External as E, Unknown as U};
+        match (self, method, argument) {
+            (Self::GitTree, "walk", 1) => Some(vec![RustValueType::Text, E(Self::GitTreeEntry)]),
+            (Self::GitDiff, "print", 1) => Some(vec![U, U, E(Self::GitDiffLine)]),
+            _ => None,
+        }
+    }
 }
 
 impl RustValueType {
@@ -33,6 +90,9 @@ impl RustValueType {
 
     pub(super) fn callback_inputs(&self, method: &str, argument: usize) -> Option<Vec<Self>> {
         match (self, method, argument) {
+            (Self::External(receiver), method, argument) => receiver.callbacks(method, argument),
+            (Self::ResultKnown(ok, _), "and_then" | "map", 0) => Some(vec![(**ok).clone()]),
+            (Self::ResultKnown(_, error), "map_err", 0) => Some(vec![(**error).clone()]),
             (Self::ResultOk(element), "and_then", 0) => Some(vec![(**element).clone()]),
             (Self::Optional(_), "map_or_else", 0) => Some(Vec::new()),
             (Self::Optional(element), "map_or_else", 1) => Some(vec![(**element).clone()]),
@@ -55,6 +115,7 @@ pub(super) struct RustTypeIndex {
     fields: BTreeMap<(String, String), RustValueType>,
     mutable_sequences: BTreeMap<String, Vec<Option<RustValueType>>>,
     variants: BTreeMap<(String, String), Vec<RustValueType>>,
+    unit_variants: BTreeSet<(String, String)>,
     generic_names: BTreeSet<String>,
     local_enum_aliases: BTreeMap<String, String>,
     self_type: Option<String>,
@@ -63,6 +124,110 @@ pub(super) struct RustTypeIndex {
 }
 
 impl RustTypeIndex {
+    pub(super) fn git_index_entry(&self, path: &syn::Path) -> bool {
+        self.external_path(path).as_deref() == Some("git2::IndexEntry")
+    }
+
+    pub(super) fn unit_variant_type(&self, expression: &Expr) -> Option<RustValueType> {
+        let Expr::Path(path) = expression else { return None; };
+        if path.qself.is_some() || path.path.segments.len() < 2
+            || path.path.segments.iter().any(|part| !matches!(part.arguments, PathArguments::None)) { return None; }
+        let mut owner = path.path.clone();
+        let variant = owner.segments.pop()?.into_value().ident.to_string();
+        let reference = owner.segments.iter().map(|part| part.ident.to_string()).collect::<Vec<_>>().join("::");
+        let owner = self.resolve_named_type(&reference)?;
+        self.unit_variants.contains(&(owner.clone(), variant)).then_some(RustValueType::Named(owner))
+    }
+    pub(super) fn external_callback_closed(&self, receiver: &RustValueType, method: &str, position: usize,
+        closure: &syn::ExprClosure, scope: &BTreeMap<String, RustValueType>) -> bool {
+        if *receiver != RustValueType::External(ExternalType::GitTree) || method != "walk" || position != 1 { return true; }
+        // Tree::walk invokes Into<i32> on the callback result. Do not hide a
+        // user-defined conversion behind a known callback parameter type.
+        use syn::visit::{self, Visit};
+        struct Returns(bool);
+        impl<'ast> Visit<'ast> for Returns {
+            fn visit_expr_return(&mut self, _: &'ast syn::ExprReturn) { self.0 = true; }
+        }
+        let mut returns = Returns(false);
+        visit::visit_expr(&mut returns, &closure.body);
+        !returns.0 && matches!(self.expression_type(&closure.body, scope),
+            Some(RustValueType::Integer | RustValueType::External(ExternalType::GitTreeWalkResult)))
+    }
+
+    pub(super) fn return_error(&self, signature: &Signature) -> Option<RustValueType> {
+        let ReturnType::Type(_, ty) = &signature.output else { return None; };
+        let RustValueType::ResultKnown(_, error) = self.with_generics(&signature.generics).parse_type(ty)? else { return None; };
+        Some(*error)
+    }
+
+    pub(super) fn closed_error_wrapper(&self, source: &RustValueType, target: &RustValueType) -> bool {
+        let RustValueType::Named(target) = target else { return false; };
+        let Some((path, name)) = target.rsplit_once('#') else { return false; };
+        let context = self.for_path(path);
+        if !context.unshadowed_external_root("From") || !context.unshadowed_external_root("Into") { return false; }
+        let Some(file) = self.sources.get(path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
+        let candidates = file.items.iter().filter_map(|item| {
+            let Item::Impl(item) = item else { return None; };
+            let Type::Path(owner) = item.self_ty.as_ref() else { return None; };
+            if !owner.path.is_ident(name) { return None; }
+            let (_, trait_path, _) = item.trait_.as_ref()?;
+            if trait_path.segments.len() != 1 || trait_path.segments[0].ident != "From" { return None; }
+            let PathArguments::AngleBracketed(args) = &trait_path.segments[0].arguments else { return None; };
+            let [GenericArgument::Type(input)] = args.args.iter().collect::<Vec<_>>().as_slice() else { return None; };
+            (context.parse_type(input).as_ref() == Some(source)).then_some(item)
+        }).collect::<Vec<_>>();
+        let [implementation] = candidates.as_slice() else { return false; };
+        if !implementation.attrs.is_empty() || !implementation.generics.params.is_empty() { return false; }
+        let [syn::ImplItem::Fn(function)] = implementation.items.as_slice() else { return false; };
+        if function.sig.ident != "from" || !function.attrs.is_empty() || function.sig.unsafety.is_some()
+            || !function.sig.generics.params.is_empty() || function.sig.inputs.len() != 1 { return false; }
+        let FnArg::Typed(input) = &function.sig.inputs[0] else { return false; };
+        let Pat::Ident(argument) = input.pat.as_ref() else { return false; };
+        if context.parse_type(&input.ty).as_ref() != Some(source) || argument.subpat.is_some() { return false; }
+        let [syn::Stmt::Expr(Expr::Call(call), None)] = function.block.stmts.as_slice() else { return false; };
+        let Expr::Path(constructor) = call.func.as_ref() else { return false; };
+        if constructor.qself.is_some() || constructor.path.segments.len() != 2
+            || constructor.path.segments[0].ident != "Self" || call.args.len() != 1
+            || constructor.path.segments.iter().any(|part| !matches!(part.arguments, PathArguments::None)) { return false; }
+        let Expr::Path(value) = &call.args[0] else { return false; };
+        value.path.is_ident(&argument.ident)
+            && self.variants.get(&(target.clone(), constructor.path.segments[1].ident.to_string())) == Some(&vec![source.clone()])
+    }
+
+    fn external_path(&self, path: &syn::Path) -> Option<String> {
+        if path.segments.iter().any(|part| match &part.arguments {
+            PathArguments::None => false,
+            PathArguments::AngleBracketed(args) => args.args.iter().any(|arg| !matches!(arg, GenericArgument::Lifetime(_))),
+            _ => true,
+        }) { return None; }
+        let root = path.segments.first()?.ident.to_string();
+        if self.is_generic(&root) || self.unique_types.contains(&format!("{}#{root}", self.path)) { return None; }
+        let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
+        let aliases = super::rust_import_aliases(&file);
+        if aliases.contains_key(&root) && (path.leading_colon.is_some() || !super::rust_unique_unconditional_imports(&file).contains(&root)) { return None; }
+        if file.items.iter().any(|item| matches!(item, Item::Mod(item) if item.ident == root)) { return None; }
+        let reference = path.segments.iter().map(|part| part.ident.to_string()).collect::<Vec<_>>().join("::");
+        let resolved = super::resolve_call_alias(&reference, &aliases);
+        let external_root = resolved.split("::").next()?;
+        if !matches!(external_root, "std" | "git2") || !self.unshadowed_external_root(external_root) { return None; }
+        if external_root == "git2" {
+            let prefix = self.path.split_once("src/")?.0;
+            if self.sources.get(&format!("rms-metadata/rust-external-api/{prefix}git2-0.20.4")).map(String::as_str)
+                != Some("7b88256088d75a56f8ecfa070513a775dd9107f6530ef14919dac831af9cfe2b") { return None; }
+        }
+        Some(resolved)
+    }
+
+    pub(super) fn external_method_marker(&self, value: &RustValueType, method: &str, arity: usize) -> Option<&'static str> {
+        let RustValueType::External(receiver) = value else { return None; };
+        receiver.method(method, arity)?;
+        Some(match receiver {
+            ExternalType::Stdin => "<rust-stdin-read>",
+            ExternalType::IoError => "<rust-io-error-kind>",
+            _ => "<rust-git2-call>",
+        })
+    }
+
     pub(super) fn from_sources(sources: &BTreeMap<String, String>) -> Self {
         let files = sources
             .iter()
@@ -95,6 +260,7 @@ impl RustTypeIndex {
             fields: BTreeMap::new(),
             mutable_sequences: BTreeMap::new(),
             variants: BTreeMap::new(),
+            unit_variants: BTreeSet::new(),
             generic_names: BTreeSet::new(),
             local_enum_aliases: BTreeMap::new(),
             self_type: None,
@@ -122,6 +288,9 @@ impl RustTypeIndex {
                         && !item.attrs.iter().any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")) {
                         for variant in &item.variants {
                             if item.variants.iter().filter(|candidate| candidate.ident == variant.ident).count() != 1 { continue; }
+                            if matches!(variant.fields, syn::Fields::Unit) && variant.attrs.is_empty() {
+                                index.unit_variants.insert((owner.clone(), variant.ident.to_string()));
+                            }
                             let syn::Fields::Unnamed(fields) = &variant.fields else { continue; };
                             if !variant.attrs.is_empty() || fields.unnamed.iter().any(|field| !field.attrs.is_empty()) { continue; }
                             let values = fields.unnamed.iter().map(|field| index.for_path(path).parse_type(&field.ty).unwrap_or(RustValueType::Unknown)).collect();
@@ -339,6 +508,18 @@ impl RustTypeIndex {
                 if path.path.is_ident("Self") {
                     return self.self_type.clone().map(RustValueType::Named);
                 }
+                if self.external_path(&path.path).as_deref() == Some("std::path::Path") {
+                    return Some(RustValueType::Named("std::path::Path".into()));
+                }
+                let external = self.external_path(&path.path).and_then(|path| match path.as_str() {
+                    "git2::Repository" => Some(ExternalType::GitRepository),
+                    "git2::Oid" => Some(ExternalType::GitOid),
+                    "git2::Tree" => Some(ExternalType::GitTree),
+                    "git2::Error" => Some(ExternalType::GitError),
+                    "std::io::Error" => Some(ExternalType::IoError),
+                    _ => None,
+                });
+                if let Some(external) = external { return Some(RustValueType::External(external)); }
                 let segment = path.path.segments.last()?;
                 let name = segment.ident.to_string();
                 if path.path.segments.len() == 1 && matches!(name.as_str(), "str" | "String")
@@ -425,7 +606,13 @@ impl RustTypeIndex {
                     "Option" => Some(RustValueType::Optional(element)),
                     "BTreeMap" => Some(RustValueType::MapValues(element)),
                     "BTreeSet" => Some(RustValueType::Set(element)),
-                    "Result" => Some(RustValueType::ResultOk(element)),
+                    "Result" => {
+                        let error = match &arguments.args[1] {
+                            GenericArgument::Type(error) => self.parse_type(error).unwrap_or(RustValueType::Unknown),
+                            _ => RustValueType::Unknown,
+                        };
+                        Some(RustValueType::ResultKnown(element, Box::new(error)))
+                    }
                     _ => None,
                 }
             }
@@ -467,6 +654,7 @@ impl RustTypeIndex {
             }
         }
         !file.items.iter().any(|item| match item {
+            Item::Fn(item) => item.sig.ident == root,
             Item::Mod(item) => item.ident == root,
             Item::Struct(item) => item.ident == root,
             Item::Enum(item) => item.ident == root,
@@ -631,6 +819,11 @@ impl RustTypeIndex {
             (Pat::TupleStruct(pattern), RustValueType::Optional(element))
                 if pattern.path.is_ident("Some") && pattern.elems.len() == 1 && !self.is_generic("Some") => {
                 return self.pattern_bindings(&pattern.elems[0], element);
+            }
+            (Pat::TupleStruct(pattern), RustValueType::ResultKnown(ok, error))
+                if pattern.elems.len() == 1 && (pattern.path.is_ident("Ok") || pattern.path.is_ident("Err"))
+                    && !self.is_generic(&pattern.path.segments[0].ident.to_string()) => {
+                return self.pattern_bindings(&pattern.elems[0], if pattern.path.is_ident("Ok") { ok } else { error });
             }
             (Pat::TupleStruct(pattern), RustValueType::Named(owner)) => {
                 if pattern.qself.is_some() || pattern.path.segments.iter().any(|segment| !matches!(segment.arguments, PathArguments::None)) { return bindings; }
@@ -818,10 +1011,24 @@ impl RustTypeIndex {
         values: &BTreeMap<String, RustValueType>,
     ) -> Option<RustValueType> {
         match expression {
+            Expr::Block(block) => {
+                let Some(syn::Stmt::Expr(tail, None)) = block.block.stmts.last() else { return None; };
+                // No untracked local binding may change a tail expression's type.
+                if block.block.stmts[..block.block.stmts.len() - 1].iter().any(|statement| matches!(statement, syn::Stmt::Local(_) | syn::Stmt::Item(_))) { return None; }
+                self.expression_type(tail, values)
+            }
+            Expr::If(expression) => {
+                let Some(syn::Stmt::Expr(tail, None)) = expression.then_branch.stmts.last() else { return None; };
+                if expression.then_branch.stmts[..expression.then_branch.stmts.len() - 1].iter().any(|statement| matches!(statement, syn::Stmt::Local(_) | syn::Stmt::Item(_))) { return None; }
+                let left = self.expression_type(tail, values)?;
+                let right = self.expression_type(&expression.else_branch.as_ref()?.1, values)?;
+                (left == right).then_some(left)
+            }
             Expr::Match(expression) => {
                 let matched = self.expression_type(&expression.expr, values)?;
                 let mut joined = None;
                 for arm in &expression.arms {
+                    if matches!(arm.body.as_ref(), Expr::Return(_)) { continue; }
                     let mut scope = values.clone();
                     let mut names = BTreeSet::new();
                     super::collect_rust_pattern_identifiers(&arm.pat, &mut names);
@@ -834,7 +1041,11 @@ impl RustTypeIndex {
                 joined
             }
             Expr::Lit(literal) if matches!(literal.lit, syn::Lit::Str(_)) => Some(RustValueType::Text),
-            Expr::Path(path) => values.get(&path.path.get_ident()?.to_string()).cloned(),
+            Expr::Path(path) => {
+                if let Some(ident) = path.path.get_ident() { return values.get(&ident.to_string()).cloned(); }
+                matches!(self.external_path(&path.path).as_deref(), Some("git2::TreeWalkResult::Ok" | "git2::TreeWalkResult::Skip" | "git2::TreeWalkResult::Abort"))
+                    .then_some(RustValueType::External(ExternalType::GitTreeWalkResult))
+            }
             Expr::Reference(reference) => self.expression_type(&reference.expr, values),
             Expr::Paren(paren) => self.expression_type(&paren.expr, values),
             Expr::Index(index) if matches!(index.index.as_ref(), Expr::Range(_))
@@ -852,6 +1063,7 @@ impl RustTypeIndex {
             }
             Expr::Try(value) => match self.expression_type(&value.expr, values)? {
                 RustValueType::ResultOk(value) => Some(*value),
+                RustValueType::ResultKnown(value, _) => Some(*value),
                 _ => None,
             },
             Expr::Call(call) => {
@@ -862,6 +1074,19 @@ impl RustTypeIndex {
                     return None;
                 }
                 if path.qself.is_none() {
+                    if let Some(external) = self.external_path(&path.path) {
+                        use ExternalType::*;
+                        let value = match (external.as_str(), call.args.len()) {
+                            ("std::io::stdin", 0) => Some(RustValueType::External(Stdin)),
+                            ("git2::Repository::open" | "git2::Repository::discover", 1) if matches!(self.expression_type(&call.args[0], values), Some(RustValueType::Text))
+                                || matches!(self.expression_type(&call.args[0], values), Some(RustValueType::Named(name)) if name == "std::path::Path" || name == "std::path::PathBuf") => Some(RustValueType::ResultKnown(Box::new(RustValueType::External(GitRepository)), Box::new(RustValueType::External(GitError)))),
+                            ("git2::Index::new", 0) => Some(RustValueType::ResultKnown(Box::new(RustValueType::External(GitIndex)), Box::new(RustValueType::External(GitError)))),
+                            ("git2::StatusOptions::new", 0) => Some(RustValueType::External(GitStatusOptions)),
+                            ("git2::DiffOptions::new", 0) => Some(RustValueType::External(GitDiffOptions)),
+                            _ => None,
+                        };
+                        if value.is_some() { return value; }
+                    }
                     if let Some(value) = self.local_constructed_type(&path.path, Some(call.args.len())) {
                         return Some(value);
                     }
@@ -885,9 +1110,13 @@ impl RustTypeIndex {
                 let receiver = self.expression_type(&call.receiver, values)?;
                 let method = call.method.to_string();
                 match receiver {
+                    RustValueType::External(receiver) if call.turbofish.is_none() => receiver.method(&method, call.args.len()),
+                    RustValueType::ResultKnown(ok, _) if method == "map_err" && call.args.len() == 1 =>
+                        Some(RustValueType::ResultKnown(ok, Box::new(RustValueType::Unknown))),
                     RustValueType::ResultOk(element) if method == "map_err" && call.args.len() == 1 =>
                         Some(RustValueType::ResultOk(element)),
                     RustValueType::Text => match method.as_str() {
+                        "len" if call.args.is_empty() && call.turbofish.is_none() => Some(RustValueType::Usize),
                         "bytes" if call.args.is_empty() && call.turbofish.is_none() =>
                             Some(RustValueType::Iterator(Box::new(RustValueType::Byte))),
                         "split_inclusive" | "split" | "lines" | "split_whitespace" =>
@@ -896,6 +1125,15 @@ impl RustTypeIndex {
                         _ => None,
                     },
                     RustValueType::Named(name) => {
+                        if matches!(name.as_str(), "std::path::Path" | "std::path::PathBuf") && call.turbofish.is_none() {
+                            if method == "join" && call.args.len() == 1
+                                && matches!(&call.args[0], Expr::Lit(literal) if matches!(literal.lit, syn::Lit::Str(_))) {
+                                return Some(RustValueType::Named("std::path::PathBuf".into()));
+                            }
+                            if method == "canonicalize" && call.args.is_empty() {
+                                return Some(RustValueType::ResultKnown(Box::new(RustValueType::Named("std::path::PathBuf".into())), Box::new(RustValueType::External(ExternalType::IoError))));
+                            }
+                        }
                         self.returns.get(&format!("{name}::{method}")).cloned()
                     }
                     RustValueType::Sequence(element) => match method.as_str() {
@@ -928,6 +1166,10 @@ impl RustTypeIndex {
                     }
                     RustValueType::Optional(element) if matches!(method.as_str(), "filter" | "as_ref" | "copied" | "cloned" | "or_else") => {
                         Some(RustValueType::Optional(element))
+                    }
+                    RustValueType::Optional(element) if method == "transpose" && call.args.is_empty() => {
+                        let RustValueType::ResultKnown(ok, error) = *element else { return None; };
+                        Some(RustValueType::ResultKnown(Box::new(RustValueType::Optional(ok)), error))
                     }
                     RustValueType::Optional(element) if matches!(method.as_str(), "and_then" | "map") => {
                         let Expr::Closure(closure) = call.args.first()? else { return None; };

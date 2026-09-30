@@ -12,8 +12,8 @@ mod rust_effect_types;
 use rust_effect_types::{RustTypeIndex, RustValueType};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
-pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.7";
-pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.5";
+pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.8";
+pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.6";
 
 #[derive(Clone, Debug)]
 pub(crate) struct SemanticFunctionExpectation {
@@ -825,6 +825,8 @@ fn authorities_for_node(
 }
 
 fn authority_for_call(binding: &str, call: &str) -> Option<String> {
+    if binding == "rust" && call == "<rust-git2-call>" { return Some("git".into()); }
+    if binding == "rust" && call == "<rust-stdin-read>" { return Some("filesystem".into()); }
     if binding == "rust" && call == "<rust-external-uuid-v4>" {
         return Some("randomness".into());
     }
@@ -1003,6 +1005,7 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
+    if call == "<rust-io-error-kind>" { return true; }
     if call == "<rust-byte-ascii-hexdigit>" { return true; }
     if call == "<rust-text-ascii-equality>" { return true; }
     if matches!(call, "<rust-str-literal-split-inclusive>" | "<rust-yaml-value-from-str>") { return true; }
@@ -1423,9 +1426,61 @@ struct RustCallCollector {
     matched_value: Option<RustValueType>,
     sequence_constraints: BTreeMap<String, RustValueType>,
     standard_str: bool,
+    return_error: Option<RustValueType>,
 }
 
 impl<'ast> Visit<'ast> for RustCallCollector {
+    fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
+        if node.qself.is_some() || !self.type_index.git_index_entry(&node.path) {
+            visit::visit_expr_struct(self, node);
+            return;
+        }
+        for field in &node.fields {
+            let conversion = (|| {
+                if !matches!(&field.member, syn::Member::Named(name) if name == "file_size") { return None; }
+                let Expr::Try(checked) = &field.expr else { return None; };
+                let Expr::MethodCall(mapped) = checked.expr.as_ref() else { return None; };
+                if mapped.method != "map_err" || mapped.args.len() != 1 || mapped.turbofish.is_some()
+                    || !matches!(&mapped.args[0], Expr::Closure(closure) if closure.inputs.len() == 1) { return None; }
+                let Expr::Closure(mapper) = &mapped.args[0] else { return None; };
+                if mapper.asyncness.is_some() || self.return_error.is_none()
+                    || self.type_index.unit_variant_type(&mapper.body) != self.return_error { return None; }
+                let Expr::MethodCall(converted) = mapped.receiver.as_ref() else { return None; };
+                if converted.method != "try_into" || !converted.args.is_empty() || converted.turbofish.is_some()
+                    || self.type_index.expression_type(&converted.receiver, &self.value_types) != Some(RustValueType::Usize) { return None; }
+                Some((converted, mapped))
+            })();
+            if let Some((converted, mapped)) = conversion {
+                // The pinned IndexEntry.file_size is u32. This exact standard
+                // usize -> u32 checked conversion cannot invoke user code.
+                self.visit_expr(&converted.receiver);
+                self.visit_expr(&mapped.args[0]);
+            } else { self.visit_expr(&field.expr); }
+        }
+        if let Some(rest) = &node.rest { self.visit_expr(rest); }
+    }
+
+    fn visit_expr_return(&mut self, node: &'ast syn::ExprReturn) {
+        let conversion = (|| {
+            let Expr::Call(error) = node.expr.as_deref()? else { return None; };
+            let Expr::Path(path) = error.func.as_ref() else { return None; };
+            if !path.path.is_ident("Err") || error.args.len() != 1 || self.type_index.call_root_shadowed("Err")
+                || self.value_types.contains_key("Err") || !self.type_index.unshadowed_external_root("Err") { return None; }
+            let Expr::MethodCall(conversion) = &error.args[0] else { return None; };
+            if conversion.method != "into" || !conversion.args.is_empty() || conversion.turbofish.is_some() { return None; }
+            let source = self.type_index.expression_type(&conversion.receiver, &self.value_types)?;
+            self.type_index.closed_error_wrapper(&source, self.return_error.as_ref()?).then_some(conversion)
+        })();
+        if let Some(conversion) = conversion {
+            self.visit_expr(&conversion.receiver);
+        } else { visit::visit_expr_return(self, node); }
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast ItemFn) {
+        let prior = self.return_error.take();
+        visit::visit_item_fn(self, node);
+        self.return_error = prior;
+    }
     fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
         let Expr::Let(condition) = node.cond.as_ref() else {
             visit::visit_expr_if(self, node);
@@ -1739,6 +1794,14 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             .type_index
             .expression_type(&node.receiver, &self.value_types);
         let inferred_name = inferred_receiver.as_ref().and_then(RustValueType::name);
+        let external_marker = inferred_receiver.as_ref().and_then(|value| {
+            node.turbofish.is_none().then(|| self.type_index.external_method_marker(value, &node.method.to_string(), node.args.len())).flatten()
+        });
+        if matches!(inferred_receiver, Some(RustValueType::External(_))) && external_marker.is_none() {
+            self.calls.insert("<dynamic-call>".into());
+            visit::visit_expr_method_call(self, node);
+            return;
+        }
         let typed_receiver = inferred_name.or_else(|| match node.receiver.as_ref() {
             Expr::Path(path) if path.path.segments.len() == 1 => self
                 .parameter_types
@@ -1746,7 +1809,9 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 .filter(|name| !self.type_index.is_generic(name) && !self.type_index.is_declared_type(name)),
             _ => None,
         });
-        let call = if inferred_receiver == Some(RustValueType::Byte)
+        let call = if let Some(marker) = external_marker {
+            marker.to_string()
+        } else if inferred_receiver == Some(RustValueType::Byte)
             && node.method == "is_ascii_hexdigit" && node.args.is_empty() && node.turbofish.is_none() {
             "<rust-byte-ascii-hexdigit>".to_string()
         } else if inferred_receiver == Some(RustValueType::Text)
@@ -1774,7 +1839,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         } else {
             format!("{receiver}.{}", node.method)
         };
-        if typed_receiver.is_none()
+        if external_marker.is_none() && typed_receiver.is_none()
             && rust_expr_root_ident(&node.receiver)
                 .is_some_and(|root| self.parameter_types.contains_key(&root))
             && !known_pure_call(&call)
@@ -1783,7 +1848,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             visit::visit_expr_method_call(self, node);
             return;
         }
-        if rust_expr_root_ident(&node.receiver)
+        if external_marker.is_none() && rust_expr_root_ident(&node.receiver)
             .is_some_and(|root| self.dynamic_symbols.contains(&root))
             && !known_pure_call(&call)
         {
@@ -1800,7 +1865,10 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 let bounded_new_callback = matches!((node.method.to_string().as_str(), position),
                     ("map_or_else", 0 | 1) | ("flat_map", 0) | ("fold", 1))
                     || (node.method == "and_then" && position == 0
-                        && matches!(inferred_receiver, Some(RustValueType::ResultOk(_))));
+                        && matches!(inferred_receiver, Some(RustValueType::ResultOk(_) | RustValueType::ResultKnown(_, _))))
+                    || inferred_receiver.as_ref().is_some_and(|receiver|
+                        matches!(receiver, RustValueType::External(_) | RustValueType::ResultKnown(_, _))
+                        && receiver.callback_inputs(&node.method.to_string(), position).is_some());
                 let typed_predicate = matches!(node.method.to_string().as_str(), "is_some_and" | "any" | "all")
                     && matches!(inferred_receiver, Some(RustValueType::Optional(_) | RustValueType::Iterator(_)));
                 if !bounded_new_callback && !typed_predicate && !matches!(node.method.to_string().as_str(), "map" | "filter_map") { continue; }
@@ -1810,6 +1878,9 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                     }
                     continue;
                 };
+                if matches!(inferred_receiver, Some(RustValueType::External(_))) && node.method == "walk" && position == 1 {
+                    self.calls.insert("<dynamic-call>".into());
+                }
                 let callable = path
                     .path
                     .segments
@@ -1853,7 +1924,12 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                                 self.value_types.insert(name, value);
                             }
                         }
+                        let prior_return_error = self.return_error.take();
+                        if !self.type_index.external_callback_closed(receiver, &node.method.to_string(), position, closure, &self.value_types) {
+                            self.calls.insert("<dynamic-call>".into());
+                        }
                         self.visit_expr(&closure.body);
+                        self.return_error = prior_return_error;
                         self.value_types = prior_values;
                         self.parameter_types = prior_types;
                         self.dynamic_symbols = prior_dynamic;
@@ -1876,6 +1952,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
     }
 
     fn visit_expr_closure(&mut self, node: &'ast syn::ExprClosure) {
+        let prior_return_error = self.return_error.take();
         let prior_callbacks = self.callback_bindings.clone();
         let prior_values = self.value_types.clone();
         let prior_types = self.parameter_types.clone();
@@ -1892,6 +1969,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             self.dynamic_symbols.insert(name);
         }
         visit::visit_expr_closure(self, node);
+        self.return_error = prior_return_error;
         self.parameter_types = prior_types;
         self.dynamic_symbols = prior_dynamic;
         self.value_types = prior_values;
@@ -2242,6 +2320,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
                 .map(|(name, helper)| (name.clone(), helper.clone()))
                 .collect(),
             static_callbacks: rust_unshadowed_callbacks(node, &self.static_callbacks),
+            return_error: self.type_index.return_error(&node.sig),
             type_index: self.type_index.with_generics(&node.sig.generics),
             standard_str: self.type_index.standard_str_available(&node.sig, &node.block),
             value_types: self.type_index.parameters(&node.sig),
@@ -2273,6 +2352,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             return;
         }
         let mut calls = RustCallCollector {
+            return_error: self.type_index.return_error(&node.sig),
             type_index: self.type_index.with_generics(&node.sig.generics),
             standard_str: self.type_index.standard_str_available(&node.sig, &node.block),
             value_types: self.type_index.parameters(&node.sig),
@@ -5133,6 +5213,59 @@ fn decide() {
             let result = report("rust", "src/lib.rs", &format!("{declarations} fn decide(root: &Root) {{ {body} }}"), expectation("decide", "pure", &[]));
             assert_eq!(result.result, expected, "{body}: {result:#?}");
         }
+    }
+
+    #[test]
+    fn rust_external_callbacks_require_closed_types_and_preserve_effects() {
+        let io = "use std::io::{self, Read}; fn execute() { io::stdin().read_to_string(&mut String::new()).map_err(|error| error.kind()); }";
+        let result = report("rust", "src/lib.rs", io, expectation("execute", "effectful", &["filesystem", "process"]));
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        for source in [
+            io.replace("use std::io::{self, Read};", "mod std {} use std::io::{self, Read};"),
+            io.replace("error.kind()", "{ let error = unknown(); error.kind() }"),
+            io.replace("error.kind()", "{ std::env::var(\"FAULT\"); error.kind() }"),
+        ] {
+            assert_eq!(report("rust", "src/lib.rs", &source, expectation("execute", "effectful", &["filesystem", "process"])).result, AnalysisResult::Fail, "{source}");
+        }
+        let git = "use git2::Repository; fn execute(repo: &Repository) { match repo.head() { Ok(head) => { let tree = head.peel_to_commit()?.tree()?; tree.walk(mode, |_prefix, entry| entry.filemode()); }, Err(error) => { error.code(); } } let diff = repo.diff_tree_to_workdir_with_index(None, None)?; diff.print(format, |_delta, _hunk, line| { line.content(); true }); }";
+        let run = |source: &str, pin: bool| {
+            let mut sources = BTreeMap::from([("src/lib.rs".into(), source.into())]);
+            if pin { sources.insert("rms-metadata/rust-external-api/git2-0.20.4".into(), "7b88256088d75a56f8ecfa070513a775dd9107f6530ef14919dac831af9cfe2b".into()); }
+            analyze(AnalysisInput { binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(), sources,
+                semantic_functions: vec![expectation("execute", "effectful", &["git"])], authority_facades: vec![], trusted_external_calls: BTreeSet::new() })
+        };
+        let result = run(git, true);
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert_eq!(run(git, false).result, AnalysisResult::Fail);
+        let options = "fn execute(root: &std::path::Path) { let repo = git2::Repository::discover(root)?; repo.workdir(); let mut options = git2::StatusOptions::new(); options.include_untracked(true).recurse_untracked_dirs(true).include_ignored(false); let mut diff = git2::DiffOptions::new(); diff.include_untracked(true).recurse_untracked_dirs(true).show_untracked_content(true); }";
+        assert_eq!(run(options, true).result, AnalysisResult::Pass);
+        assert_eq!(run(options, false).result, AnalysisResult::Fail);
+        let diverging = "use git2::Repository; enum Failure { Git(git2::Error) } impl From<git2::Error> for Failure { fn from(value: git2::Error) -> Self { Self::Git(value) } } fn execute(repo: &Repository) -> Result<(), Failure> { let head = match repo.head() { Ok(head) => head, Err(error) => return Err(error.into()) }; head.target(); Ok(()) }";
+        assert_eq!(run(diverging, true).result, AnalysisResult::Pass);
+        let checked_size = "enum Failure { Invalid } fn execute(content: &str) -> Result<(), Failure> { git2::Repository::open(\".\"); let entry = git2::IndexEntry { file_size: content.len().try_into().map_err(|_| Failure::Invalid)? }; Ok(()) }";
+        assert_eq!(run(checked_size, true).result, AnalysisResult::Pass);
+        assert_eq!(run(&checked_size.replace("content: &str", "content: Unknown"), true).result, AnalysisResult::Fail);
+        assert_eq!(run(&checked_size.replace("|_| Failure::Invalid", "|_| { std::process::abort(); Failure::Invalid }"), true).result, AnalysisResult::Fail);
+        let wrapper = "use git2::Repository; enum Failure { Git(git2::Error) } impl From<git2::Error> for Failure { fn from(value: git2::Error) -> Self { Self::Git(value) } } fn execute(repo: &Repository) -> Result<(), Failure> { match repo.head() { Err(error) => return Err(error.into()), Ok(_) => {} } Ok(()) }";
+        assert_eq!(run(wrapper, true).result, AnalysisResult::Pass);
+        for source in [
+            wrapper.replace("Self::Git(value)", "std::env::var(\"FAULT\"); Self::Git(value)"),
+            wrapper.replace("use git2::Repository;", "use git2::Repository; use custom::From;"),
+            wrapper.replace("return Err(error.into())", "{ let closure = || { return Err(error.into()); }; closure() }"),
+            wrapper.replace("use git2::Repository;", "use git2::Repository; fn Err(value: Other) {}"),
+        ] { assert_eq!(run(&source, true).result, AnalysisResult::Fail, "{source}"); }
+        for source in [
+            format!("mod git2 {{}} {git}"),
+            git.replace("entry.filemode()", "{ let entry = unknown(); entry.filemode() }"),
+            git.replace("entry.filemode()", "{ std::process::abort(); entry.filemode() }"),
+            git.replace("entry.filemode()", "entry.unknown_method()"),
+            git.replace("entry.filemode()", "CustomCallbackResult"),
+            git.replace("|_prefix, entry| entry.filemode()", "unknown_callback"),
+            git.replace("use git2::Repository;", "#[cfg(feature = \"git\")] use git2::Repository;"),
+        ] { assert_eq!(run(&source, true).result, AnalysisResult::Fail, "{source}"); }
+        let path = "use std::path::Path; fn execute(root: &Path) { root.join(\".git\").canonicalize(); }";
+        assert_eq!(report("rust", "src/lib.rs", path, expectation("execute", "effectful", &["filesystem"])).result, AnalysisResult::Pass);
+        assert_eq!(report("rust", "src/lib.rs", &path.replace("std::path::Path", "custom::Path"), expectation("execute", "pure", &[])).result, AnalysisResult::Fail);
     }
 
     #[test]
