@@ -13,7 +13,7 @@ use rust_effect_types::{RustTypeIndex, RustValueType};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
 pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.4";
-pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.2";
+pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.3";
 
 #[derive(Clone, Debug)]
 pub(crate) struct SemanticFunctionExpectation {
@@ -159,9 +159,10 @@ pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
     }
     let mut facades = BTreeMap::<String, BTreeSet<String>>::new();
     for facade in &input.authority_facades {
-        facades.entry(symbol_name(&facade.symbol).to_string()).or_default().insert(facade.authority.clone());
+        let key = if input.binding == "rust" { facade.symbol.clone() } else { symbol_name(&facade.symbol).to_string() };
+        facades.entry(key).or_default().insert(facade.authority.clone());
     }
-    let authority_memberships = authority_memberships(&nodes, &input.authority_facades);
+    let authority_memberships = authority_memberships(&nodes, &input.authority_facades, &input.semantic_functions);
     let mut functions = Vec::new();
     for expectation in input.semantic_functions {
         functions.push(analyze_function(
@@ -427,15 +428,23 @@ pub(crate) fn swift_exact_callable_source<'a>(source: &'a str, symbol: &str) -> 
 fn authority_memberships(
     nodes: &[FunctionNode],
     facades: &[AuthorityFacade],
+    semantic_functions: &[SemanticFunctionExpectation],
 ) -> BTreeMap<usize, BTreeSet<String>> {
     let mut memberships = BTreeMap::<usize, BTreeSet<String>>::new();
+    let facade_roots = facades.iter().flat_map(|facade| symbol_candidates(&facade.symbol, nodes))
+        .collect::<BTreeSet<_>>();
     for facade in facades {
         let roots = symbol_candidates(&facade.symbol, nodes);
         if roots.len() != 1 {
             continue;
         }
         let mut closure = BTreeSet::new();
-        collect_local_members(roots[0], nodes, &mut closure);
+        let mut boundaries = facade_roots.clone();
+        boundaries.extend(semantic_functions.iter()
+            .filter(|function| !function.authorities.contains(&facade.authority))
+            .flat_map(|function| symbol_candidates(&function.symbol, nodes)));
+        boundaries.remove(&roots[0]);
+        collect_local_members(roots[0], nodes, &mut closure, &boundaries);
         for index in closure {
             memberships
                 .entry(index)
@@ -446,14 +455,14 @@ fn authority_memberships(
     memberships
 }
 
-fn collect_local_members(index: usize, nodes: &[FunctionNode], members: &mut BTreeSet<usize>) {
-    if !members.insert(index) {
+fn collect_local_members(index: usize, nodes: &[FunctionNode], members: &mut BTreeSet<usize>, boundaries: &BTreeSet<usize>) {
+    if boundaries.contains(&index) || !members.insert(index) {
         return;
     }
     for call in &nodes[index].calls {
         let candidates = resolve_local_call(index, call, nodes);
         if candidates.len() == 1 {
-            collect_local_members(candidates[0], nodes, members);
+            collect_local_members(candidates[0], nodes, members, boundaries);
         }
     }
 }
@@ -464,10 +473,10 @@ fn bind_ambient_authorities(
 ) -> BTreeSet<String> {
     let has_ambient = authorities
         .iter()
-        .any(|authority| authority != "dynamic-dispatch");
+        .any(|authority| is_raw_authority(authority) && authority != "dynamic-dispatch");
     let mut bound = authorities
         .into_iter()
-        .filter(|authority| authority == "dynamic-dispatch")
+        .filter(|authority| !is_raw_authority(authority) || authority == "dynamic-dispatch")
         .collect::<BTreeSet<_>>();
     if has_ambient {
         bound.insert(facade_authority.to_string());
@@ -493,6 +502,9 @@ fn collect_closure(
     if !visited.insert(index) {
         return;
     }
+    let parent_authorities = authorities;
+    let mut local_authorities = BTreeSet::new();
+    let authorities = &mut local_authorities;
     let node = &nodes[index];
     authorities.extend(authorities_for_node(index, nodes, facades));
     for call in &node.calls {
@@ -536,7 +548,7 @@ fn collect_closure(
             authorities.insert(authority);
             continue;
         }
-        if let Some(required) = facades.get(symbol_name(call)) {
+        if let Some(required) = external_facade_authorities(call, facades) {
             authorities.extend(required.iter().cloned());
             // A named facade contains ambient IO. It does not erase open
             // dispatch or unresolved calls in an inspectable implementation.
@@ -600,6 +612,24 @@ fn collect_closure(
             unresolved.insert(call.clone());
         }
     }
+    let required = exact_node_facade_authorities(index, nodes, facades);
+    let ambient = required.iter().filter(|authority| authority.as_str() != "dynamic-dispatch").collect::<Vec<_>>();
+    if ambient.len() == 1 && !is_raw_authority(ambient[0]) {
+        local_authorities = bind_ambient_authorities(local_authorities, ambient[0]);
+    }
+    parent_authorities.extend(local_authorities);
+}
+
+fn exact_node_facade_authorities(index: usize, nodes: &[FunctionNode], facades: &BTreeMap<String, BTreeSet<String>>) -> BTreeSet<String> {
+    facades.iter().filter(|(symbol, _)| symbol_candidates(symbol, nodes) == vec![index])
+        .flat_map(|(_, authorities)| authorities.iter().cloned()).collect()
+}
+
+fn external_facade_authorities<'a>(call: &str, facades: &'a BTreeMap<String, BTreeSet<String>>) -> Option<&'a BTreeSet<String>> {
+    // Only explicitly unqualified external facade declarations may match by leaf.
+    // A source-qualified facade must resolve to its exact source callable.
+    facades.get(call).filter(|_| !call.contains('#'))
+        .or_else(|| facades.get(symbol_name(call)).filter(|_| !symbol_name(call).contains('#')))
 }
 
 fn rust_regex_match_offset_query(call: &str, regex_match_names: &BTreeSet<String>) -> bool {
@@ -787,7 +817,7 @@ fn authorities_for_node(
         }
         if let Some(authority) = authority_for_call(&node.binding, call) {
             authorities.insert(authority);
-        } else if let Some(required) = facades.get(symbol_name(call)) {
+        } else if let Some(required) = external_facade_authorities(call, facades) {
             authorities.extend(required.iter().cloned());
         }
     }
@@ -1546,6 +1576,19 @@ impl<'ast> Visit<'ast> for RustCallCollector {
     }
 
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
+        let mut callee = node.func.as_ref();
+        loop {
+            callee = match callee {
+                Expr::Paren(expr) => &expr.expr,
+                Expr::Group(expr) => &expr.expr,
+                _ => break,
+            };
+        }
+        if matches!(callee, Expr::Closure(_)) {
+            // The body is known. Retain its effects and unknown nested calls.
+            visit::visit_expr_call(self, node);
+            return;
+        }
         if self.is_yaml_value_parse(node, false) {
             self.calls.insert("<rust-yaml-value-from-str>".into());
             visit::visit_expr_call(self, node);
@@ -6291,6 +6334,49 @@ fn ready(data: &Data) -> bool {
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
         let binding = serde_yaml::from_str("spec: rms/implementation/v0.1\narchitecture:\n  authority_bindings:\n  - {authority: filesystem, safe_facade: 'src/io.rs#execute'}\n  - {authority: environment, safe_facade: 'src/io.rs#execute'}\nsemantic_functions:\n- {id: subject, kind: effect-executor, symbol: 'src/io.rs#execute', purity: effectful}\n").unwrap();
         assert!(crate::binding_migration::plan(&binding, &result, "v0.2").is_ok());
+    }
+
+    #[test]
+    fn nested_rust_facades_preserve_inner_authorities_and_unknown_calls() {
+        let make = |inner: &str| analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+            sources: BTreeMap::from([
+                ("src/lib.rs".into(), "mod disk; fn run() { std::env::var(\"X\").ok(); disk::execute(); }".into()),
+                ("src/disk.rs".into(), format!("pub fn execute() {{ std::fs::read(\"x\").ok(); {inner} }}")),
+            ]),
+            semantic_functions: vec![expectation("src/lib.rs#run", "effectful", &["cli", "repository"]), expectation("src/disk.rs#execute", "effectful", &["repository"])],
+            authority_facades: vec![AuthorityFacade { authority: "cli".into(), symbol: "src/lib.rs#run".into() }, AuthorityFacade { authority: "repository".into(), symbol: "src/disk.rs#execute".into() }],
+            trusted_external_calls: BTreeSet::new(),
+        });
+        let result = make("");
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        let unknown = make("unverified::perform();");
+        assert_eq!(unknown.result, AnalysisResult::Fail);
+        assert!(unknown.functions.iter().all(|function| function.unresolved_calls.contains(&"unverified::perform".to_string())));
+        let separate = analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+            sources: BTreeMap::from([("src/lib.rs".into(), "fn cli() { worker(); } fn worker() { std::fs::read(\"x\").ok(); }".into())]),
+            semantic_functions: vec![expectation("src/lib.rs#worker", "effectful", &["filesystem"])],
+            authority_facades: vec![AuthorityFacade { authority: "cli-stdio".into(), symbol: "src/lib.rs#cli".into() }],
+            trusted_external_calls: BTreeSet::new(),
+        });
+        assert_eq!(separate.functions[0].transitive_authorities, vec!["filesystem"]);
+        assert_eq!(separate.result, AnalysisResult::Pass);
+    }
+
+    #[test]
+    fn immediately_invoked_rust_closures_keep_body_effects_and_unknown_calls() {
+        for (body, purity, authorities, passes) in [
+            ("(|| 1)();", "pure", vec![], true),
+            ("((|| { std::fs::read(\"x\"); }))();", "effectful", vec!["filesystem"], true),
+            ("(|| unverified::perform())();", "pure", vec![], false),
+            ("(|callback| callback())(unknown);", "pure", vec![], false),
+            ("(factory())();", "pure", vec![], false),
+        ] {
+            let result = report("rust", "src/lib.rs", &format!("fn subject() {{ {body} }}"),
+                expectation("src/lib.rs#subject", purity, &authorities));
+            assert_eq!(result.result == AnalysisResult::Pass, passes, "{body}: {result:#?}");
+        }
     }
 
     #[test]

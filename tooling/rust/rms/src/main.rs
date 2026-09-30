@@ -34029,6 +34029,7 @@ fn inspect_rust_typing_file(
     parsed: &syn::File,
     summary: &mut RustTypingSummary,
 ) {
+    summary.exact_sources.insert(path.to_path_buf(), parsed.clone());
     if matches!(get_str(&implementation.value, &["architecture", "machine", "execution_binding", "kind"]),
         Some("persistent-async" | "synchronous-envelopes"))
     {
@@ -34759,6 +34760,7 @@ fn collect_rust_imports(file: &syn::File) -> Vec<RustImport> {
 
 #[derive(Default)]
 struct RustTypingSummary {
+    exact_sources: BTreeMap<PathBuf, syn::File>,
     async_sources: BTreeMap<String, syn::File>,
     public_types: BTreeSet<String>,
     private_types: BTreeSet<String>,
@@ -35405,6 +35407,7 @@ fn validate_rust_machine_execution_path(
         }
         if surface_function != driver
             && !rust_function_reaches(summary, surface_function, driver, None)
+            && !rust_surface_reaches_driver(implementation, summary, symbol, driver)
         {
             diagnostics.push(error(
                 "structure.runnable-surface-machine-bypass",
@@ -35426,6 +35429,21 @@ fn validate_rust_machine_execution_path(
             ));
         }
     }
+}
+
+fn rust_surface_reaches_driver(implementation: &LoadedManifest, summary: &RustTypingSummary, surface: &str, driver: &str) -> bool {
+    let base = implementation.path.parent().unwrap_or_else(|| Path::new("."));
+    let Some((surface_path, surface_symbol)) = binding_reference_parts(surface) else { return false; };
+    let driver_paths = structure_role_paths(implementation, "machine_driver");
+    let [driver_path] = driver_paths.as_slice() else { return false; };
+    let cargo_path = get_str(&implementation.value, &["toolchain", "cargo_manifest"]).unwrap_or("Cargo.toml");
+    let Some(cargo) = fs::read_to_string(base.join(cargo_path)).ok().and_then(|source| source.parse::<TomlValue>().ok()) else { return false; };
+    let crate_name = cargo.get("lib").and_then(|lib| lib.get("name"))
+        .or_else(|| cargo.get("package").and_then(|package| package.get("name")))
+        .and_then(TomlValue::as_str).map(|name| name.replace('-', "_"));
+    let library = base.join(cargo.get("lib").and_then(|lib| lib.get("path")).and_then(TomlValue::as_str).unwrap_or("src/lib.rs"));
+    let index = rust_proof_calls::Index::from_parsed(summary.exact_sources.clone(), library, crate_name);
+    index.reaches((base.join(surface_path), surface_symbol.to_string()), (base.join(driver_path), driver.to_string()))
 }
 
 fn rust_symbol_belongs_to_role(
@@ -42366,6 +42384,17 @@ fn build_next_report_with_optional_program(
         ];
     }
     let external_rust_crate_declaration = task_requests_external_rust_crate_declaration(task);
+    let integration_package_rebind = task_requests_integration_package_rebind(task)
+        && intent.as_ref().is_some_and(|intent| {
+            intent.change_scope == IntentChangeScope::ExistingModule
+                && [&intent.facts.domain_decisions, &intent.facts.lifecycle, &intent.facts.effects, &intent.facts.runnable_surface]
+                    .iter().all(|fact| fact.disposition == IntentDisposition::Absent)
+        });
+    if integration_package_rebind {
+        classification.lane = TaskLane::ImplementationCandidate;
+        classification.confidence = "deterministic".into();
+        classification.reasons = vec!["task updates only owner-local integration package coordinates to the current Rust binding package".into()];
+    }
     let rust_public_reexports_change = task_requests_rust_public_reexports_change(task)
         && intent.as_ref().is_some_and(|intent| {
             intent.change_scope == IntentChangeScope::ExistingModule
@@ -42529,7 +42558,7 @@ fn build_next_report_with_optional_program(
     let bounded_existing_implementation = classification.lane == TaskLane::ImplementationCandidate
         && task_requests_declared_role_implementation_completion(task)
         && owner.status() == OwnerStatus::Selected;
-    let bounded_binding_metadata = (rust_package_identity_change || rust_public_reexports_change)
+    let bounded_binding_metadata = (rust_package_identity_change || rust_public_reexports_change || integration_package_rebind)
         && owner.status() == OwnerStatus::Selected;
     let bounded_proof_support_roles =
         exact_owner_scoped_proof_support_role_change_ready(task, intent.as_ref(), &owner);
@@ -42815,6 +42844,9 @@ fn build_next_report_with_optional_program(
         if context.implementation.is_some() && rust_public_reexports_change {
             allowed_actions.push("binding-public-reexports-set");
         }
+        if context.implementation.is_some() && integration_package_rebind {
+            allowed_actions.push("integration-package-rebind");
+        }
     }
     let owner_path = owner
         .selected_module()
@@ -43041,6 +43073,11 @@ fn task_requests_rust_public_reexports_change(task: &str) -> bool {
     task.to_ascii_lowercase().contains("architecture.allowed_public_reexports")
         && task_mentions_token(task, "rust")
         && ["set", "replace", "change"].iter().any(|verb| task_mentions_token(task, verb))
+}
+
+fn task_requests_integration_package_rebind(task: &str) -> bool {
+    task.to_ascii_lowercase().contains("integration test realization package selectors")
+        && ["update", "set", "change"].iter().any(|verb| task_mentions_token(task, verb))
 }
 
 fn task_requests_external_rust_crate_declaration(task: &str) -> bool {
@@ -46010,7 +46047,9 @@ fn build_next_steps(
                 None,
             )),
             TaskLane::ImplementationCandidate => declare.push(manual_next_step(
-                if task_requests_rust_public_reexports_change(task) {
+                if task_requests_integration_package_rebind(task) {
+                    "Use receipt-gated `rms spec apply <module.yaml> --change-file <change.yaml> --route-receipt <RUN_ID> --dry-run`, then apply. Supply only complete existing properties.set items. Change only owner-local integration-test realization package fields to the current toolchain.package. The guarded receipt rejects every other property, runner, command, owner, working-directory, or semantic change. Preserve all unrelated fields."
+                } else if task_requests_rust_public_reexports_change(task) {
                     "Use `rms binding set-public-reexports <implementation.yaml> --from '<CURRENT_JSON_ARRAY>' --set '<NEW_JSON_ARRAY>' --route-receipt <RUN_ID>`, with --dry-run first. Absent current permissions mean []. The command requires an intact prior seal and permits only already-declared Rust dependency roots. It changes only public reexport permissions and provenance, not dependencies, source, contracts, or topology. If public contract meaning changes, route that semantic change separately."
                 } else if task_requests_rust_package_identity_change(task) {
                     "Declare the package identity with `rms binding set-package <implementation.yaml> --from <CURRENT_PACKAGE> --package <NEW_PACKAGE> --route-receipt <RUN_ID>`. Review with `--dry-run` first. This changes only toolchain.package, not RMS module identity, Cargo.toml, dependencies, contracts, or topology. Then update native Cargo package/import references and run native verification plus rms structure."
@@ -46045,6 +46084,14 @@ fn build_next_steps(
             )
         {
             if classification.lane == TaskLane::ImplementationCandidate
+                && (task_requests_integration_package_rebind(task)
+                    || task_requests_rust_public_reexports_change(task))
+            {
+                implement.push(manual_next_step(
+                    "This route changes binding metadata only. No role or native source implementation is required. After the prescribed canonical mutation, run the affected native proof and progressive checks.",
+                    None,
+                ));
+            } else if classification.lane == TaskLane::ImplementationCandidate
                 && task_requests_rust_package_identity_change(task)
             {
                 implement.push(manual_next_step(
@@ -87383,6 +87430,15 @@ fn validate_spec_change_route_receipt(
         Ok(receipt) => return Ok(receipt),
         Err(error) => error,
     };
+    if let Ok(receipt) = validate_route_receipt(root, reference, "integration-package-rebind", target, None) {
+        let context = load_spec_target(target)?;
+        let change = parse_semantic_change(change_json, change_yaml, change_file)?;
+        validate_integration_package_rebind(root, &context, &change)?;
+        let mut prepared = prepare_semantic_change_for_apply(&context, change);
+        prepared.supersedes.clear(); // Generated history closure is not caller-owned mutation authority.
+        validate_integration_package_rebind(root, &context, &prepared)?;
+        return Ok(receipt);
+    }
     let repair_family_declared = fs::canonicalize(root)
         .ok()
         .and_then(|root| resolve_route_receipt_path(&root, reference).ok())
@@ -87429,6 +87485,51 @@ fn validate_spec_change_route_receipt(
     );
     validate_contract_behavior_case_repair_change(root, &context, &change, expected)?;
     Ok(receipt)
+}
+
+fn validate_integration_package_rebind(root: &Path, context: &SpecTargetContext, change: &SemanticChange) -> Result<()> {
+    let implementation = context.implementation.as_ref().ok_or_else(|| anyhow!("selector rebind requires an existing implementation"))?;
+    let module = context.module.as_ref().ok_or_else(|| anyhow!("selector rebind requires an existing module"))?;
+    if get_str(&implementation.value, &["binding"]) != Some("rust") {
+        bail!("selector rebind requires a Rust binding");
+    }
+    let package = get_str(&implementation.value, &["toolchain", "package"]).ok_or_else(|| anyhow!("binding package missing"))?;
+    let owner = get_str(&module.value, &["module", "name"]).ok_or_else(|| anyhow!("module identity missing"))?;
+    let mut checks = Vec::new();
+    append_semantic_revision_audit_check(implementation, true, &mut checks);
+    if checks.iter().any(|check| check.result != "pass") { bail!("selector rebind requires an intact prior semantic revision"); }
+    for (field, value) in serde_json::to_value(change)?.as_object().unwrap() {
+        if !matches!(field.as_str(), "spec" | "module" | "intent" | "properties") && json_value_has_material_operation(value) {
+            bail!("selector rebind permits only properties.set; `{field}` contains an operation");
+        }
+    }
+    if change.module.as_deref().is_some_and(|name| name != owner) { bail!("selector rebind owner mismatch"); }
+    let properties = change.properties.as_ref().ok_or_else(|| anyhow!("selector rebind requires properties.set"))?;
+    if properties.replace.is_empty() || !properties.add.is_empty() || !properties.remove.is_empty() { bail!("selector rebind requires only nonempty properties.set"); }
+    let current = property_targets_from_module(module, "semantic").into_iter().chain(fuzz_targets_from_module(module)).collect::<Vec<_>>();
+    let mut seen = BTreeSet::new();
+    let mut changed = false;
+    for proposed in &properties.replace {
+        if !seen.insert(&proposed.id) { bail!("duplicate property in selector rebind"); }
+        let candidates = current.iter().filter(|property| property.id == proposed.id).collect::<Vec<_>>();
+        let [existing] = candidates.as_slice() else { bail!("selector rebind requires one exact existing property `{}`", proposed.id); };
+        let mut expected: SemanticPropertyChange = serde_yaml::from_value(existing.definition.clone())?;
+        for realization in &mut expected.realizations {
+            if realization.strategy != "integration-test" || realization.owner_module.as_deref() != Some(owner) { continue; }
+            let working = realization.working_directory.as_deref().ok_or_else(|| anyhow!("integration working directory missing"))?;
+            let owner_dir = module.path.parent().unwrap_or(root);
+            if fs::canonicalize(root.join(working)).ok() != fs::canonicalize(owner_dir).ok() { continue; }
+            if realization.package.as_deref() != Some(package) {
+                realization.package = Some(package.to_string());
+                changed = true;
+            }
+        }
+        if serde_json::to_value(&expected)? != serde_json::to_value(proposed)? {
+            bail!("selector rebind for `{}` changes more than owner-local integration package coordinates", proposed.id);
+        }
+    }
+    if !changed { bail!("selector rebind has no stale owner-local package coordinates"); }
+    Ok(())
 }
 
 fn require_spec_change_route_receipt(
@@ -88857,6 +88958,40 @@ mod tests {
     }
 
     #[test]
+    fn integration_package_rebind_guard_preserves_every_other_field() {
+        let root = unique_test_dir("integration-package-rebind");
+        fs::create_dir_all(&root).unwrap();
+        let property = json!({"id":"law-proof", "kind":"semantic", "proves":"law", "oracle":["Preserve domain meaning"], "realizations":[
+            {"profile":"ci", "strategy":"integration-test", "command":"integration", "runner":"tests/native.rs#proof", "owner_module":"owner", "package":"old", "working_directory":".", "test_selection":"proof"}
+        ]});
+        fs::write(root.join("module.yaml"), serde_yaml::to_string(&json!({"spec":"rms/module/v0.1", "module":{"name":"owner"}, "properties":[property.clone()]})).unwrap()).unwrap();
+        let path = root.join("implementation.yaml");
+        fs::write(&path, serde_yaml::to_string(&json!({"spec":IMPLEMENTATION_V2_SPEC, "module":"owner", "binding":"rust", "toolchain":{"package":"new"}, "architecture":{"reliability":{"properties":[property.clone()]}}})).unwrap()).unwrap();
+        fs::write(root.join("prior.yaml"), "prior: immutable\n").unwrap();
+        seal_implementation_semantics(&mut load_manifest(&path).unwrap(), &root.join("prior.yaml"), SemanticRevisionAuthority::SpecApply).unwrap();
+        let context = load_spec_target(&path).unwrap();
+        let mut proposed = property.clone();
+        proposed["realizations"][0]["package"] = json!("new");
+        let make = |property: JsonValue| serde_json::from_value::<SemanticChange>(json!({"spec":"rms/semantic-change/v0.1", "properties":{"set":[property]}})).unwrap();
+        let original = fs::read(&path).unwrap();
+        validate_integration_package_rebind(&root, &context, &make(proposed.clone())).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(validate_integration_package_rebind(&root, &context, &make(property)).is_err());
+        for field in ["package", "runner", "command", "owner_module", "working_directory", "test_selection", "strategy"] {
+            let mut invalid = proposed.clone();
+            invalid["realizations"][0][field] = json!("unrelated");
+            assert!(validate_integration_package_rebind(&root, &context, &make(invalid)).is_err(), "{field}");
+        }
+        let mut invalid = proposed.clone();
+        invalid["oracle"] = json!(["Changed meaning"]);
+        assert!(validate_integration_package_rebind(&root, &context, &make(invalid)).is_err());
+        let mut change = make(proposed);
+        change.supersedes.push("unrelated.yaml".into());
+        assert!(validate_integration_package_rebind(&root, &context, &change).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn rust_public_reexports_set_is_bounded_sealed_and_reversible() {
         let root = unique_test_dir("rust-public-reexports-set");
         fs::create_dir_all(root.join("src")).unwrap();
@@ -89008,6 +89143,7 @@ open_questions: []
         for (task, family, command) in [
             (task, "binding-package-set", "rms binding set-package"),
             ("Set the Rust architecture.allowed_public_reexports for package-owner to its already-declared dependency provider. Preserve contracts, behavior, effects, module identity, and topology.", "binding-public-reexports-set", "rms binding set-public-reexports"),
+            ("Update Rust integration test realization package selectors for package-owner after its package rename. Preserve property semantics and all other realization fields.", "integration-package-rebind", "rms spec apply"),
         ] {
         let report = build_next_report_with_intent(&root, Some(&root.join("module.yaml")), task,
             RawIntentInput { yaml: Some(intent.to_string()), ..Default::default() }, None).unwrap();
