@@ -17863,6 +17863,7 @@ fn execute_property_realizations_with_batch_and_cache(
             let runner_symbol = binding_reference_symbol(&realization.runner)
                 .unwrap_or(realization.runner.as_str());
             let coverage_fuzzer = realization.strategy == "coverage-fuzzer";
+            let custom_nightly = realization.profile == "nightly" && !proof_command_is_test_backed(&command);
             let declared_test = coverage_fuzzer
                 && get_str(&manifest.value, &["binding"]) == Some("rust")
                 && rust_property_runner_is_test(&execution_root, &realization.runner).unwrap_or(true);
@@ -17919,7 +17920,7 @@ fn execute_property_realizations_with_batch_and_cache(
                 realization.runner.as_str(),
                 realization.generator.as_deref().unwrap_or(""),
             ]);
-            if let Some(pass_line) = (!coverage_fuzzer && !proof_command_is_test_backed(&command))
+            if let Some(pass_line) = (!custom_nightly && !coverage_fuzzer && !proof_command_is_test_backed(&command))
                 .then(|| {
                     batch_evidence
                         .and_then(|batch| batch.exact_pass_line(&command, &realization.runner))
@@ -17961,7 +17962,7 @@ fn execute_property_realizations_with_batch_and_cache(
             if let Some(cached) = proof_cache
                 .and_then(|cache| cache.load::<PropertyRunCommandReport>(&cache_key))
                 .filter(|cached| {
-                    cached.status == "pass"
+                    !custom_nightly && cached.status == "pass"
                         && cached.exit_code == Some(0)
                         && (!coverage_fuzzer || libfuzzer_execution_count(&cached.stdout, &cached.stderr).is_some())
                         && (!property_execution_is_test_backed(coverage_fuzzer, integration_test, declared_test, &command, &cached.stdout, &cached.stderr)
@@ -17996,25 +17997,22 @@ fn execute_property_realizations_with_batch_and_cache(
                     progress.suite_started.elapsed()
                 )
             );
+            let lane_result = if custom_nightly {
+                Some(unique_runtime_temp_dir("property-nightly")?.join("lane-result.json"))
+            } else { None };
+            let lane_output = lane_result.as_ref().map(|path| path.display().to_string()).unwrap_or_default();
+            let mut environment = vec![
+                ("RMS_PROPERTY_ID", target.id.as_str()),
+                ("RMS_PROPERTY_RUNNER", realization.runner.as_str()),
+                ("RMS_PROPERTY_GENERATOR", realization.generator.as_deref().unwrap_or(generator_symbol)),
+                ("RMS_INTEGRATION_PACKAGE", realization.package.as_deref().unwrap_or("")),
+                ("RMS_INTEGRATION_TEST_SELECTION", realization.test_selection.as_deref().unwrap_or("")),
+            ];
+            if custom_nightly { environment.push(("RMS_HUNT_OUTPUT", lane_output.as_str())); }
             let output = execute_proof_command_observed(
                 &execution_root,
                 &command,
-                &[
-                    ("RMS_PROPERTY_ID", target.id.as_str()),
-                    ("RMS_PROPERTY_RUNNER", realization.runner.as_str()),
-                    (
-                        "RMS_PROPERTY_GENERATOR",
-                        realization.generator.as_deref().unwrap_or(generator_symbol),
-                    ),
-                    (
-                        "RMS_INTEGRATION_PACKAGE",
-                        realization.package.as_deref().unwrap_or(""),
-                    ),
-                    (
-                        "RMS_INTEGRATION_TEST_SELECTION",
-                        realization.test_selection.as_deref().unwrap_or(""),
-                    ),
-                ],
+                &environment,
                 timeout_seconds,
                 Some(&progress),
             )?;
@@ -18061,6 +18059,16 @@ fn execute_property_realizations_with_batch_and_cache(
                     ),
                 ));
             }
+            let lane_passed = if let Some(path) = &lane_result {
+                match validate_property_lane_result(path, &realization.strategy) {
+                    Ok(()) => true,
+                    Err(failure) => {
+                        diagnostics.push(error("proof.nightly-result-invalid", implementation,
+                            format!("property `{}` runner `{}`: {failure:#}; retained result path {}", target.id, realization.runner, path.display())));
+                        false
+                    }
+                }
+            } else { true };
             let receipt = if let Some(selected_tests) = selected_tests {
                 Some(persist_test_execution_receipt(
                     &manifest,
@@ -18072,10 +18080,11 @@ fn execute_property_realizations_with_batch_and_cache(
                     selected_tests,
                 )?)
             } else {
-                None
+                lane_result.as_ref().map(|path| path.display().to_string())
             };
             let proof_passed = output.status.success()
                 && !output.timed_out
+                && lane_passed
                 && (!coverage_fuzzer || fuzz_executions.is_some())
                 && (!test_backed || selected_tests.is_some_and(|count| count > 0));
             let command_report = PropertyRunCommandReport {
@@ -18583,6 +18592,38 @@ fn shell_function_exists(path: &Path, symbol: &str) -> bool {
             .strip_prefix("function ")
             .and_then(|rest| rest.split_whitespace().next())
             .is_some_and(|name| name.trim_end_matches("()") == symbol)
+    })
+}
+
+fn validate_property_lane_result(path: &Path, strategy: &str) -> Result<()> {
+    let value = serde_json::to_value(load_yaml_value(path).context("custom nightly runner did not write a readable RMS_HUNT_OUTPUT result")?)?;
+    validate_json_against_schema(&value, include_str!("../../../../schemas/hunt-lane-result.schema.json"), "custom nightly result")?;
+    if value["status"] != "pass" || value["findings"].as_array().is_some_and(|findings| !findings.is_empty()) {
+        bail!("custom nightly result must pass without findings; use rms hunt for finding replay and triage");
+    }
+    if strategy == "static-analyzer" && !value["metrics"]["analyzer_runs"].as_u64().is_some_and(|runs| runs > 0) {
+        bail!("static-analyzer result requires positive metrics.analyzer_runs");
+    }
+    Ok(())
+}
+
+fn property_artifact_exists(base: &Path, implementation: &LoadedManifest, reference: &str) -> bool {
+    if get_str(&implementation.value, &["binding"]) == Some("executable") {
+        return binding_symbol_reference_exists(base, implementation, reference);
+    }
+    if let Some((path, symbol)) = binding_reference_parts(reference) {
+        if Path::new(path).extension().is_some_and(|extension| extension == "sh") {
+            return shell_function_exists(&base.join(path), symbol);
+        }
+    }
+    binding_symbol_reference_exists(base, implementation, reference)
+}
+
+fn property_artifact_declares_lane_result(base: &Path, reference: &str) -> bool {
+    binding_reference_parts(reference).is_some_and(|(path, _)| {
+        fs::read_to_string(base.join(path)).is_ok_and(|source| {
+            source.contains("RMS_HUNT_OUTPUT") && source.contains("rms/hunt-lane-result/v0.1")
+        })
     })
 }
 
@@ -20577,7 +20618,7 @@ fn validate_property_target_report(
             } else {
                 base.to_path_buf()
             };
-            if !binding_symbol_reference_exists(
+            if !property_artifact_exists(
                 &realization_base,
                 implementation,
                 &realization.runner,
@@ -20593,7 +20634,7 @@ fn validate_property_target_report(
                 );
             }
             if let Some(generator) = realization.generator.as_deref() {
-                if !binding_symbol_reference_exists(&realization_base, implementation, generator) {
+                if !property_artifact_exists(&realization_base, implementation, generator) {
                     push_unique_warning(
                         diagnostics,
                         "property.generator-missing",
@@ -20662,7 +20703,11 @@ fn validate_property_target_report(
                     ),
                 );
             }
-            if !property_runner_has_oracle(&realization_base, implementation, &realization.runner) {
+            let external_analyzer = realization.profile == "nightly"
+                && realization.strategy == "static-analyzer"
+                && property_artifact_exists(&realization_base, implementation, &realization.runner)
+                && property_artifact_declares_lane_result(&realization_base, &realization.runner);
+            if !external_analyzer && !property_runner_has_oracle(&realization_base, implementation, &realization.runner) {
                 push_unique_warning(
                     diagnostics,
                     "property.runner-has-no-oracle",
@@ -20691,6 +20736,8 @@ fn validate_property_target_report(
                     implementation.path.parent().unwrap_or(base),
                     command.unwrap_or_default(),
                 )
+                && !property_artifact_declares_lane_result(base, &realization.runner)
+                && !realization.generator.as_deref().is_some_and(|generator| property_artifact_declares_lane_result(base, generator))
             {
                 push_unique_warning(
                     diagnostics,
@@ -101707,6 +101754,44 @@ architecture:
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.check == "hunt.nightly-runner-result-missing"));
+        let run = execute_property_realizations(&root.join("implementation.yaml"), PropertyProfile::Nightly, false, 10).unwrap();
+        assert_eq!(run.commands.len(), 1);
+        assert_eq!(run.commands[0].status, "pass", "{run:?}");
+        let first_receipt = run.commands[0].receipt.clone().unwrap();
+        assert!(Path::new(&first_receipt).is_file());
+        // A previous successful receipt must not satisfy this fresh execution.
+        write_test_file(&root.join("scripts/nightly.sh"), "#!/bin/sh\n# RMS_HUNT_OUTPUT rms/hunt-lane-result/v0.1\nrun_property() { test -n \"$RMS_PROPERTY_ID\"; }\nrun_property\n");
+        let run = execute_property_realizations(&root.join("implementation.yaml"), PropertyProfile::Nightly, false, 10).unwrap();
+        assert_eq!(run.commands[0].status, "fail");
+        assert_ne!(run.commands[0].receipt.as_deref(), Some(first_receipt.as_str()));
+        assert!(run.diagnostics.iter().any(|diagnostic| diagnostic.check == "proof.nightly-result-invalid"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn custom_nightly_result_requires_valid_clean_positive_evidence() {
+        let root = unique_test_dir("nightly-result-validation");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("result.json");
+        assert!(validate_property_lane_result(&path, "static-analyzer").is_err());
+        for value in [json!({}), json!({"spec":"wrong","status":"pass"}),
+            json!({"spec":"rms/hunt-lane-result/v0.1","status":"pass"}),
+            json!({"spec":"rms/hunt-lane-result/v0.1","status":"pass","metrics":{"analyzer_runs":0}}),
+            json!({"spec":"rms/hunt-lane-result/v0.1","status":"finding","metrics":{"analyzer_runs":1}}),
+            json!({"spec":"rms/hunt-lane-result/v0.1","status":"pass","metrics":{"analyzer_runs":1},"findings":[{"kind":"coverage-gap","summary":"gap"}]})] {
+            fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(validate_property_lane_result(&path, "static-analyzer").is_err(), "{value}");
+        }
+        fs::write(&path, r#"{"spec":"rms/hunt-lane-result/v0.1","status":"pass","metrics":{"analyzer_runs":1}}"#).unwrap();
+        validate_property_lane_result(&path, "static-analyzer").unwrap();
+        let implementation = LoadedManifest { path: root.join("implementation.yaml"), value: serde_yaml::from_str("binding: rust").unwrap() };
+        fs::write(root.join("analyze.sh"), "#!/bin/sh\nrun() { exit 0; }\n").unwrap();
+        assert!(property_artifact_exists(&root, &implementation, "analyze.sh#run"));
+        assert!(!property_artifact_exists(&root, &implementation, "analyze.sh#missing"));
+        assert!(!binding_symbol_reference_exists(&root, &implementation, "analyze.sh#run"));
+        assert!(!property_artifact_declares_lane_result(&root, "analyze.sh#run"));
+        let executable = LoadedManifest { path: root.join("implementation.yaml"), value: serde_yaml::from_str("binding: executable").unwrap() };
+        assert!(property_artifact_exists(&root, &executable, "analyze.sh#artifact_selector"));
         fs::remove_dir_all(root).unwrap();
     }
 
