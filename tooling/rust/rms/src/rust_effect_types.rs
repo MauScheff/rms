@@ -5,6 +5,7 @@ use syn::{Expr, FnArg, GenericArgument, Item, Pat, PathArguments, ReturnType, Si
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum RustValueType {
     Unknown,
+    Text,
     Named(String), // Exact source-path#type identity, never a global leaf name.
     Sequence(Box<Self>),
     Iterator(Box<Self>),
@@ -280,6 +281,10 @@ impl RustTypeIndex {
             Type::Path(path) if path.qself.is_none() => {
                 let segment = path.path.segments.last()?;
                 let name = segment.ident.to_string();
+                if path.path.segments.len() == 1 && matches!(name.as_str(), "str" | "String")
+                    && self.unshadowed_external_root(&name) {
+                    return Some(RustValueType::Text);
+                }
                 if path.path.segments.len() == 1 && self.is_generic(&name) { return None; }
                 if matches!(segment.arguments, PathArguments::None) {
                     let reference = path
@@ -384,6 +389,29 @@ impl RustTypeIndex {
             rebound.visit_file(&file);
         }
         !rebound.found
+    }
+
+    pub(super) fn unshadowed_external_root(&self, root: &str) -> bool {
+        if self.is_generic(root) || !self.standard_external_crate_available(root) { return false; }
+        let Some(file) = self.sources.get(&self.path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
+        fn imported(tree: &syn::UseTree, name: &str) -> bool {
+            match tree {
+                syn::UseTree::Glob(_) => true,
+                syn::UseTree::Name(item) => item.ident == name,
+                syn::UseTree::Rename(item) => item.rename == name,
+                syn::UseTree::Path(item) => imported(&item.tree, name),
+                syn::UseTree::Group(group) => group.items.iter().any(|item| imported(item, name)),
+            }
+        }
+        !file.items.iter().any(|item| match item {
+            Item::Mod(item) => item.ident == root,
+            Item::Struct(item) => item.ident == root,
+            Item::Enum(item) => item.ident == root,
+            Item::Type(item) => item.ident == root,
+            Item::Trait(item) => item.ident == root,
+            Item::Use(item) => imported(&item.tree, root),
+            _ => false,
+        })
     }
 
     pub(super) fn standard_integer_available(&self, name: &str) -> bool {
@@ -643,9 +671,12 @@ impl RustTypeIndex {
         values: &BTreeMap<String, RustValueType>,
     ) -> Option<RustValueType> {
         match expression {
+            Expr::Lit(literal) if matches!(literal.lit, syn::Lit::Str(_)) => Some(RustValueType::Text),
             Expr::Path(path) => values.get(&path.path.get_ident()?.to_string()).cloned(),
             Expr::Reference(reference) => self.expression_type(&reference.expr, values),
             Expr::Paren(paren) => self.expression_type(&paren.expr, values),
+            Expr::Index(index) if matches!(index.index.as_ref(), Expr::Range(_))
+                && self.expression_type(&index.expr, values) == Some(RustValueType::Text) => Some(RustValueType::Text),
             Expr::Tuple(tuple) => Some(RustValueType::Tuple(tuple.elems.iter().map(|expr|
                 self.expression_type(expr, values).unwrap_or(RustValueType::Unknown)).collect())),
             Expr::Struct(value) if value.qself.is_none() => self.local_constructed_type(&value.path, None),
@@ -680,6 +711,10 @@ impl RustTypeIndex {
                     .map(|s| s.ident.to_string())
                     .collect::<Vec<_>>()
                     .join("::");
+                if reference == "std::str::from_utf8" && call.args.len() == 1
+                    && self.unshadowed_external_root("std") {
+                    return Some(RustValueType::ResultOk(Box::new(RustValueType::Text)));
+                }
                 let exact =
                     super::rust_exact_function_reference(&self.path, &reference, &self.sources, 0)?;
                 self.function_returns.get(&exact).cloned()
@@ -688,6 +723,14 @@ impl RustTypeIndex {
                 let receiver = self.expression_type(&call.receiver, values)?;
                 let method = call.method.to_string();
                 match receiver {
+                    RustValueType::ResultOk(element) if method == "map_err" && call.args.len() == 1 =>
+                        Some(RustValueType::ResultOk(element)),
+                    RustValueType::Text => match method.as_str() {
+                        "split_inclusive" | "split" | "lines" | "split_whitespace" =>
+                            Some(RustValueType::Iterator(Box::new(RustValueType::Text))),
+                        "as_str" | "to_owned" | "to_string" | "clone" | "trim" | "trim_end_matches" => Some(RustValueType::Text),
+                        _ => None,
+                    },
                     RustValueType::Named(name) => {
                         self.returns.get(&format!("{name}::{method}")).cloned()
                     }

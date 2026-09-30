@@ -12,7 +12,7 @@ mod rust_effect_types;
 use rust_effect_types::{RustTypeIndex, RustValueType};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
-pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.2";
+pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.3";
 pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.2";
 
 #[derive(Clone, Debug)]
@@ -970,6 +970,7 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
+    if matches!(call, "<rust-str-literal-split-inclusive>" | "<rust-yaml-value-from-str>") { return true; }
     if call == "<rust-integer-byte-conversion>" { return true; }
     if call == "<rust-sequence-last-mut>" { return true; }
     if call == "<rust-standard-poll-fn>" { return true; }
@@ -1503,6 +1504,11 @@ impl<'ast> Visit<'ast> for RustCallCollector {
     }
 
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
+        if self.is_yaml_value_parse(node, false) {
+            self.calls.insert("<rust-yaml-value-from-str>".into());
+            visit::visit_expr_call(self, node);
+            return;
+        }
         if let syn::Expr::Path(path) = node.func.as_ref() {
             let call = path
                 .path
@@ -1623,7 +1629,11 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 .filter(|name| !self.type_index.is_generic(name) && !self.type_index.is_declared_type(name)),
             _ => None,
         });
-        let call = if node.args.is_empty()
+        let call = if inferred_receiver == Some(RustValueType::Text)
+            && node.method == "split_inclusive" && node.args.len() == 1
+            && matches!(&node.args[0], Expr::Lit(value) if matches!(value.lit, syn::Lit::Char(_) | syn::Lit::Str(_))) {
+            "<rust-str-literal-split-inclusive>".to_string()
+        } else if node.args.is_empty()
             && matches!(node.method.to_string().as_str(), "to_be_bytes" | "to_le_bytes" | "to_ne_bytes")
             && typed_receiver.is_some_and(|receiver| self.type_index.standard_integer_available(receiver)) {
             "<rust-integer-byte-conversion>".to_string()
@@ -1791,7 +1801,10 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         let mut bound_names = BTreeSet::new();
         collect_rust_pattern_identifiers(&node.pat, &mut bound_names);
         // Inspect the initializer in the old scope, then install the new binding.
-        visit::visit_local(self, node);
+        let yaml_value = matches!(&node.pat, Pat::Type(pattern) if exact_yaml_value_type(&pattern.ty));
+        let handled = yaml_value && node.init.as_ref()
+            .is_some_and(|init| self.visit_yaml_value_initializer(&init.expr));
+        if !handled { visit::visit_local(self, node); }
         for name in &bound_names {
             self.callback_bindings.remove(name);
             let shadowed = self.value_types.contains_key(name)
@@ -1831,6 +1844,52 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             } else if rust_expr_finds_regex_match(&init.expr, &self.regex_names) {
                 collect_rust_pattern_identifiers(&node.pat, &mut self.regex_match_names);
             }
+        }
+    }
+}
+
+fn exact_yaml_value_type(ty: &Type) -> bool {
+    matches!(ty, Type::Path(path) if path.qself.is_none()
+        && path.path.segments.len() == 2
+        && path.path.segments[0].ident == "serde_yaml_ng"
+        && path.path.segments[1].ident == "Value"
+        && path.path.segments.iter().all(|segment| matches!(segment.arguments, syn::PathArguments::None)))
+}
+
+impl RustCallCollector {
+    fn is_yaml_value_parse(&self, call: &ExprCall, contextual_value: bool) -> bool {
+        let Expr::Path(path) = call.func.as_ref() else { return false; };
+        if path.qself.is_some() || path.path.segments.len() != 2 || call.args.len() != 1
+            || path.path.segments[0].ident != "serde_yaml_ng"
+            || path.path.segments[1].ident != "from_str"
+            || !matches!(path.path.segments[0].arguments, syn::PathArguments::None)
+            || self.value_types.contains_key("serde_yaml_ng")
+            || !self.type_index.unshadowed_external_root("serde_yaml_ng") { return false; }
+        match &path.path.segments[1].arguments {
+            syn::PathArguments::None => contextual_value,
+            syn::PathArguments::AngleBracketed(arguments) if arguments.args.len() == 1 =>
+                matches!(&arguments.args[0], syn::GenericArgument::Type(ty) if exact_yaml_value_type(ty)),
+            _ => false,
+        }
+    }
+
+    // Only wrappers that preserve Result's success type carry the annotation
+    // inward. A map callback, arbitrary helper, or custom Deserialize target does not.
+    fn visit_yaml_value_initializer(&mut self, expression: &Expr) -> bool {
+        match expression {
+            Expr::Try(value) => self.visit_yaml_value_initializer(&value.expr),
+            Expr::Paren(value) => self.visit_yaml_value_initializer(&value.expr),
+            Expr::MethodCall(call) if call.method == "map_err" && call.args.len() == 1 => {
+                if !self.visit_yaml_value_initializer(&call.receiver) { return false; }
+                self.visit_expr(&call.args[0]);
+                true
+            }
+            Expr::Call(call) if self.is_yaml_value_parse(call, true) => {
+                self.calls.insert("<rust-yaml-value-from-str>".into());
+                visit::visit_expr_call(self, call);
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -4207,6 +4266,51 @@ mod tests {
             authority_facades: Vec::new(),
             trusted_external_calls: BTreeSet::new(),
         })
+    }
+
+    #[test]
+    fn rust_split_inclusive_requires_standard_text_and_literal_pattern() {
+        for source in [
+            "fn decide(raw: &str) { raw.split_inclusive('\\n').next(); }",
+            "fn decide(bytes: &[u8]) -> Result<(), ()> { let raw = std::str::from_utf8(bytes).map_err(|_| ())?; for line in raw[1..].split_inclusive(\"\\n\") { line.len(); } Ok(()) }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("src/lib.rs#decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for source in [
+            "fn decide(raw: &dyn Custom) { raw.split_inclusive('\\n'); }",
+            "fn decide(raw: &str, callback: impl FnMut(char) -> bool) { raw.split_inclusive(callback); }",
+            "fn decide(raw: &str) { raw.split_inclusive(|_| { std::fs::read(\"x\"); true }); }",
+            "struct str; impl str { fn split_inclusive(&self, _: char) { std::fs::read(\"x\"); } } fn decide(raw: &str) { raw.split_inclusive('\\n'); }",
+            "mod std { pub mod str { pub fn from_utf8(_: &[u8]) -> Result<Other, ()> { todo!() } } } fn decide(bytes: &[u8]) -> Result<(), ()> { let raw = std::str::from_utf8(bytes)?; raw.split_inclusive('\\n'); Ok(()) }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("src/lib.rs#decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}\n{result:#?}");
+        }
+    }
+
+    #[test]
+    fn rust_yaml_ng_parse_is_bounded_to_library_value() {
+        for source in [
+            "fn decide(raw: &str) { let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(raw).map_err(|e| e.to_string())?; }",
+            "fn decide(raw: &str) { serde_yaml_ng::from_str::<serde_yaml_ng::Value>(raw); }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("src/lib.rs#decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for source in [
+            "fn decide(raw: &str) { serde_yaml_ng::from_str::<Custom>(raw); }",
+            "fn decide(raw: &str) { serde_yaml_ng::from_str(raw); }",
+            "fn decide(raw: &str) { let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str::<Custom>(raw).map(|v| v.into())?; }",
+            "fn decide(raw: &str) { let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_reader(raw)?; }",
+            "fn decide(raw: &str) { let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(raw).map_err(|e| { std::fs::read(\"x\"); e })?; }",
+            "mod serde_yaml_ng { pub struct Value; pub fn from_str(_: &str) -> Value { std::fs::read(\"x\"); Value } } fn decide(raw: &str) { let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(raw); }",
+            "use arbitrary as serde_yaml_ng; fn decide(raw: &str) { let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(raw)?; }",
+            "extern crate arbitrary as serde_yaml_ng; fn decide(raw: &str) { serde_yaml_ng::from_str::<serde_yaml_ng::Value>(raw); }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("src/lib.rs#decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}\n{result:#?}");
+        }
     }
 
     #[test]
