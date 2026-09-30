@@ -253,6 +253,12 @@
             {
               "type": "object",
               "required": ["kind"],
+              "properties": {"kind": {"const": "caller-driven"}},
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["kind"],
               "properties": {"kind": {"const": "synchronous"}},
               "additionalProperties": false
             },

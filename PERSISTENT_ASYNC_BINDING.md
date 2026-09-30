@@ -63,4 +63,4 @@ This variant retains the existing synchronous driver and transition-record check
 
 Native regressions cover explicit opt-in, legacy signatures, wrong storage types, wrong envelope output, alias cycles, ambiguous symbols, and preserved authority failures. Consumer lifecycle tests must cover cancellation during pending start, late completion, repeated operations, exact correlation, and retained work after driving-future suspension or drop.
 
-The binding is a closed choice: legacy synchronous, synchronous envelopes, or persistent async. No runtime state or authority is added by the declaration. A candidate binary may inspect these bindings. It does not certify the consumer until all structural, authority, and lifecycle proof passes.
+Local execution is a closed choice: legacy synchronous, synchronous envelopes, or persistent async. Pure providers can instead select the [caller-driven binding](CALLER_DRIVEN_BINDING.md). No runtime state or authority is added by either declaration. A candidate binary may inspect these bindings. It does not certify the consumer until all structural, authority, and lifecycle proof passes.

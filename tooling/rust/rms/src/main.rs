@@ -13930,10 +13930,11 @@ fn canonical_provider_surface_kind(value: &str) -> Option<String> {
 }
 
 fn render_intent_extraction_prompt(task: &str) -> String {
-    format!(
+    let prompt = format!(
         "Extract semantic facts from the user task into exactly one JSON rms/intent-model/v0.1 object. This is a bounded transformation: use only the task and schema in this prompt, do not inspect files or call tools, and return the object immediately. Do not propose architecture, modules, topology, shapes, files, or scaffolds. The facts object has exactly five keys and no others: domain_decisions, lifecycle, effects, runnable_surface, reuse. Each fact contains only disposition, basis, source_quote, and rationale. Subjects are stable kebab-case identifiers. Put implementation languages only in binding_preferences. Responsibilities contain exactly id, kind, and summary; kinds are decision|workflow|boundary|storage|integration|monitor. Keep facts and responsibilities consistent: domain_decisions is required exactly when at least one responsibility is a decision; a workflow responsibility forbids lifecycle=absent; a storage or integration responsibility forbids effects=absent; and surface-change forbids runnable_surface=absent. A boundary or implementation adapter is not by itself evidence of an external effect or runnable surface. Domain events, replies, and rejections are semantic machine outputs, not external effects. An executable property, proof, test, probe, or runner is verification evidence, not a product runnable surface. Canonical transitions, states, cases, contracts, laws, and properties are semantic-change work even when their realization names an implementation manifest. Implementing a native adapter, handler, executor, envelope, or wire mapping for an explicitly identified existing contract is implementation-change when the task requests no canonical change. Repairing native runtime behavior is also implementation-change when the task explicitly preserves an identified existing contract. Detailed acceptance criteria can restate that existing promise. Never infer existing canonical coverage from implementation language alone. Reusing or evolving an exact existing canonical module or artifact in place is existing-module semantic-change work, not design, unless the task actually changes topology. Adopting an existing source or runtime boundary into a missing canonical owner is new-module design work; modules named only as consumed evidence, dependencies, executors, or consumers are participants, not the owner. A request that explicitly preserves runtime behavior and changes only contract or proof binding can establish lifecycle=absent when it introduces no ordering or transition change. Surface kinds may contain only browser|cli|mobile-ui|desktop-ui|http|batch|executable; never list product features, integrations, APIs, documentation, onboarding, sign-in, or sign-out as surface kinds. Binding preferences are string arrays. Operations are read|repository-operation|design|semantic-change|surface-change|implementation-change. Change scopes are new-system|new-module|existing-module|unknown. Use dispositions required|absent|unknown. Explicit facts need an exact source_quote from the task; inferred facts need a rationale. Unknown material facts must remain unknown and appear as an open question. Return JSON only.\n\nTask:\n{task}\n\nSchema example:\n{}",
         serde_json::to_string_pretty(&intent_model_template()).unwrap_or_default()
-    )
+    );
+    format!("{prompt}\n\nEffect ownership: effects describes external execution owned by the requested module. A pure State/Input -> Transition provider that only returns typed request values and consumes caller-supplied result facts does not execute those effects. When the task explicitly excludes execution from that provider, effects may be absent while lifecycle is required. Do not infer storage or integration responsibility merely from a returned request for caller-owned IO. Keep the request/result protocol semantic; do not relabel requests as observed events.")
 }
 
 fn intent_model_template() -> YamlValue {
@@ -29209,6 +29210,7 @@ fn validate_canonical_machine_model(
     diagnostics: &mut Vec<Diagnostic>,
     shape: &str,
 ) {
+    validate_caller_driven_binding(manifest, diagnostics);
     if !machine_expected_for_shape(shape) {
         return;
     }
@@ -29308,6 +29310,7 @@ fn validate_canonical_machine_model(
     if get_str(&manifest.value, &["binding"]) != Some("executable")
         && is_stateful_machine_mode(mode)
         && !effects.is_empty()
+        && !caller_driven_machine(manifest)
     {
         let driver = get_str(
             &manifest.value,
@@ -29527,7 +29530,7 @@ fn validate_canonical_machine_model(
                 );
             }
         }
-        if protocol
+        if !caller_driven_machine(manifest) && protocol
             .executor_role
             .as_deref()
             .is_none_or(|role| structure_role_paths(manifest, role).is_empty())
@@ -29543,6 +29546,7 @@ fn validate_canonical_machine_model(
             );
         }
         if get_str(&manifest.value, &["binding"]) != Some("executable")
+            && !caller_driven_machine(manifest)
             && protocol
                 .executor_symbol
                 .as_deref()
@@ -31445,6 +31449,9 @@ fn symbol_source_path_like(path: &str) -> bool {
 }
 
 fn inspect_effect_executor_coverage(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    if caller_driven_machine(manifest) {
+        return;
+    }
     let effects = get_string_array(&manifest.value, &["architecture", "machine", "effects"]);
     if effects.is_empty() {
         return;
@@ -31460,6 +31467,110 @@ fn inspect_effect_executor_coverage(manifest: &LoadedManifest, diagnostics: &mut
             &manifest.path,
             "declared effects should be executed by a declared effect_executor, adapter, port, or explicit delegation role",
         );
+    }
+}
+
+fn caller_driven_machine(manifest: &LoadedManifest) -> bool {
+    get_path(&manifest.value, &["architecture", "machine", "execution_binding"])
+        .and_then(|value| serde_yaml::from_value::<persistent_async::ExecutionBinding>(value.clone()).ok())
+        .is_some_and(|binding| binding.is_caller_driven())
+}
+
+fn final_caller_driven_machine(manifest: &LoadedManifest, change: &MachineChange) -> bool {
+    change.machine.execution_binding.as_ref()
+        .map_or_else(|| caller_driven_machine(manifest), persistent_async::ExecutionBinding::is_caller_driven)
+}
+
+fn validate_caller_driven_binding(manifest: &LoadedManifest, diagnostics: &mut Vec<Diagnostic>) {
+    if !caller_driven_machine(manifest) {
+        return;
+    }
+    let mut reject = |message: &str| diagnostics.push(error(
+        "structure.caller-driven-binding", &manifest.path, message));
+    if get_str(&manifest.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC)
+        || get_str(&manifest.value, &["binding"]) != Some("rust")
+        || get_str(&manifest.value, &["architecture", "machine", "mode"]) != Some("stateful-transition-machine")
+    {
+        reject("caller-driven execution requires a Rust implementation v0.2 stateful-transition-machine");
+    }
+    if get_path(&manifest.value, &["architecture", "machine", "driver_function"]).is_some()
+        || ["machine_driver", "effect_executor", "effect_support"].iter()
+            .any(|role| !structure_role_paths(manifest, role).is_empty())
+        || get_path(&manifest.value, &["architecture", "surfaces"])
+            .and_then(YamlValue::as_sequence).is_some_and(|surfaces| !surfaces.is_empty())
+    {
+        reject("caller-driven providers cannot declare local drivers, executor/support roles, or runnable surfaces");
+    }
+    let functions = semantic_function_items(manifest);
+    if functions.is_none_or(|functions| functions.iter().any(|function|
+        get_str(function, &["purity"]) != Some("pure")
+        || !get_string_array(function, &["authorities"]).is_empty()))
+    {
+        reject("caller-driven providers require pure semantic functions with empty authority rows; source effect analysis remains mandatory");
+    }
+    for field in ["transition_function", "transition_record_function"] {
+        let symbol = get_str(&manifest.value, &["architecture", "machine", field]);
+        if symbol.is_none_or(|symbol| symbol.trim().is_empty() || !functions.is_some_and(|functions|
+            functions.iter().any(|function| get_str(function, &["symbol"]).is_some_and(|owner|
+                semantic_symbol_name(owner) == semantic_symbol_name(symbol))
+                && get_str(function, &["purity"]) == Some("pure"))))
+        {
+            reject("caller-driven providers must bind both transition and transition-record callables as pure semantic functions");
+        }
+    }
+    for protocol in existing_effect_protocols(manifest) {
+        if protocol.executor_role.is_some() || protocol.executor_symbol.is_some()
+            || protocol.atomicity != "one-request-one-result" || protocol.results.is_empty()
+        {
+            reject("caller-driven protocols require typed one-request-one-result semantics and no local executor");
+        }
+    }
+}
+
+fn validate_rust_caller_driven_path(
+    manifest: &LoadedManifest,
+    diagnostics: &mut Vec<Diagnostic>,
+    summary: &RustTypingSummary,
+) {
+    validate_caller_driven_binding(manifest, diagnostics);
+    let types = machine_types_from_value(&manifest.value);
+    for (field, output) in [("transition_function", types.transition.as_deref()),
+        ("transition_record_function", types.transition_record.as_deref())]
+    {
+        let symbol = get_str(&manifest.value, &["architecture", "machine", field]).unwrap_or("");
+        let name = semantic_symbol_name(symbol);
+        let callables = summary.exact_sources.values().flat_map(|file| file.items.iter())
+            .filter_map(|item| match item {
+                Item::Fn(function) if function.sig.ident == name && !has_cfg_test_attr(&function.attrs) => Some(function),
+                _ => None,
+            }).collect::<Vec<_>>();
+        let synchronous_value_function = matches!(callables.as_slice(), [function]
+            if function.sig.asyncness.is_none() && function.sig.unsafety.is_none()
+                && function.sig.abi.is_none() && function.sig.generics.params.is_empty()
+                && function.sig.inputs.iter().all(|argument| matches!(argument,
+                    syn::FnArg::Typed(argument) if !matches!(argument.ty.as_ref(), Type::Reference(reference) if reference.mutability.is_some())))
+                && matches!(&function.sig.output, syn::ReturnType::Type(_, ty) if matches!(ty.as_ref(), Type::Path(_))));
+        if !rust_symbol_belongs_to_role(summary, name, &structure_role_paths(manifest, "transition"))
+            || !synchronous_value_function
+            || types.state.is_none() || types.input.is_none() || output.is_none()
+            || summary.function_signatures.get(name).is_none_or(|signature|
+                signature.parameter_types.len() != 2
+                || signature.parameter_types.first().and_then(Option::as_deref) != types.state.as_deref()
+                || signature.parameter_types.get(1).and_then(Option::as_deref) != types.input.as_deref()
+                || signature.return_type.as_deref() != output)
+        {
+            diagnostics.push(error("structure.caller-driven-signature", &manifest.path,
+                format!("caller-driven `{symbol}` must be a transition-role callable from declared State and Input to its declared output type")));
+        }
+    }
+    let transition = get_str(&manifest.value, &["architecture", "machine", "transition_function"]).unwrap_or("");
+    let record = get_str(&manifest.value, &["architecture", "machine", "transition_record_function"]).unwrap_or("");
+    if (!rust_function_reaches(summary, semantic_symbol_name(record), semantic_symbol_name(transition), None)
+        && !rust_function_reaches(summary, semantic_symbol_name(transition), semantic_symbol_name(record), None))
+        || semantic_symbol_name(record) == semantic_symbol_name(transition)
+    {
+        diagnostics.push(error("structure.caller-driven-record-path", &manifest.path,
+            "caller-driven transition and record functions must share one real pure call path"));
     }
 }
 
@@ -35226,6 +35337,10 @@ fn validate_rust_machine_execution_path(
     diagnostics: &mut Vec<Diagnostic>,
     summary: &RustTypingSummary,
 ) {
+    if caller_driven_machine(implementation) {
+        validate_rust_caller_driven_path(implementation, diagnostics, summary);
+        return;
+    }
     let mode = get_str(&implementation.value, &["architecture", "machine", "mode"]);
     let effects = get_string_array(
         &implementation.value,
@@ -54300,6 +54415,7 @@ fn prepare_machine_plan_provider_response(
     };
     apply_machine_change_to_manifest(&mut candidate.value, &change);
     validate_against_embedded_schema(&candidate, &mut diagnostics);
+    validate_caller_driven_binding(&candidate, &mut diagnostics);
     PreparedMachinePlanProviderResponse {
         response,
         diagnostics,
@@ -54308,6 +54424,7 @@ fn prepare_machine_plan_provider_response(
 }
 
 fn render_execution_binding_guidance(out: &mut String) -> std::fmt::Result {
+    writeln!(out, "Pure Rust implementation v0.2 providers may set `machine.mode: stateful-transition-machine` and `machine.execution_binding: {{kind: caller-driven}}`. This is the explicit exception to local driver/executor requirements: retain typed effects, effect envelopes, effect results, result envelopes, and one-request-one-result effect protocols, but omit executor_role and executor_symbol. Bind transition and transition_record_function as pure semantic functions in transition-role files. Both consume State and Input; they return Transition and TransitionRecord respectively. One callable reaches the other: a record wrapper or a transition wrapper over a record-producing core is valid. All semantic functions remain pure with empty authority rows. Remove scaffold driver/executor roles and semantic functions through the same semantic change; omit driver_function. Local runnable surfaces and effect support are forbidden. The caller owns actual execution, retained state, request/result correlation, and scheduling. Provider properties prove duplicate/stale-result fencing, replay, and cleanup decisions; caller-native integration proof proves execution and resource cleanup. Do not replace effect requests with events, introduce fake executors, or claim this binding proves caller IO. Design-level effects describe execution owned by this provider, not the pure construction of request values; the latter can coexist with effects=absent in typed design. Generic workflow scaffolds remain placeholders until this explicit semantic replacement.")?;
     writeln!(out, "Synchronous envelope executors may opt into `{{kind: synchronous-envelopes, executors: [{{symbol: path#execute, request_parameter: 1}}]}}`. Each exact executor must consume the declared EffectEnvelope at its zero-based request index and synchronously return the declared EffectResultEnvelope. List every protocol executor exactly once. This variant retains all synchronous driver and transition-record checks, closed effect enums, envelope payload checks, and authority analysis. Correlation and one-request-one-result behavior still require executable proof.")?;
     writeln!(out, "Rust implementation v0.2 may explicitly set `machine.execution_binding`. Omission retains the existing binding; `{{kind: synchronous}}` restores the State/Input -> records and Effect -> EffectResult signature checks. The alternative is `{{kind: persistent-async, runtime: path#Runtime, state_field: state, records_field: records, pending_field: pending, input_poll: path#Adapters::poll_input, executors: [{{symbol: path#execute, request_parameter: 1}}]}}`. Parameter indices are zero-based. List every effect protocol executor exactly once. Runtime storage must retain the declared State, Vec<TransitionRecord>, and Vec<Future<Output = EffectResultEnvelope>>. The driver accepts &mut Runtime first; the input poll method returns Poll<Option<Input>>. Executor request parameters use the declared EffectEnvelope and futures yield the declared EffectResultEnvelope. Keep Effect and EffectResult closed enums separate. Unsupported source forms, unknown calls, and undeclared adapter authority remain blockers. This checks storage/signature representation, not cancellation, correlation, scheduling, or drop safety; executable lifecycle properties must prove those promises.")
 }
@@ -54638,6 +54755,7 @@ fn run_machine_apply_change(
     };
     apply_machine_change_to_manifest(&mut candidate.value, change);
     validate_against_embedded_schema(&candidate, &mut diagnostics);
+    validate_caller_driven_binding(&candidate, &mut diagnostics);
     let writes = planned_machine_apply_writes(&manifest, change);
     let final_machine = machine_final_state_report(&manifest, change);
     let has_errors = diagnostics
@@ -55409,7 +55527,7 @@ fn validate_machine_role_additions(
         || final_roles
             .get("adapter")
             .is_some_and(|items| !items.is_empty());
-    if has_effects && !has_existing_executor {
+    if has_effects && !has_existing_executor && !final_caller_driven_machine(manifest, change) {
         diagnostics.push(warning(
             "structure.effect-without-executor",
             &manifest.path,
@@ -55816,6 +55934,7 @@ fn validate_machine_effect_protocols(
     change: &MachineChange,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    let caller_driven = final_caller_driven_machine(manifest, change);
     let effects = final_machine_variants(manifest, "effects", &change.machine.effects, false);
     let effect_results = final_machine_variants(
         manifest,
@@ -55866,7 +55985,12 @@ fn validate_machine_effect_protocols(
                 ));
             }
         }
-        if protocol.executor_role.as_deref().is_none_or(str::is_empty) {
+        if caller_driven {
+            if protocol.executor_role.is_some() || protocol.executor_symbol.is_some() {
+                diagnostics.push(error("structure.caller-driven-binding", &manifest.path,
+                    "caller-driven protocols declare typed requests and results, not local executors"));
+            }
+        } else if protocol.executor_role.as_deref().is_none_or(str::is_empty) {
             diagnostics.push(error(
                 "structure.effect-protocol-executor-missing",
                 &manifest.path,
@@ -55891,6 +56015,7 @@ fn validate_machine_effect_protocols(
             ));
         }
         if get_str(&manifest.value, &["binding"]) != Some("executable")
+            && !caller_driven
             && protocol
                 .executor_symbol
                 .as_deref()
@@ -55960,6 +56085,7 @@ fn validate_machine_effect_protocols(
     }
     if is_stateful_machine_mode(&change.machine.mode)
         && !final_machine_variants(manifest, "effects", &change.machine.effects, false).is_empty()
+        && !caller_driven
     {
         if driver_function.is_none_or(|driver| driver.trim().is_empty()) {
             diagnostics.push(error(
@@ -56742,13 +56868,13 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
             change.machine.mode.as_str(),
             "stateless-decision-machine" | "stateful-transition-machine" | "projection-machine"
         )
-        && final_machine_variant_values(
+        && (caller_driven_machine(&manifest_snapshot) || final_machine_variant_values(
             &manifest_snapshot,
             "effects",
             &change.machine.effects,
             false,
         )
-        .is_empty()
+        .is_empty())
     {
         remove_yaml_path(value, &["architecture", "machine", "driver_function"]);
     }
@@ -57186,7 +57312,7 @@ fn final_machine_driver_function(
             "stateless-decision-machine" | "stateful-transition-machine" | "projection-machine"
         ) && final_machine_variant_values(manifest, "effects", &change.machine.effects, false)
             .is_empty();
-    if effect_free_pure_mode {
+    if effect_free_pure_mode || final_caller_driven_machine(manifest, change) {
         return None;
     }
     get_str(
@@ -63642,6 +63768,18 @@ fn validate_semantic_change(
     change: &SemanticChange,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
+    let touches_caller_driven = context.implementation.as_ref().is_some_and(caller_driven_machine)
+        || change.machine.as_ref().and_then(|machine| machine.execution_binding.as_ref())
+            .is_some_and(persistent_async::ExecutionBinding::is_caller_driven);
+    if touches_caller_driven {
+        if let Some(value) = final_implementation_value(context, change) {
+            let candidate = LoadedManifest {
+                path: context.implementation.as_ref().map_or_else(|| context.target.clone(), |implementation| implementation.path.clone()),
+                value,
+            };
+            validate_caller_driven_binding(&candidate, &mut diagnostics);
+        }
+    }
     if change.spec != "rms/semantic-change/v0.1" {
         diagnostics.push(error(
             "semantic-change.spec",
@@ -104726,6 +104864,186 @@ semantic_functions:
     }
 
     #[test]
+    fn caller_driven_binding_preserves_requests_without_local_execution() {
+        let change: MachineChange = serde_yaml::from_str(r#"
+spec: rms/machine-change/v0.1
+machine:
+  mode: stateful-transition-machine
+  execution_binding: {kind: caller-driven}
+  effect_protocols:
+    set:
+    - {effect: Send, results: [Sent], atomicity: one-request-one-result}
+"#).unwrap();
+        let mut manifest = effect_owner_v02_context().implementation.unwrap();
+        apply_machine_change_to_manifest(&mut manifest.value, &change);
+        let mut diagnostics = Vec::new();
+        validate_machine_effect_protocols(&manifest, &change, &mut diagnostics);
+        inspect_effect_executor_coverage(&manifest, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(get_string_array(&manifest.value, &["architecture", "machine", "effects"]), vec!["Send"]);
+        assert_eq!(get_string_array(&manifest.value, &["architecture", "machine", "effect_results"]), vec!["Sent"]);
+        assert!(get_path(&manifest.value, &["architecture", "machine", "driver_function"]).is_none());
+    }
+
+    fn caller_driven_fixture() -> (LoadedManifest, BindingScaffoldModel) {
+        let model = BindingScaffoldModel::new("request-provider", "request-provider", ScaffoldShape::Workflow);
+        let mut value: YamlValue = serde_yaml::from_str(&render_rust_implementation_yaml("request-provider", "request_provider", &model)).unwrap();
+        set_yaml_string_path(&mut value, &["spec"], IMPLEMENTATION_V2_SPEC);
+        set_yaml_string_path(&mut value, &["architecture", "machine", "execution_binding", "kind"], "caller-driven");
+        set_yaml_string_path(&mut value, &["architecture", "machine", "mode"], "stateful-transition-machine");
+        remove_yaml_path(&mut value, &["architecture", "machine", "driver_function"]);
+        for role in ["effect_executor", "machine_driver", "effect_support"] {
+            remove_yaml_path(&mut value, &["architecture", "roles", role]);
+        }
+        let functions: YamlValue = serde_yaml::from_str(r#"
+- {id: transition, symbol: 'src/transition.rs#transition', kind: transition, purity: pure, trust: internal, authorities: []}
+- {id: record, symbol: 'src/transition.rs#transition_record', kind: transition, purity: pure, trust: internal, authorities: []}
+"#).unwrap();
+        set_yaml_value_path(&mut value, &["semantic_functions"], functions);
+        let protocols: YamlValue = serde_yaml::from_str("- {effect: Execute, results: [Succeeded, Failed], atomicity: one-request-one-result}").unwrap();
+        set_yaml_value_path(&mut value, &["architecture", "machine", "effect_protocols"], protocols);
+        (LoadedManifest { path: PathBuf::from("/tmp/rms-caller-driven-fixture/implementation.yaml"), value }, model)
+    }
+
+    #[test]
+    fn caller_driven_binding_rejects_execution_and_retains_protocol_checks() {
+        let (manifest, _) = caller_driven_fixture();
+        let mut diagnostics = Vec::new();
+        validate_against_embedded_schema(&manifest, &mut diagnostics);
+        validate_caller_driven_binding(&manifest, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        for (path, value) in [
+            (vec!["binding"], "swift"),
+            (vec!["spec"], "rms/implementation/v0.1"),
+            (vec!["architecture", "machine", "mode"], "workflow-effect-machine"),
+            (vec!["architecture", "machine", "driver_function"], "drive"),
+            (vec!["architecture", "machine", "transition_record_function"], "unowned_record"),
+        ] {
+            let mut invalid = manifest.clone();
+            set_yaml_string_path(&mut invalid.value, &path, value);
+            diagnostics.clear();
+            validate_caller_driven_binding(&invalid, &mut diagnostics);
+            assert!(!diagnostics.is_empty(), "accepted {path:?}");
+        }
+        for (path, yaml) in [
+            (vec!["architecture", "roles", "machine_driver"], "[src/driver.rs]"),
+            (vec!["architecture", "roles", "effect_executor"], "[src/execute.rs]"),
+            (vec!["architecture", "roles", "effect_support"], "[src/io.rs]"),
+            (vec!["architecture", "surfaces"], "[{name: cli}]"),
+            (vec!["semantic_functions"], "[{symbol: transition, purity: effectful}]"),
+            (vec!["semantic_functions"], "[{symbol: transition, purity: pure, authorities: [filesystem]}]"),
+            (vec!["architecture", "machine", "effect_protocols"], "[{effect: Execute, results: [Succeeded], executor_symbol: execute, atomicity: one-request-one-result}]"),
+            (vec!["architecture", "machine", "effect_protocols"], "[{effect: Execute, results: [Succeeded], executor_role: adapter, atomicity: one-request-one-result}]"),
+            (vec!["architecture", "machine", "effect_protocols"], "[{effect: Execute, results: [], atomicity: one-request-one-result}]"),
+            (vec!["architecture", "machine", "effect_protocols"], "[{effect: Execute, results: [Succeeded], atomicity: aggregate}]"),
+        ] {
+            let mut invalid = manifest.clone();
+            set_yaml_value_path(&mut invalid.value, &path, serde_yaml::from_str(yaml).unwrap());
+            diagnostics.clear();
+            validate_caller_driven_binding(&invalid, &mut diagnostics);
+            assert!(!diagnostics.is_empty(), "accepted {yaml}");
+        }
+        let no_change: MachineChange = serde_yaml::from_str("spec: rms/machine-change/v0.1\nmachine: {mode: stateful-transition-machine}").unwrap();
+        let mut invalid = manifest.clone();
+        set_yaml_value_path(&mut invalid.value, &["architecture", "machine", "effect_protocols"], serde_yaml::from_str("[{effect: Execute, results: [Undeclared], atomicity: one-request-one-result}]").unwrap());
+        diagnostics.clear();
+        validate_machine_effect_protocols(&invalid, &no_change, &mut diagnostics);
+        assert!(diagnostics.iter().any(|d| d.check == "structure.effect-protocol-unknown-result"));
+        remove_yaml_path(&mut invalid.value, &["architecture", "machine", "effect_protocols"]);
+        diagnostics.clear();
+        validate_machine_effect_protocols(&invalid, &no_change, &mut diagnostics);
+        assert!(diagnostics.iter().any(|d| d.check == "structure.effect-protocol-missing"));
+        let mut legacy = manifest.clone();
+        remove_yaml_path(&mut legacy.value, &["architecture", "machine", "execution_binding"]);
+        diagnostics.clear();
+        validate_machine_effect_protocols(&legacy, &no_change, &mut diagnostics);
+        assert!(diagnostics.iter().any(|d| d.check == "structure.effect-protocol-executor-missing"));
+        assert!(diagnostics.iter().any(|d| d.check == "structure.machine-driver-missing"));
+        assert!(serde_yaml::from_str::<persistent_async::ExecutionBinding>("kind: caller-driven\nexecutors: []").is_err());
+    }
+
+    #[test]
+    fn caller_driven_binding_checks_the_real_pure_record_path() {
+        let (manifest, model) = caller_driven_fixture();
+        let mut summary = RustTypingSummary::default();
+        let base = manifest.path.parent().unwrap();
+        for (path, source) in [
+            ("src/representation.rs", render_rust_representation_rs(&model)),
+            ("src/transition.rs", render_rust_transition_rs(&model)),
+        ] {
+            inspect_rust_typing_file(&manifest, &mut Vec::new(), &base.join(path), &syn::parse_file(&source).unwrap(), &mut summary);
+        }
+        let mut diagnostics = Vec::new();
+        validate_rust_machine_execution_path(&manifest, &mut diagnostics, &summary);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let mut asynchronous = RustTypingSummary::default();
+        let source = render_rust_transition_rs(&model).replace("pub fn transition_record(", "pub async fn transition_record(");
+        inspect_rust_typing_file(&manifest, &mut Vec::new(), &base.join("src/transition.rs"), &syn::parse_file(&source).unwrap(), &mut asynchronous);
+        validate_rust_machine_execution_path(&manifest, &mut diagnostics, &asynchronous);
+        assert!(diagnostics.iter().any(|d| d.check == "structure.caller-driven-signature"));
+        diagnostics.clear();
+        summary.function_signatures.get_mut("transition_record").unwrap().return_type = Some("WrongRecord".into());
+        validate_rust_machine_execution_path(&manifest, &mut diagnostics, &summary);
+        assert!(diagnostics.iter().any(|d| d.check == "structure.caller-driven-signature"));
+        let mut disconnected = manifest.clone();
+        set_yaml_string_path(&mut disconnected.value, &["architecture", "machine", "transition_function"], "other_transition");
+        diagnostics.clear();
+        validate_rust_machine_execution_path(&disconnected, &mut diagnostics, &summary);
+        assert!(diagnostics.iter().any(|d| d.check == "structure.caller-driven-record-path"));
+    }
+
+    #[test]
+    fn caller_driven_binding_does_not_hide_source_authority() {
+        let root = unique_test_dir("caller-driven-authority");
+        fs::create_dir_all(root.join("src")).unwrap();
+        let (mut manifest, _) = caller_driven_fixture();
+        manifest.path = root.join("implementation.yaml");
+        set_yaml_string_path(&mut manifest.value, &["source", "root"], ".");
+        fs::write(root.join("src/lib.rs"), "mod transition;").unwrap();
+        let pure = "pub fn transition(state: u8, input: u8) -> u8 { state.saturating_add(input) } pub fn transition_record(state: u8, input: u8) -> u8 { transition(state, input) }";
+        fs::write(root.join("src/transition.rs"), pure).unwrap();
+        let result = build_effect_analysis(&manifest).unwrap();
+        assert_eq!(result.result, effect_analysis::AnalysisResult::Pass, "{result:#?}");
+        fs::write(root.join("src/transition.rs"), pure.replace("state.saturating_add(input)", "let _ = std::fs::read(\"unexecuted-fixture\"); state.saturating_add(input)")).unwrap();
+        let result = build_effect_analysis(&manifest).unwrap();
+        assert_eq!(result.result, effect_analysis::AnalysisResult::Fail, "{result:#?}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn caller_driven_binding_semantic_projection_removes_only_explicit_execution_roles() {
+        let (mut manifest, _) = caller_driven_fixture();
+        remove_yaml_path(&mut manifest.value, &["architecture", "machine", "execution_binding"]);
+        set_yaml_string_path(&mut manifest.value, &["architecture", "machine", "driver_function"], "drive_machine");
+        set_yaml_string_sequence_path(&mut manifest.value, &["architecture", "roles", "machine_driver"], &["src/driver.rs".into()]);
+        let mut context = effect_owner_v02_context();
+        context.implementation = Some(manifest);
+        let change: SemanticChange = serde_yaml::from_str(r#"
+spec: rms/semantic-change/v0.1
+machine:
+  mode: stateful-transition-machine
+  execution_binding: {kind: caller-driven}
+roles:
+  remove: [{kind: machine_driver}]
+"#).unwrap();
+        let value = final_implementation_value(&context, &change).unwrap();
+        let candidate = LoadedManifest { path: context.target.clone(), value };
+        let mut diagnostics = Vec::new();
+        validate_caller_driven_binding(&candidate, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(get_string_array(&candidate.value, &["architecture", "machine", "effects"]), vec!["Execute"]);
+        assert!(get_path(&candidate.value, &["architecture", "machine", "driver_function"]).is_none());
+        let mut invalid = change.clone();
+        invalid.roles = None;
+        let diagnostics = validate_semantic_change(&context, &invalid);
+        assert!(diagnostics.iter().any(|d| d.check == "structure.caller-driven-binding"), "{diagnostics:#?}");
+        let mut prompt = String::new();
+        render_execution_binding_guidance(&mut prompt).unwrap();
+        assert!(prompt.contains("caller-driven") && prompt.contains("caller-native integration proof"));
+        assert!(render_intent_extraction_prompt("pure request provider").contains("external execution owned by the requested module"));
+    }
+
+    #[test]
     fn synchronous_envelopes_binding_is_an_explicit_machine_change() {
         let change: MachineChange = serde_yaml::from_str(r#"
 spec: rms/machine-change/v0.1
@@ -111426,7 +111744,9 @@ semantic_functions: []
             build_environment_check_report(&failing_root)
                 .unwrap()
                 .result,
-            CheckResult::Pass
+            // Canonical debt cannot change readiness. The live host may have
+            // stale skills while a maintainer tests a new embedded skill set.
+            environment.result
         );
         assert!(
             build_check_report(&failing_root.join("unreadable-root"), CheckMode::Project).is_err()

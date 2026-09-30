@@ -6,6 +6,7 @@ use syn::{FnArg, GenericArgument, Item, PathArguments, ReturnType, Type, TypePar
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) enum ExecutionBinding {
+    CallerDriven {},
     Synchronous {},
     SynchronousEnvelopes {
         executors: Vec<ExecutorBinding>,
@@ -32,7 +33,11 @@ impl ExecutionBinding {
         matches!(self, Self::PersistentAsync { .. })
     }
     pub(crate) fn uses_envelopes(&self) -> bool {
-        !matches!(self, Self::Synchronous {})
+        matches!(self, Self::SynchronousEnvelopes { .. } | Self::PersistentAsync { .. })
+    }
+
+    pub(crate) fn is_caller_driven(&self) -> bool {
+        matches!(self, Self::CallerDriven {})
     }
 }
 

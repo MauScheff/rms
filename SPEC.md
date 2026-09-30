@@ -99,7 +99,7 @@ An implemented RMS module MUST declare a domain-named semantic machine. Binding-
 
 Stateful, boundary, workflow, storage, integration, and projection machines MUST expose one canonical transition that consumes current state plus a closed input over commands, observed events, and effect results. Each transition input MUST belong to exactly one category. Stateless decision machines MAY consume input without state only when an explicit justification explains why no lifecycle or ordering exists.
 
-A declared effect MUST define its possible results, executor role, and atomicity. When an individual result can alter a subsequent decision, the protocol MUST use one request and one result, and that result MUST return through the canonical transition. Effect executors MUST NOT own business sequencing, iteration, retry, compensation, stop/continue policy, or machine state progression.
+A declared effect MUST define its possible results and atomicity. A module that executes the effect MUST declare its executor role. A pure request provider MAY instead select an explicitly supported caller-driven binding. That provider MUST retain typed request/result protocols and MUST NOT declare local execution authority. The caller owns execution; provider proof MUST NOT claim to certify caller IO. When an individual result can alter a subsequent decision, the protocol MUST use one request and one result, and that result MUST return through the canonical transition. Effect executors MUST NOT own business sequencing, iteration, retry, compensation, stop/continue policy, or machine state progression.
 
 ### 3.16 Workspace adoption coverage
 
