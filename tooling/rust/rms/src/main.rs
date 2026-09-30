@@ -17863,7 +17863,8 @@ fn execute_property_realizations_with_batch_and_cache(
             let runner_symbol = binding_reference_symbol(&realization.runner)
                 .unwrap_or(realization.runner.as_str());
             let coverage_fuzzer = realization.strategy == "coverage-fuzzer";
-            let custom_nightly = realization.profile == "nightly" && !proof_command_is_test_backed(&command);
+            let custom_nightly = realization.profile == "nightly"
+                && (realization.strategy == "static-analyzer" || !proof_command_is_test_backed(&command));
             let declared_test = coverage_fuzzer
                 && get_str(&manifest.value, &["binding"]) == Some("rust")
                 && rust_property_runner_is_test(&execution_root, &realization.runner).unwrap_or(true);
@@ -18617,14 +18618,6 @@ fn property_artifact_exists(base: &Path, implementation: &LoadedManifest, refere
         }
     }
     binding_symbol_reference_exists(base, implementation, reference)
-}
-
-fn property_artifact_declares_lane_result(base: &Path, reference: &str) -> bool {
-    binding_reference_parts(reference).is_some_and(|(path, _)| {
-        fs::read_to_string(base.join(path)).is_ok_and(|source| {
-            source.contains("RMS_HUNT_OUTPUT") && source.contains("rms/hunt-lane-result/v0.1")
-        })
-    })
 }
 
 fn proof_command_selects_runner(command: &str, runner: &str, environment: &str) -> bool {
@@ -20705,8 +20698,7 @@ fn validate_property_target_report(
             }
             let external_analyzer = realization.profile == "nightly"
                 && realization.strategy == "static-analyzer"
-                && property_artifact_exists(&realization_base, implementation, &realization.runner)
-                && property_artifact_declares_lane_result(&realization_base, &realization.runner);
+                && property_artifact_exists(&realization_base, implementation, &realization.runner);
             if !external_analyzer && !property_runner_has_oracle(&realization_base, implementation, &realization.runner) {
                 push_unique_warning(
                     diagnostics,
@@ -20728,23 +20720,6 @@ fn validate_property_target_report(
                     &implementation.path,
                     format!(
                         "{} `{}` realization references missing command `{}`",
-                        target.kind, target.id, realization.command
-                    ),
-                );
-            } else if realization.profile == "nightly"
-                && !command_can_produce_hunt_lane_result(
-                    implementation.path.parent().unwrap_or(base),
-                    command.unwrap_or_default(),
-                )
-                && !property_artifact_declares_lane_result(base, &realization.runner)
-                && !realization.generator.as_deref().is_some_and(|generator| property_artifact_declares_lane_result(base, generator))
-            {
-                push_unique_warning(
-                    diagnostics,
-                    "hunt.nightly-runner-result-missing",
-                    &implementation.path,
-                    format!(
-                        "{} `{}` nightly command `{}` is neither an exact test command that RMS can wrap nor a custom runner that writes rms/hunt-lane-result/v0.1 to RMS_HUNT_OUTPUT",
                         target.kind, target.id, realization.command
                     ),
                 );
@@ -42811,6 +42786,8 @@ fn build_next_report_with_optional_program(
                     && !(diagnostic.check == "effects.transitive-purity"
                         && symbol_repairs
                             .contains(&(diagnostic.path.clone(), diagnostic.message.clone())))
+                    && !(external_rust_crate_declaration
+                        && requested_external_crate_declaration_diagnostic(task, diagnostic, &owner))
                     && if explicit_outside_coverage {
                         diagnostic.check.starts_with("intent.")
                     } else if matches!(owner.status(), OwnerStatus::Ambiguous | OwnerStatus::None) {
@@ -43293,6 +43270,16 @@ fn task_requests_external_rust_crate_declaration(task: &str) -> bool {
     .iter()
     .any(|term| normalized.contains(term));
     names_external_crate && names_declaration
+}
+
+fn requested_external_crate_declaration_diagnostic(task: &str, diagnostic: &Diagnostic, owner: &OwnerResolution) -> bool {
+    if diagnostic.check != "implementation.rust.imports.declared" { return false; }
+    let Some(selected) = owner.selected_module() else { return false; };
+    let Some(directory) = Path::new(&selected.path).parent() else { return false; };
+    if Path::new(&diagnostic.path) != directory.join("implementation.yaml") { return false; }
+    let Some(crate_name) = diagnostic.message.split_once("imports external crate `")
+        .and_then(|(_, rest)| rest.split_once('`').map(|(name, _)| name)) else { return false; };
+    is_stable_identifier(crate_name) && task_mentions_token(task, crate_name)
 }
 
 fn task_requests_existing_contract_native_realization(task: &str) -> bool {
@@ -67611,28 +67598,6 @@ fn proof_command_is_test_backed(command: &str) -> bool {
     .any(|marker| command.contains(marker))
 }
 
-fn command_can_produce_hunt_lane_result(base: &Path, command: &str) -> bool {
-    if proof_command_is_test_backed(command)
-        || (command.contains("RMS_HUNT_OUTPUT") && command.contains("hunt-lane-result"))
-    {
-        return true;
-    }
-    let mut candidates = command
-        .split_whitespace()
-        .map(|token| token.trim_matches(|character| matches!(character, '\'' | '"')))
-        .filter(|token| !token.starts_with('-'))
-        .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty() && !path.is_absolute())
-        .map(|path| base.join(path))
-        .collect::<Vec<_>>();
-    candidates.extend([base.join("Justfile"), base.join("Makefile")]);
-    candidates.into_iter().any(|path| {
-        fs::read_to_string(path).is_ok_and(|source| {
-            source.contains("RMS_HUNT_OUTPUT") && source.contains("rms/hunt-lane-result/v0.1")
-        })
-    })
-}
-
 fn selected_test_count(stdout: &str, stderr: &str) -> Option<usize> {
     let mut counts = Vec::new();
     for line in stdout.lines().chain(stderr.lines()) {
@@ -89637,6 +89602,8 @@ open_questions: []
         initialize_test_git_repository(&root);
         let module = root.join("module.yaml");
         let task = "Declare canonical Rust external package identity/version policy and allowlist for regex before editing Cargo.toml.";
+        // The declaration route must also repair an already-present import.
+        fs::write(root.join("src/external_probe.rs"), "use regex::Regex;\n").unwrap();
         let intent = r#"spec: rms/intent-model/v0.1
 operation: semantic-change
 change_scope: existing-module
@@ -89697,6 +89664,16 @@ open_questions: []
             None,
         )
         .is_err());
+        let owner = OwnerResolution::selected("exact owner".into(), RouteModuleSummary {
+            name: "phone-number-normalization".into(), path: module.display().to_string(), kind: "library".into(), shape: "domain-engine".into(), visibility: None,
+        }, Vec::new(), Vec::new(), Vec::new());
+        let missing = error("implementation.rust.imports.declared", &root.join("implementation.yaml"), "Rust source `src/external_probe.rs` imports external crate `regex` not declared in `dependencies.allowed_external_crates`");
+        assert!(requested_external_crate_declaration_diagnostic(task, &missing, &owner));
+        assert!(!requested_external_crate_declaration_diagnostic("Declare external crate other", &missing, &owner));
+        let mut unrelated = missing.clone(); unrelated.path = root.join("other/implementation.yaml").display().to_string();
+        assert!(!requested_external_crate_declaration_diagnostic(task, &unrelated, &owner));
+        unrelated = missing.clone(); unrelated.check = "implementation.rust.reexports.external".into();
+        assert!(!requested_external_crate_declaration_diagnostic(task, &unrelated, &owner));
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -101321,7 +101298,6 @@ architecture:
     fn selected_test_count_rejects_zero_and_parses_supported_runners() {
         for command in ["cargo +stable test -p decisions --test exhaustive exact -- --exact", "cargo +nightly-2026-09-01 test"] {
             assert!(proof_command_is_test_backed(command));
-            assert!(command_can_produce_hunt_lane_result(Path::new("."), command));
         }
         for command in ["cargo +stable check", "cargo + test", "echo cargo +stable test", "cargo +stable; test"] {
             assert!(!proof_command_is_test_backed(command));
@@ -101740,15 +101716,19 @@ architecture:
 "#,
         );
         let report = build_property_check_report(&root.join("implementation.yaml")).unwrap();
-        assert!(report
+        assert!(!report
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.check == "hunt.nightly-runner-result-missing"));
+        let run = execute_property_realizations(&root.join("implementation.yaml"), PropertyProfile::Nightly, false, 10).unwrap();
+        assert_eq!(run.commands[0].status, "fail");
+        assert!(run.diagnostics.iter().any(|diagnostic| diagnostic.check == "proof.nightly-result-invalid"));
 
         write_test_file(
-            &root.join("scripts/nightly.sh"),
-            "#!/bin/sh\nrun_property() { test -n \"$RMS_PROPERTY_ID\"; }\nrun_property\nprintf 'spec: rms/hunt-lane-result/v0.1\\nstatus: pass\\n' > \"$RMS_HUNT_OUTPUT\"\n",
+            &root.join("scripts/result.sh"),
+            "#!/bin/sh\nprintf 'spec: rms/hunt-lane-result/v0.1\\nstatus: pass\\n' > \"$RMS_HUNT_OUTPUT\"\n",
         );
+        write_test_file(&root.join("scripts/nightly.sh"), "#!/bin/sh\nrun_property() { sh scripts/result.sh; }\nrun_property\n");
         let report = build_property_check_report(&root.join("implementation.yaml")).unwrap();
         assert!(!report
             .diagnostics
@@ -101789,7 +101769,6 @@ architecture:
         assert!(property_artifact_exists(&root, &implementation, "analyze.sh#run"));
         assert!(!property_artifact_exists(&root, &implementation, "analyze.sh#missing"));
         assert!(!binding_symbol_reference_exists(&root, &implementation, "analyze.sh#run"));
-        assert!(!property_artifact_declares_lane_result(&root, "analyze.sh#run"));
         let executable = LoadedManifest { path: root.join("implementation.yaml"), value: serde_yaml::from_str("binding: executable").unwrap() };
         assert!(property_artifact_exists(&root, &executable, "analyze.sh#artifact_selector"));
         fs::remove_dir_all(root).unwrap();
