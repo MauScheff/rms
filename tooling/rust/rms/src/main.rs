@@ -64384,10 +64384,23 @@ fn validate_semantic_composition_exports(
                 && get_str(item, &["name"]) == Some(export.name.as_str())
         }) {
             let same_provider = get_str(current, &["from"]) == Some(export.from.as_str());
+            // An omitted edge path inherits the parent's unique provided path.
+            // Normalization makes that path explicit before this comparison.
+            let current_contract = get_str(current, &["contract"]).or_else(|| {
+                let provided = get_path(&module.value, &["provides", &export.group])
+                    .and_then(YamlValue::as_sequence)
+                    .into_iter().flatten()
+                    .filter(|item| get_str(item, &["name"]) == Some(export.name.as_str()))
+                    .collect::<Vec<_>>();
+                match provided.as_slice() {
+                    [item] => get_str(item, &["contract"]),
+                    _ => None,
+                }
+            });
             let same_contract = export
                 .contract
                 .as_deref()
-                .is_none_or(|contract| get_str(current, &["contract"]) == Some(contract));
+                .is_none_or(|contract| current_contract == Some(contract));
             if !same_provider || !same_contract {
                 diagnostics.push(error(
                     "semantic.composition-export-add-conflict",
@@ -113611,7 +113624,7 @@ provides:
 requires: {modules: [], capabilities: []}
 composition:
   contains: [{name: child, visibility: internal, path: child/module.yaml}]
-  exports: [{group: capabilities, name: existing-export, from: child, contract: contracts/existing-export.v1.yaml}]
+  exports: [{group: capabilities, name: existing-export, from: child}]
 invariants: []
 effects: []
 compatibility: {policy: backward-compatible-within-major}
@@ -113687,11 +113700,32 @@ evidence:
         assert!(!validate_semantic_change(&context, &prepared)
             .iter()
             .any(|diagnostic| diagnostic.severity == Severity::Error));
+        for conflicting in [
+            repair.replace("from: child", "from: another-child"),
+            repair.replace("contract: contracts/existing-export.v1.yaml", "contract: contracts/different.v1.yaml"),
+        ] {
+            let parsed = serde_yaml::from_str(&conflicting).unwrap();
+            let prepared = prepare_semantic_change_for_apply(&context, parsed);
+            assert!(validate_semantic_change(&context, &prepared).iter()
+                .any(|diagnostic| diagnostic.check == "semantic.composition-export-add-conflict"));
+        }
+        let mut ambiguous_parent = load_spec_target(&root.join("module.yaml")).unwrap();
+        let provided = get_path_mut(&mut ambiguous_parent.module.as_mut().unwrap().value, &["provides", "capabilities"])
+            .and_then(YamlValue::as_sequence_mut).unwrap();
+        provided.push(provided[0].clone());
+        let ambiguous_change = prepare_semantic_change_for_apply(&ambiguous_parent, serde_yaml::from_str(repair).unwrap());
+        assert!(validate_semantic_change(&ambiguous_parent, &ambiguous_change).iter()
+            .any(|diagnostic| diagnostic.check == "semantic.composition-export-add-conflict"));
         run_spec_apply(&root.join("module.yaml"), None, Some(repair), None, false).unwrap();
         assert_eq!(
             fs::read(root.join("contracts/existing-export.v1.yaml")).unwrap(),
             existing_bytes.as_bytes()
         );
+        // The synchronized explicit edge remains an idempotent repair target.
+        let explicit_context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let explicit_change = prepare_semantic_change_for_apply(&explicit_context, serde_yaml::from_str(repair).unwrap());
+        assert!(!validate_semantic_change(&explicit_context, &explicit_change).iter()
+            .any(|diagnostic| diagnostic.check == "semantic.composition-export-add-conflict"));
 
         let addition = r#"spec: rms/semantic-change/v0.1
 module: module.yaml
