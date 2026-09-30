@@ -34080,7 +34080,8 @@ fn inspect_rust_typing_file(
     .collect();
     let allow_panics = get_bool(&implementation.value, &["architecture", "allow_panics"])
         .unwrap_or(false)
-        || rust_test_source_path(path);
+        || rust_test_source_path(path)
+        || has_cfg_test_attr(&parsed.attrs);
 
     for item in &parsed.items {
         if has_cfg_test_attr(item_attrs(item)) {
@@ -35736,13 +35737,32 @@ fn item_attrs(item: &Item) -> &[Attribute] {
 }
 
 fn has_cfg_test_attr(attrs: &[Attribute]) -> bool {
+    // An exemption requires that the item cannot exist when cfg(test) is false.
+    // Other configuration atoms remain unknown, never assumed false.
+    fn without_test(meta: &Meta) -> (bool, bool) {
+        match meta {
+            Meta::Path(path) if path.is_ident("test") => (false, true),
+            Meta::List(list) => {
+                let Ok(items) = list.parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated) else { return (true, true); };
+                let values = items.iter().map(without_test).collect::<Vec<_>>();
+                if list.path.is_ident("all") {
+                    (values.iter().all(|value| value.0), values.iter().any(|value| value.1))
+                } else if list.path.is_ident("any") {
+                    (values.iter().any(|value| value.0), values.iter().all(|value| value.1))
+                } else if list.path.is_ident("not") && values.len() == 1 {
+                    (values[0].1, values[0].0)
+                } else { (true, true) }
+            }
+            _ => (true, true),
+        }
+    }
     attrs.iter().any(|attr| {
         if attr.path().is_ident("test") {
             return true;
         }
         match &attr.meta {
             Meta::List(list) if list.path.is_ident("cfg") => {
-                list.tokens.to_string().contains("test")
+                list.parse_args::<Meta>().is_ok_and(|meta| !without_test(&meta).0)
             }
             _ => false,
         }
@@ -99567,6 +99587,29 @@ architecture:
         assert!(diagnostics.iter().all(|diagnostic| {
             diagnostic.check != "implementation.rust.typing.failure-discipline"
         }));
+    }
+
+    #[test]
+    fn rust_file_cfg_exempts_only_proven_test_only_fixtures() {
+        let implementation = LoadedManifest { path: PathBuf::from("/fixture/implementation.yaml"),
+            value: serde_yaml::from_str("spec: rms/implementation/v0.2\nmodule: fixture\narchitecture: {}\n").unwrap() };
+        for (cfg, test_only) in [
+            ("test", true), ("all(test, feature = \"fixture\")", true),
+            ("not(not(test))", true), ("not(test)", false),
+            ("any(test, feature = \"prod\")", false),
+            ("feature = \"test\"", false), ("test_mode", false), ("all()", false),
+        ] {
+            let source = format!("#![cfg({cfg})]\nfn fixture() -> u32 {{ Some(1).unwrap() }} fn fail() {{ panic!(\"test\"); }} #[test] fn property() {{ assert_eq!(fixture(), 1); }}");
+            let parsed = syn::parse_file(&source).unwrap();
+            let mut diagnostics = Vec::new();
+            let mut summary = RustTypingSummary::default();
+            inspect_rust_typing_file(&implementation, &mut diagnostics, Path::new("/fixture/src/properties.rs"), &parsed, &mut summary);
+            let failures = diagnostics.iter().filter(|diagnostic| diagnostic.check == "implementation.rust.typing.failure-discipline").count();
+            assert_eq!(failures == 0, test_only, "{cfg}: {diagnostics:?}");
+            assert!(summary.functions.contains("fixture"), "test-only symbols must remain inspectable");
+            let item: syn::ItemFn = syn::parse_str(&format!("#[cfg({cfg})] fn fixture() {{}} ")).unwrap();
+            assert_eq!(has_cfg_test_attr(&item.attrs), test_only, "item {cfg}");
+        }
     }
 
     #[test]
