@@ -10841,6 +10841,7 @@ fn run_main() -> Result<()> {
                     &crate_name,
                     &package,
                     &version_requirement,
+                    &receipt.receipt_id,
                     dry_run,
                 )?;
                 println!("route receipt: {}", receipt.receipt_id);
@@ -70018,6 +70019,7 @@ enum SemanticRevisionAuthority {
     SurfaceApply,
     BindingPackageSet,
     BindingPublicReexportsSet,
+    BindingExternalCrateAdd,
     RepositoryMaintainerSeal,
 }
 
@@ -70029,6 +70031,7 @@ impl SemanticRevisionAuthority {
             Self::SurfaceApply => "rms surface apply",
             Self::BindingPackageSet => "rms binding set-package",
             Self::BindingPublicReexportsSet => "rms binding set-public-reexports",
+            Self::BindingExternalCrateAdd => "rms binding add-external-crate",
             Self::RepositoryMaintainerSeal => "repository maintainer seal",
         }
     }
@@ -70040,6 +70043,7 @@ impl SemanticRevisionAuthority {
             "rms surface apply" => Some(Self::SurfaceApply),
             "rms binding set-package" => Some(Self::BindingPackageSet),
             "rms binding set-public-reexports" => Some(Self::BindingPublicReexportsSet),
+            "rms binding add-external-crate" => Some(Self::BindingExternalCrateAdd),
             "repository maintainer seal" => Some(Self::RepositoryMaintainerSeal),
             _ => None,
         }
@@ -78058,6 +78062,7 @@ fn run_add_external_rust_crate(
     crate_name: &str,
     package: &str,
     version_requirement: &str,
+    receipt_id: &str,
     dry_run: bool,
 ) -> Result<()> {
     let mut manifest = load_manifest(implementation)?;
@@ -78078,6 +78083,11 @@ fn run_add_external_rust_crate(
     validate_external_rust_crate_declaration(&declaration)?;
 
     let mut declarations = external_rust_crate_declarations(&manifest.value)?;
+    let previous = external_crate_prior_revision(&manifest, &declaration)?;
+    let recovering = previous.value != manifest.value;
+    let previous_revision = get_path(&previous.value, &["x-rms", "semantic_revision"]).cloned();
+    let before_dependencies = get_path(&previous.value, &["dependencies"]).cloned();
+    let original_value = manifest.value.clone();
     if let Some(existing) = declarations
         .iter()
         .find(|existing| existing.crate_name == declaration.crate_name)
@@ -78120,7 +78130,22 @@ fn run_add_external_rust_crate(
     if dry_run {
         print!("{rendered}");
     } else {
-        atomic_replace_file(implementation, rendered.as_bytes())?;
+        if !recovering && manifest.value == original_value { return Ok(()); }
+        let directory = implementation.parent().unwrap_or_else(|| Path::new("."))
+            .join("verification/binding-changes");
+        fs::create_dir_all(&directory)?;
+        let record = directory.join(format!("external-crate-{}.yaml", SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()));
+        let content = serde_yaml::to_string(&json!({
+            "spec": "rms/binding-external-crate-change/v0.1",
+            "declaration": declaration,
+            "route_receipt": receipt_id,
+            "previous_revision": previous_revision,
+            "before_dependencies": before_dependencies,
+            "after_dependencies": get_path(&manifest.value, &["dependencies"]),
+            "recovered_exact_legacy_addition": recovering,
+        }))?;
+        fs::OpenOptions::new().write(true).create_new(true).open(&record)?.write_all(content.as_bytes())?;
+        seal_implementation_semantics(&mut manifest, &record, SemanticRevisionAuthority::BindingExternalCrateAdd)?;
         println!(
             "declared external Rust crate `{}` from package `{}` with version requirement `{}` in {}",
             declaration.crate_name,
@@ -78130,6 +78155,37 @@ fn run_add_external_rust_crate(
         );
     }
     Ok(())
+}
+
+fn external_crate_prior_revision(manifest: &LoadedManifest, declaration: &ExternalRustCrateDeclaration) -> Result<LoadedManifest> {
+    let intact = |candidate: &LoadedManifest| {
+        let mut checks = Vec::new();
+        append_semantic_revision_audit_check(candidate, true, &mut checks);
+        !checks.is_empty() && checks.iter().all(|check| check.result == "pass")
+    };
+    if intact(manifest) { return Ok(manifest.clone()); }
+    let declarations = external_rust_crate_declarations(&manifest.value)?;
+    if declarations.iter().filter(|item| *item == declaration).count() == 1 {
+        // Recover only the exact old mutator's addition. Audit the inverse
+        // against the existing seal and immutable record, including contracts.
+        let remaining = declarations.iter().filter(|item| *item != declaration)
+            .map(serde_yaml::to_value).collect::<std::result::Result<Vec<_>, _>>()?;
+        let allowed = get_string_array(&manifest.value, &["dependencies", "allowed_external_crates"]);
+        for remove_empty_declarations in [false, true] {
+            for remove_allowlist_item in [false, true] {
+                for remove_empty_allowlist in [false, true] {
+                    let mut candidate = manifest.clone();
+                    set_yaml_sequence_path(&mut candidate.value, &["dependencies", "external_crates"], remaining.clone());
+                    if remove_empty_declarations && remaining.is_empty() { remove_yaml_path(&mut candidate.value, &["dependencies", "external_crates"]); }
+                    let prior_allowed = allowed.iter().filter(|name| !remove_allowlist_item || *name != &declaration.crate_name).cloned().collect::<Vec<_>>();
+                    set_yaml_string_sequence_path(&mut candidate.value, &["dependencies", "allowed_external_crates"], &prior_allowed);
+                    if remove_empty_allowlist && prior_allowed.is_empty() { remove_yaml_path(&mut candidate.value, &["dependencies", "allowed_external_crates"]); }
+                    if intact(&candidate) { return Ok(candidate); }
+                }
+            }
+        }
+    }
+    bail!("external crate declaration requires an intact prior revision; legacy recovery must reverse only this exact declaration and restore the original seal");
 }
 
 fn run_binding_migrate(
@@ -90962,12 +91018,24 @@ architecture: { roles: {} }
         )
         .unwrap();
 
-        run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.11", false).unwrap();
+        fs::write(root.join("module.yaml"), "spec: rms/module/v0.1\nmodule: {name: phone-number-normalization}\n").unwrap();
+        fs::write(root.join("prior.yaml"), "prior: immutable\n").unwrap();
+        seal_implementation_semantics(&mut load_manifest(&implementation_path).unwrap(), &root.join("prior.yaml"), SemanticRevisionAuthority::SpecApply).unwrap();
+        let before = fs::read(&implementation_path).unwrap();
+        let module_before = fs::read(root.join("module.yaml")).unwrap();
+        run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.11", "test-receipt", true).unwrap();
+        assert_eq!(fs::read(&implementation_path).unwrap(), before);
+        assert_eq!(fs::read(root.join("module.yaml")).unwrap(), module_before);
+        assert!(!root.join("verification/binding-changes").exists());
+        run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.11", "test-receipt", false).unwrap();
         let first_declaration = fs::read(&implementation_path).unwrap();
-        run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.11", false).unwrap();
+        let mut checks = Vec::new();
+        append_semantic_revision_audit_check(&load_manifest(&implementation_path).unwrap(), true, &mut checks);
+        assert!(checks.iter().all(|check| check.result == "pass"), "{checks:?}");
+        run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.11", "test-receipt", false).unwrap();
         assert_eq!(fs::read(&implementation_path).unwrap(), first_declaration);
         assert!(
-            run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.10", false,)
+            run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.10", "test-receipt", false,)
                 .unwrap_err()
                 .to_string()
                 .contains("different canonical package or version requirement")
@@ -90994,6 +91062,31 @@ architecture: { roles: {} }
                 version_requirement: "1.11".to_string(),
             }]
         );
+        assert_eq!(fs::read_to_string(&cargo_path).unwrap(), cargo_before);
+        // Reproduce the legacy mutator: exact new dependencies, old seal.
+        let mut legacy = load_manifest(&implementation_path).unwrap();
+        let old: YamlValue = serde_yaml::from_slice(&before).unwrap();
+        set_yaml_value_path(&mut legacy.value, &["x-rms", "semantic_revision"], get_path(&old, &["x-rms", "semantic_revision"]).unwrap().clone());
+        write_yaml_manifest(&legacy).unwrap();
+        fs::write(root.join("module.yaml"), &module_before).unwrap();
+        let legacy_bytes = fs::read(&implementation_path).unwrap();
+        let mut unrelated = legacy.clone();
+        set_yaml_string_path(&mut unrelated.value, &["toolchain", "package"], "unrelated");
+        write_yaml_manifest(&unrelated).unwrap();
+        assert!(run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.11", "repair-receipt", false).is_err());
+        assert_eq!(load_manifest(&implementation_path).unwrap().value, unrelated.value);
+        fs::write(&implementation_path, &legacy_bytes).unwrap();
+        assert!(run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.10", "repair-receipt", false).is_err());
+        run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.11", "repair-receipt", true).unwrap();
+        assert_eq!(fs::read(&implementation_path).unwrap(), legacy_bytes);
+        run_add_external_rust_crate(&implementation_path, "regex", "regex", "1.11", "repair-receipt", false).unwrap();
+        let repaired = load_manifest(&implementation_path).unwrap();
+        let mut checks = Vec::new();
+        append_semantic_revision_audit_check(&repaired, true, &mut checks);
+        assert!(checks.iter().all(|check| check.result == "pass"), "{checks:?}");
+        let record = load_yaml_value(&root.join(get_str(&repaired.value, &["x-rms", "semantic_revision", "change_record"]).unwrap())).unwrap();
+        assert_eq!(get_path(&record, &["recovered_exact_legacy_addition"]).and_then(YamlValue::as_bool), Some(true));
+        assert_eq!(get_str(&record, &["route_receipt"]), Some("repair-receipt"));
         assert_eq!(fs::read_to_string(&cargo_path).unwrap(), cargo_before);
         fs::remove_dir_all(&root).unwrap();
     }
