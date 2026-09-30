@@ -8,6 +8,7 @@ pub(super) enum RustValueType {
     Text,
     Named(String), // Exact source-path#type identity, never a global leaf name.
     Sequence(Box<Self>),
+    Set(Box<Self>),
     Iterator(Box<Self>),
     Optional(Box<Self>),
     MapValues(Box<Self>),
@@ -175,7 +176,10 @@ impl RustTypeIndex {
         }
         for (key, values) in signatures {
             if values.len() == 1 {
-                if let Some(value) = index.for_path(&values[0].0).parse_type(&values[0].1) {
+                let value = if matches!(&values[0].1, Type::Path(path) if path.path.is_ident("Self")) {
+                    key.rsplit_once("::").map(|(owner, _)| RustValueType::Named(owner.to_string()))
+                } else { index.for_path(&values[0].0).parse_type(&values[0].1) };
+                if let Some(value) = value {
                     index.returns.insert(key, value);
                 }
             }
@@ -339,6 +343,7 @@ impl RustTypeIndex {
                     !matches!(
                         target.as_str(),
                         "std::collections::BTreeMap"
+                            | "std::collections::BTreeSet"
                             | "std::vec::Vec"
                             | "std::option::Option"
                             | "std::result::Result"
@@ -346,11 +351,12 @@ impl RustTypeIndex {
                 }) {
                     return None;
                 }
-                if name == "BTreeMap"
-                    && aliases.get(&name).map(String::as_str) != Some("std::collections::BTreeMap")
+                if matches!(name.as_str(), "BTreeMap" | "BTreeSet")
+                    && aliases.get(&name) != Some(&format!("std::collections::{name}"))
                 {
                     return None;
                 }
+                if name == "BTreeSet" && !self.unshadowed_external_root("std") { return None; }
                 let element_index = if name == "BTreeMap" { 1 } else { 0 };
                 let GenericArgument::Type(element) = &arguments.args[element_index] else {
                     return None;
@@ -362,6 +368,7 @@ impl RustTypeIndex {
                     "Vec" => Some(RustValueType::Sequence(element)),
                     "Option" => Some(RustValueType::Optional(element)),
                     "BTreeMap" => Some(RustValueType::MapValues(element)),
+                    "BTreeSet" => Some(RustValueType::Set(element)),
                     "Result" => Some(RustValueType::ResultOk(element)),
                     _ => None,
                 }
@@ -532,6 +539,14 @@ impl RustTypeIndex {
     pub(super) fn pattern_bindings(&self, pattern: &Pat, value: &RustValueType) -> BTreeMap<String, RustValueType> {
         let mut bindings = BTreeMap::new();
         match (pattern, value) {
+            (Pat::Or(pattern), value) => {
+                let mut alternatives = pattern.cases.iter().map(|pattern| self.pattern_bindings(pattern, value));
+                let Some(mut common) = alternatives.next() else { return bindings; };
+                for alternative in alternatives {
+                    common.retain(|name, value| alternative.get(name) == Some(value));
+                }
+                return common;
+            }
             (Pat::Ident(name), value) => { bindings.insert(name.ident.to_string(), value.clone()); }
             (Pat::Reference(pattern), value) => { return self.pattern_bindings(&pattern.pat, value); }
             (Pat::Type(pattern), value) => { return self.pattern_bindings(&pattern.pat, value); }
@@ -624,6 +639,60 @@ impl RustTypeIndex {
             matches!(item, Item::Use(item) if glob(&item.tree)) || matches!(item, Item::Mod(item) if item.ident == "Vec"))
     }
 
+    pub(super) fn is_standard_empty_map(&self, expression: &Expr) -> bool {
+        let Expr::Call(call) = expression else { return false; };
+        let Expr::Path(path) = call.func.as_ref() else { return false; };
+        if !call.args.is_empty() || path.path.segments.len() != 2
+            || path.path.segments[0].ident != "BTreeMap" || path.path.segments[1].ident != "new"
+            || path.path.segments.iter().any(|s| !matches!(s.arguments, PathArguments::None))
+            || self.is_generic("BTreeMap") || self.shadowed_types.contains("BTreeMap")
+            || !self.unshadowed_external_root("std") { return false; }
+        let Some(file) = self.sources.get(&self.path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
+        super::rust_unique_unconditional_imports(&file).contains("BTreeMap")
+            && super::rust_import_aliases(&file).get("BTreeMap").map(String::as_str) == Some("std::collections::BTreeMap")
+    }
+
+    // A standard map has one fixed value type. An exact insertion constrains
+    // it even when other insertions use branch-local values. Shadowing or
+    // conflicting known types cannot establish that constraint.
+    pub(super) fn empty_map_constraint(&self, name: &str, block: &syn::Block, scope: &BTreeMap<String, RustValueType>) -> Option<RustValueType> {
+        use syn::visit::{self, Visit};
+        struct Constraints<'a> {
+            index: &'a RustTypeIndex, name: &'a str, scope: &'a BTreeMap<String, RustValueType>,
+            values: Vec<RustValueType>, declarations: usize, rebound: bool,
+            bound: BTreeSet<String>, callees: BTreeSet<String>,
+        }
+        impl<'ast> Visit<'ast> for Constraints<'_> {
+            fn visit_pat_ident(&mut self, node: &'ast syn::PatIdent) {
+                if node.ident == self.name { self.declarations += 1; }
+                self.bound.insert(node.ident.to_string());
+                visit::visit_pat_ident(self, node);
+            }
+            fn visit_item(&mut self, _: &'ast Item) { self.rebound = true; }
+            fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+                if let Expr::Path(path) = call.func.as_ref() {
+                    if let Some(root) = path.path.segments.first() { self.callees.insert(root.ident.to_string()); }
+                }
+                visit::visit_expr_call(self, call);
+            }
+            fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+                if call.method == "insert" && call.args.len() == 2
+                    && matches!(call.receiver.as_ref(), Expr::Path(path) if path.path.is_ident(self.name)) {
+                    if let Some(value) = self.index.expression_type(&call.args[1], self.scope)
+                        .filter(|value| *value != RustValueType::Unknown) { self.values.push(value); }
+                }
+                visit::visit_expr_method_call(self, call);
+            }
+        }
+        let mut constraints = Constraints { index: self, name, scope, values: Vec::new(), declarations: 0,
+            rebound: false, bound: scope.keys().cloned().collect(), callees: BTreeSet::new() };
+        constraints.visit_block(block);
+        let first = constraints.values.first()?;
+        (!constraints.rebound && constraints.declarations == 1 && constraints.bound.is_disjoint(&constraints.callees)
+            && constraints.values.iter().all(|value| value == first))
+            .then(|| RustValueType::MapValues(Box::new(first.clone())))
+    }
+
     pub(super) fn sequence_annotation(&self, pattern: &Pat) -> Option<RustValueType> {
         let Pat::Type(pattern) = pattern else { return None; };
         self.parse_type(&pattern.ty).filter(|value| matches!(value, RustValueType::Sequence(_)))
@@ -671,6 +740,21 @@ impl RustTypeIndex {
         values: &BTreeMap<String, RustValueType>,
     ) -> Option<RustValueType> {
         match expression {
+            Expr::Match(expression) => {
+                let matched = self.expression_type(&expression.expr, values)?;
+                let mut joined = None;
+                for arm in &expression.arms {
+                    let mut scope = values.clone();
+                    let mut names = BTreeSet::new();
+                    super::collect_rust_pattern_identifiers(&arm.pat, &mut names);
+                    for name in names { scope.insert(name, RustValueType::Unknown); }
+                    scope.extend(self.pattern_bindings(&arm.pat, &matched));
+                    let value = self.expression_type(&arm.body, &scope)?;
+                    if joined.as_ref().is_some_and(|prior| prior != &value) { return None; }
+                    joined = Some(value);
+                }
+                joined
+            }
             Expr::Lit(literal) if matches!(literal.lit, syn::Lit::Str(_)) => Some(RustValueType::Text),
             Expr::Path(path) => values.get(&path.path.get_ident()?.to_string()).cloned(),
             Expr::Reference(reference) => self.expression_type(&reference.expr, values),
@@ -717,7 +801,7 @@ impl RustTypeIndex {
                 }
                 let exact =
                     super::rust_exact_function_reference(&self.path, &reference, &self.sources, 0)?;
-                self.function_returns.get(&exact).cloned()
+                self.function_returns.get(&exact).or_else(|| self.returns.get(&exact)).cloned()
             }
             Expr::MethodCall(call) => {
                 let receiver = self.expression_type(&call.receiver, values)?;
@@ -740,6 +824,10 @@ impl RustTypeIndex {
                         "first" | "last" | "last_mut" => Some(RustValueType::Optional(element)),
                         _ => None,
                     },
+                    RustValueType::Set(element) if matches!(method.as_str(), "iter" | "into_iter") =>
+                        Some(RustValueType::Iterator(element)),
+                    RustValueType::MapValues(element) if method == "get" =>
+                        Some(RustValueType::Optional(element)),
                     RustValueType::MapValues(element)
                         if matches!(method.as_str(), "values" | "into_values") =>
                     {

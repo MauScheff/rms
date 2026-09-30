@@ -12,7 +12,7 @@ mod rust_effect_types;
 use rust_effect_types::{RustTypeIndex, RustValueType};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
-pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.3";
+pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.4";
 pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.2";
 
 #[derive(Clone, Debug)]
@@ -970,6 +970,7 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
+    if call == "<rust-text-ascii-equality>" { return true; }
     if matches!(call, "<rust-str-literal-split-inclusive>" | "<rust-yaml-value-from-str>") { return true; }
     if call == "<rust-integer-byte-conversion>" { return true; }
     if call == "<rust-sequence-last-mut>" { return true; }
@@ -1391,6 +1392,42 @@ struct RustCallCollector {
 }
 
 impl<'ast> Visit<'ast> for RustCallCollector {
+    fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
+        let Expr::Let(condition) = node.cond.as_ref() else {
+            visit::visit_expr_if(self, node);
+            return;
+        };
+        self.visit_expr(&condition.expr);
+        let prior_values = self.value_types.clone();
+        let prior_types = self.parameter_types.clone();
+        let prior_dynamic = self.dynamic_symbols.clone();
+        let prior_callbacks = self.callback_bindings.clone();
+        let mut names = BTreeSet::new();
+        collect_rust_pattern_identifiers(&condition.pat, &mut names);
+        let value = self.type_index.expression_type(&condition.expr, &self.value_types);
+        for name in names {
+            self.value_types.insert(name.clone(), RustValueType::Unknown);
+            self.parameter_types.remove(&name);
+            self.callback_bindings.remove(&name);
+            self.dynamic_symbols.insert(name);
+        }
+        if let Some(value) = value {
+            for (name, value) in self.type_index.pattern_bindings(&condition.pat, &value) {
+                if let Some(ty) = value.name() {
+                    self.parameter_types.insert(name.clone(), ty.clone());
+                    self.dynamic_symbols.remove(&name);
+                }
+                self.value_types.insert(name, value);
+            }
+        }
+        self.visit_block(&node.then_branch);
+        self.value_types = prior_values;
+        self.parameter_types = prior_types;
+        self.dynamic_symbols = prior_dynamic;
+        self.callback_bindings = prior_callbacks;
+        if let Some((_, otherwise)) = &node.else_branch { self.visit_expr(otherwise); }
+    }
+
     fn visit_expr_match(&mut self, node: &'ast syn::ExprMatch) {
         self.visit_expr(&node.expr);
         let prior = self.matched_value.take();
@@ -1409,7 +1446,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             .type_index
             .expression_type(&node.expr, &self.value_types)
         {
-            Some(RustValueType::Sequence(element) | RustValueType::Iterator(element)) => {
+            Some(RustValueType::Sequence(element) | RustValueType::Iterator(element) | RustValueType::Set(element)) => {
                 Some(*element)
             }
             _ => None,
@@ -1489,6 +1526,11 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             self.sequence_constraints.remove(&name.ident.to_string());
             if local.init.as_ref().is_some_and(|init| self.type_index.is_standard_empty_vec(&init.expr)) {
                 if let Some(value) = self.type_index.empty_sequence_constraint(&name.ident.to_string(), block, &self.value_types) {
+                    self.sequence_constraints.insert(name.ident.to_string(), value);
+                }
+            }
+            if local.init.as_ref().is_some_and(|init| self.type_index.is_standard_empty_map(&init.expr)) {
+                if let Some(value) = self.type_index.empty_map_constraint(&name.ident.to_string(), block, &self.value_types) {
                     self.sequence_constraints.insert(name.ident.to_string(), value);
                 }
             }
@@ -1630,6 +1672,9 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             _ => None,
         });
         let call = if inferred_receiver == Some(RustValueType::Text)
+            && node.method == "eq_ignore_ascii_case" && node.args.len() == 1 {
+            "<rust-text-ascii-equality>".to_string()
+        } else if inferred_receiver == Some(RustValueType::Text)
             && node.method == "split_inclusive" && node.args.len() == 1
             && matches!(&node.args[0], Expr::Lit(value) if matches!(value.lit, syn::Lit::Char(_) | syn::Lit::Str(_))) {
             "<rust-str-literal-split-inclusive>".to_string()
@@ -1676,7 +1721,9 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             for (position, argument) in node.args.iter().enumerate() {
                 let bounded_new_callback = matches!((node.method.to_string().as_str(), position),
                     ("map_or_else", 0 | 1) | ("flat_map", 0) | ("fold", 1));
-                if !bounded_new_callback && !matches!(node.method.to_string().as_str(), "map" | "filter_map") { continue; }
+                let typed_predicate = matches!(node.method.to_string().as_str(), "is_some_and" | "any" | "all")
+                    && matches!(inferred_receiver, Some(RustValueType::Optional(_) | RustValueType::Iterator(_)));
+                if !bounded_new_callback && !typed_predicate && !matches!(node.method.to_string().as_str(), "map" | "filter_map") { continue; }
                 let Expr::Path(path) = argument else {
                     if bounded_new_callback && !matches!(argument, Expr::Closure(_)) {
                         self.calls.insert("<dynamic-call>".to_string());
@@ -1795,7 +1842,8 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 .expression_type(&init.expr, &self.value_types)
         })).or_else(|| {
             let Pat::Ident(name) = &node.pat else { return None; };
-            node.init.as_ref().filter(|init| self.type_index.is_standard_empty_vec(&init.expr))
+            node.init.as_ref().filter(|init| self.type_index.is_standard_empty_vec(&init.expr)
+                || self.type_index.is_standard_empty_map(&init.expr))
                 .and_then(|_| self.sequence_constraints.get(&name.ident.to_string()).cloned())
         });
         let mut bound_names = BTreeSet::new();
@@ -4266,6 +4314,76 @@ mod tests {
             authority_facades: Vec::new(),
             trusted_external_calls: BTreeSet::new(),
         })
+    }
+
+    #[test]
+    fn rust_set_elements_and_standard_text_comparison_keep_exact_effects() {
+        let source = r#"use std::collections::BTreeSet;
+struct Path { text: String }
+impl Path { fn text(&self) -> &str { &self.text } }
+struct Policy { paths: BTreeSet<Path> }
+impl Policy { fn check(&self) -> bool { self.paths.iter().any(|path| path.text().eq_ignore_ascii_case("system")) } }
+fn decide(policy: &Policy) { policy.check(); }"#;
+        let result = report("rust", "src/lib.rs", source, expectation("src/lib.rs#decide", "pure", &[]));
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        for changed in [
+            source.replace("&self.text }", "std::fs::read(\"x\"); &self.text }"),
+            source.replace("use std::collections::BTreeSet;", "use custom::BTreeSet;"),
+            source.replace("use std::collections::BTreeSet;", "mod std {} use std::collections::BTreeSet;"),
+        ] {
+            assert_eq!(report("rust", "src/lib.rs", &changed, expectation("src/lib.rs#decide", "pure", &[])).result, AnalysisResult::Fail);
+        }
+        let concrete = "fn decide(value: &str) { let value = value.to_owned(); value.split('/').any(|part| part.eq_ignore_ascii_case(\".git\")); }";
+        assert_eq!(report("rust", "src/lib.rs", concrete, expectation("src/lib.rs#decide", "pure", &[])).result, AnalysisResult::Pass);
+        let generic = concrete.replace("value: &str", "value: impl Into<String>").replace("value.to_owned()", "value.into()");
+        assert_eq!(report("rust", "src/lib.rs", &generic, expectation("src/lib.rs#decide", "pure", &[])).result, AnalysisResult::Fail);
+    }
+
+    #[test]
+    fn rust_match_joins_and_if_let_keep_exact_payload_types_and_scope() {
+        let source = r#"struct Row;
+impl Row { fn check(&self) {} }
+enum Entry { File(Row), Directory(Row) }
+enum Request { One(Vec<Entry>), Two(Vec<Entry>) }
+fn decide(request: &Request) {
+    let entries = match request { Request::One(items) | Request::Two(items) => items };
+    for entry in entries { if let Entry::File(row) = entry { row.check(); } }
+}"#;
+        assert_eq!(report("rust", "src/lib.rs", source, expectation("src/lib.rs#decide", "pure", &[])).result, AnalysisResult::Pass);
+        for changed in [
+            source.replace("fn check(&self) {}", "fn check(&self) { std::fs::read(\"x\"); }"),
+            source.replace("Two(Vec<Entry>)", "Two(Vec<Unknown>)"),
+            source.replace("Entry::File(row) = entry", "Other::File(row) = entry"),
+            source.replace("request: &Request", "request: &Request, row: &dyn Unknown").replace("row.check(); }", "row.check(); } else { row.check(); }"),
+        ] {
+            let result = report("rust", "src/lib.rs", &changed, expectation("src/lib.rs#decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{changed}\n{result:#?}");
+        }
+    }
+
+    #[test]
+    fn rust_empty_map_insertion_proves_value_type_not_callback_purity() {
+        let source = r#"use std::collections::BTreeMap;
+struct Row;
+impl Row { fn new() -> Self { Self } fn check(&self) -> bool { true } }
+fn decide() {
+    let mut rows = BTreeMap::new();
+    rows.insert(1, Row::new());
+    rows.get(&1).is_some_and(|row| row.check());
+}"#;
+        for valid in [source.to_string(), source.replace("|row| row.check()", "Row::check")] {
+            let result = report("rust", "src/lib.rs", &valid, expectation("src/lib.rs#decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+            let effectful = valid.replace("{ true }", "{ std::fs::read(\"x\"); true }");
+            assert_eq!(report("rust", "src/lib.rs", &effectful, expectation("src/lib.rs#decide", "pure", &[])).result, AnalysisResult::Fail);
+        }
+        for changed in [
+            source.replace("use std::collections::BTreeMap;", "use custom::BTreeMap;"),
+            source.replace("rows.get(&1)", "let rows = unknown(); rows.get(&1)"),
+            source.replace("rows.insert(1, Row::new());", "rows.insert(1, Row::new()); rows.insert(2, \"other\");"),
+        ] {
+            assert_eq!(report("rust", "src/lib.rs", &changed, expectation("src/lib.rs#decide", "pure", &[])).result, AnalysisResult::Fail);
+        }
     }
 
     #[test]
