@@ -1965,17 +1965,54 @@ fn project_effect_closure(
     effects: &[String],
     protocols: &[MachineEffectProtocol],
 ) {
+    let caller_driven = module
+        .implementation
+        .as_ref()
+        .is_some_and(super::caller_driven_machine);
+    let valid_caller_provider = caller_driven
+        && module.implementation.as_ref().is_some_and(|implementation| {
+            let mut diagnostics = Vec::new();
+            super::validate_caller_driven_binding(implementation, &mut diagnostics);
+            diagnostics.is_empty()
+        });
+    let declared_results = module
+        .implementation
+        .as_ref()
+        .map(|implementation| {
+            get_string_array(
+                &implementation.value,
+                &["architecture", "machine", "effect_results"],
+            )
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
     for effect in effects {
         let owner = protocols.iter().find(|protocol| {
             protocol.effect == *effect
-                && protocol
-                    .executor_role
-                    .as_deref()
-                    .is_some_and(|role| !role.is_empty())
-                && protocol
-                    .executor_symbol
-                    .as_deref()
-                    .is_some_and(|symbol| !symbol.is_empty())
+                && if caller_driven {
+                    valid_caller_provider
+                        && protocols
+                            .iter()
+                            .filter(|candidate| candidate.effect == *effect)
+                            .count() == 1
+                        && protocol.executor_role.is_none()
+                        && protocol.executor_symbol.is_none()
+                        && protocol.atomicity == "one-request-one-result"
+                        && !protocol.results.is_empty()
+                        && protocol.results.iter().all(|result| declared_results.contains(result))
+                        && protocol.results.iter().collect::<BTreeSet<_>>().len()
+                            == protocol.results.len()
+                } else {
+                    protocol
+                        .executor_role
+                        .as_deref()
+                        .is_some_and(|role| !role.is_empty())
+                        && protocol
+                            .executor_symbol
+                            .as_deref()
+                            .is_some_and(|symbol| !symbol.is_empty())
+                }
         });
         push_obligation(
             graph,
@@ -1987,7 +2024,11 @@ fn project_effect_closure(
                 "required-gap"
             },
             format!("Own effect `{effect}`"),
-            if owner.is_some() {
+            if caller_driven && owner.is_some() {
+                format!("effect `{effect}` has an exact request/result protocol owned by a pure caller-driven provider; caller execution requires separate proof")
+            } else if caller_driven {
+                format!("effect `{effect}` lacks an exact caller-driven request/result protocol or a valid pure provider owner")
+            } else if owner.is_some() {
                 format!("effect `{effect}` has an exact protocol and executor owner")
             } else {
                 format!("effect `{effect}` has no exact effect protocol and executor owner")
@@ -2353,6 +2394,72 @@ mod tests {
         assert_eq!(applicability_status(false, false), "not-applicable");
         assert_eq!(applicability_status(true, false), "required-gap");
         assert_eq!(applicability_status(true, true), "satisfied");
+    }
+
+    #[test]
+    fn caller_driven_effect_owner_projection_preserves_protocol_and_local_execution_obligations() {
+        let root = fixture_root("caller-driven-owner");
+        write_fixture(&root.join("module.yaml"), r#"spec: rms/module/v0.1
+module: {name: request-provider, version: 0.1.0, kind: library, purpose: Return requests}
+profiles: [core]
+owns: {concepts: [], data: [], decisions: []}
+provides: {commands: [], queries: [], events: [], capabilities: []}
+requires: {modules: [], capabilities: []}
+invariants: []
+effects: [{name: Send, kind: external-control-request}]
+compatibility: {policy: backward-compatible-within-major}
+verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
+"#);
+        let source = r#"spec: rms/implementation/v0.2
+module: request-provider
+binding: rust
+source: {root: ., public_entrypoint: src/lib.rs}
+architecture:
+  shape: workflow
+  machine:
+    mode: stateful-transition-machine
+    execution_binding: {kind: caller-driven}
+    transition_function: transition
+    transition_record_function: transition_record
+    effects: [Send]
+    effect_results: [Sent]
+    effect_protocols:
+    - {effect: Send, results: [Sent], atomicity: one-request-one-result}
+semantic_functions:
+- {symbol: transition, purity: pure, authorities: []}
+- {symbol: transition_record, purity: pure, authorities: []}
+"#;
+        let check = |candidate: &str, expected: &str| {
+            write_fixture(&root.join("implementation.yaml"), candidate);
+            let graph = build_semantic_system_graph(&root).unwrap();
+            let owners = graph.obligations.iter().filter(|item| item.kind == "effect-owner").collect::<Vec<_>>();
+            assert_eq!(owners.len(), 1);
+            assert_eq!(owners[0].status, expected, "{}", owners[0].detail);
+            let diagnostics = semantic_system_graph_diagnostics(&root).unwrap();
+            assert_eq!(diagnostics.iter().any(|d| d.check == "semantic.effect-owner-missing"), expected != "satisfied");
+        };
+        check(source, "satisfied");
+        for invalid in [
+            source.replace("    execution_binding: {kind: caller-driven}\n", ""),
+            source.replace("caller-driven", "synchronous"),
+            source.replace("binding: rust", "binding: swift"),
+            source.replace("purity: pure", "purity: effectful"),
+            source.replace(", results: [Sent]", ", results: [Unknown]"),
+            source.replace(", results: [Sent]", ", results: []"),
+            source.replace(", results: [Sent]", ", results: [Sent, Sent]"),
+            source.replace("atomicity: one-request-one-result", "atomicity: aggregate"),
+            source.replace("effect: Send,", "effect: Other,"),
+            source.replace("    - {effect: Send, results: [Sent], atomicity: one-request-one-result}", ""),
+            source.replace("    effect_protocols:", "    effect_protocols:\n    - {effect: Send, results: [Sent], atomicity: one-request-one-result}"),
+        ] {
+            check(&invalid, "required-gap");
+        }
+        let local = source.replace("    execution_binding: {kind: caller-driven}\n", "")
+            .replace("atomicity: one-request-one-result", "atomicity: one-request-one-result, executor_role: effect_executor, executor_symbol: execute_send");
+        check(&local, "satisfied");
+        check(&local.replace(
+            "    mode: stateful-transition-machine", "    mode: stateful-transition-machine\n    execution_binding: {kind: caller-driven}"), "required-gap");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
