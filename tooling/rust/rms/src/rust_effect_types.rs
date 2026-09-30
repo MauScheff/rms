@@ -6,6 +6,7 @@ use syn::{Expr, FnArg, GenericArgument, Item, Pat, PathArguments, ReturnType, Si
 pub(super) enum RustValueType {
     Unknown,
     Text,
+    Byte,
     Named(String), // Exact source-path#type identity, never a global leaf name.
     Sequence(Box<Self>),
     Set(Box<Self>),
@@ -56,6 +57,7 @@ pub(super) struct RustTypeIndex {
     variants: BTreeMap<(String, String), Vec<RustValueType>>,
     generic_names: BTreeSet<String>,
     local_enum_aliases: BTreeMap<String, String>,
+    self_type: Option<String>,
     sources: BTreeMap<String, String>,
     path: String,
 }
@@ -95,6 +97,7 @@ impl RustTypeIndex {
             variants: BTreeMap::new(),
             generic_names: BTreeSet::new(),
             local_enum_aliases: BTreeMap::new(),
+            self_type: None,
             sources: sources.clone(),
             path: String::new(),
         };
@@ -179,9 +182,11 @@ impl RustTypeIndex {
         }
         for (key, values) in signatures {
             if values.len() == 1 {
-                let value = if matches!(&values[0].1, Type::Path(path) if path.path.is_ident("Self")) {
-                    key.rsplit_once("::").map(|(owner, _)| RustValueType::Named(owner.to_string()))
-                } else { index.for_path(&values[0].0).parse_type(&values[0].1) };
+                // Only the unique nongeneric inherent impl supplies this owner.
+                // Preserve it recursively inside Result, Option, and references.
+                let mut context = index.for_path(&values[0].0);
+                context.self_type = key.rsplit_once("::").map(|(owner, _)| owner.to_string());
+                let value = context.parse_type(&values[0].1);
                 if let Some(value) = value {
                     index.returns.insert(key, value);
                 }
@@ -331,6 +336,9 @@ impl RustTypeIndex {
             Type::Slice(slice) => Some(RustValueType::Sequence(Box::new(
                 self.parse_type(&slice.elem).unwrap_or(RustValueType::Unknown)))),
             Type::Path(path) if path.qself.is_none() => {
+                if path.path.is_ident("Self") {
+                    return self.self_type.clone().map(RustValueType::Named);
+                }
                 let segment = path.path.segments.last()?;
                 let name = segment.ident.to_string();
                 if path.path.segments.len() == 1 && matches!(name.as_str(), "str" | "String")
@@ -880,6 +888,8 @@ impl RustTypeIndex {
                     RustValueType::ResultOk(element) if method == "map_err" && call.args.len() == 1 =>
                         Some(RustValueType::ResultOk(element)),
                     RustValueType::Text => match method.as_str() {
+                        "bytes" if call.args.is_empty() && call.turbofish.is_none() =>
+                            Some(RustValueType::Iterator(Box::new(RustValueType::Byte))),
                         "split_inclusive" | "split" | "lines" | "split_whitespace" =>
                             Some(RustValueType::Iterator(Box::new(RustValueType::Text))),
                         "as_str" | "to_owned" | "to_string" | "clone" | "trim" | "trim_end_matches" => Some(RustValueType::Text),

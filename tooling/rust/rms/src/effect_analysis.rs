@@ -12,7 +12,7 @@ mod rust_effect_types;
 use rust_effect_types::{RustTypeIndex, RustValueType};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
-pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.6";
+pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.7";
 pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.5";
 
 #[derive(Clone, Debug)]
@@ -1003,6 +1003,7 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
+    if call == "<rust-byte-ascii-hexdigit>" { return true; }
     if call == "<rust-text-ascii-equality>" { return true; }
     if matches!(call, "<rust-str-literal-split-inclusive>" | "<rust-yaml-value-from-str>") { return true; }
     if call == "<rust-integer-byte-conversion>" { return true; }
@@ -1745,7 +1746,10 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 .filter(|name| !self.type_index.is_generic(name) && !self.type_index.is_declared_type(name)),
             _ => None,
         });
-        let call = if inferred_receiver == Some(RustValueType::Text)
+        let call = if inferred_receiver == Some(RustValueType::Byte)
+            && node.method == "is_ascii_hexdigit" && node.args.is_empty() && node.turbofish.is_none() {
+            "<rust-byte-ascii-hexdigit>".to_string()
+        } else if inferred_receiver == Some(RustValueType::Text)
             && node.method == "eq_ignore_ascii_case" && node.args.len() == 1 {
             "<rust-text-ascii-equality>".to_string()
         } else if inferred_receiver == Some(RustValueType::Text)
@@ -5128,6 +5132,39 @@ fn decide() {
         ] {
             let result = report("rust", "src/lib.rs", &format!("{declarations} fn decide(root: &Root) {{ {body} }}"), expectation("decide", "pure", &[]));
             assert_eq!(result.result, expected, "{body}: {result:#?}");
+        }
+    }
+
+    #[test]
+    fn rust_nested_self_results_keep_exact_method_effects() {
+        for (method, authorities) in [("check", vec![]), ("cleanup", vec!["filesystem"])] {
+            let source = format!("struct Journal; impl Journal {{ fn load() -> Result<Option<Self>, ()> {{ Ok(None) }} fn check(&self) {{}} fn cleanup(&self) {{ std::fs::remove_file(\"journal\"); }} }} fn execute() -> Result<(), ()> {{ let journal = Journal::load()?; if let Some(journal) = journal {{ journal.{method}(); }} Ok(()) }}");
+            let result = report("rust", "src/lib.rs", &source, expectation("execute", "effectful", &authorities));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+            assert_eq!(result.functions[0].transitive_authorities, authorities);
+        }
+        for source in [
+            "struct Journal; trait Load { fn load() -> Result<Option<Self>, ()>; } impl Load for Journal { fn load() -> Result<Option<Self>, ()> { Ok(None) } } impl Journal { fn check(&self) {} } fn execute() -> Result<(), ()> { if let Some(journal) = Journal::load()? { journal.check(); } Ok(()) }",
+            "struct Journal<T>(T); impl<T> Journal<T> { fn load() -> Result<Option<Self>, ()> { Ok(None) } fn check(&self) {} } fn execute() -> Result<(), ()> { if let Some(journal) = Journal::load()? { journal.check(); } Ok(()) }",
+            "struct Journal; impl Journal { fn load() -> Result<Option<Self>, ()> { Ok(None) } fn load() -> Result<Option<Self>, ()> { Ok(None) } fn check(&self) {} } fn execute() -> Result<(), ()> { if let Some(journal) = Journal::load()? { journal.check(); } Ok(()) }",
+            "struct Journal; impl Journal { fn load() -> Result<Option<Self>, ()> { Ok(None) } fn check(&self) {} } fn execute() -> Result<(), ()> { if let Some(journal) = Journal::load()? { let journal = unknown(); journal.check(); } Ok(()) }",
+        ] {
+            assert_eq!(report("rust", "src/lib.rs", source, expectation("execute", "pure", &[])).result, AnalysisResult::Fail, "{source}");
+        }
+    }
+
+    #[test]
+    fn rust_text_byte_predicates_require_a_proven_byte_receiver() {
+        let source = "fn decide(raw: &str) -> bool { raw.bytes().enumerate().all(|(index, byte)| { if index == 8 { byte == b'-' } else { byte.is_ascii_hexdigit() } }) }";
+        assert_eq!(report("rust", "src/lib.rs", source, expectation("decide", "pure", &[])).result, AnalysisResult::Pass);
+        for source in [
+            "fn decide(raw: Unknown) { raw.bytes().all(|byte| byte.is_ascii_hexdigit()); }",
+            "fn decide(raw: &str) { raw.bytes().all(|byte| { let byte = unknown(); byte.is_ascii_hexdigit() }); }",
+            "fn decide(raw: &str) { raw.bytes().all(|byte| { std::fs::remove_file(\"x\"); byte.is_ascii_hexdigit() }); }",
+            "struct Byte; impl Byte { fn is_ascii_hexdigit(&self) -> bool { std::fs::remove_file(\"x\"); true } } fn decide(byte: &Byte) { byte.is_ascii_hexdigit(); }",
+            "struct str; impl str { fn bytes(&self) -> Unknown { unknown() } } fn decide(raw: &str) { raw.bytes().all(|byte| byte.is_ascii_hexdigit()); }",
+        ] {
+            assert_eq!(report("rust", "src/lib.rs", source, expectation("decide", "pure", &[])).result, AnalysisResult::Fail, "{source}");
         }
     }
 
