@@ -34215,7 +34215,7 @@ fn inspect_rust_typing_file(
                     summary.private_types.insert(item_type.ident.to_string());
                 }
             }
-            Item::Impl(item_impl) => collect_rust_impl_methods(item_impl, summary),
+            Item::Impl(item_impl) => collect_rust_impl_methods(item_impl, parsed, summary),
             Item::Fn(item_fn) => {
                 let function = item_fn.sig.ident.to_string();
                 summary.functions.insert(function.clone());
@@ -34434,12 +34434,13 @@ fn validate_rust_constructor_evidence(
         if allowed_missing_constructors.contains(struct_name) {
             continue;
         }
+        if summary.public_associated_factories.contains(struct_name) { continue; }
         let Some(methods) = summary.public_impl_methods.get(struct_name) else {
             diagnostics.push(warning(
                 "implementation.rust.typing.constructor",
                 &implementation.path,
                 format!(
-                    "public struct `{struct_name}` has private fields but no public constructor evidence; add `new`/`try_new`/`parse`, or if it is produced only by a query/projector declare `architecture.allowed_missing_constructors` and evidence the producer"
+                    "public struct `{struct_name}` has private fields but no public constructor evidence; add a public associated factory returning Self or Result<Self, E>, or if it is produced only by a query/projector declare `architecture.allowed_missing_constructors` and evidence the producer"
                 ),
             ));
             continue;
@@ -34449,7 +34450,7 @@ fn validate_rust_constructor_evidence(
                 "implementation.rust.typing.constructor",
                 &implementation.path,
                 format!(
-                    "public struct `{struct_name}` has private fields but no constructor-like method (`new`, `try_new`, `parse`, `from_*`); add one, or if it is produced only by a query/projector declare `architecture.allowed_missing_constructors` and evidence the producer"
+                    "public struct `{struct_name}` has private fields but no constructor-like method or typed public associated factory returning Self or Result<Self, E>; add one, or if it is produced only by a query/projector declare `architecture.allowed_missing_constructors` and evidence the producer"
                 ),
             ));
         }
@@ -34879,6 +34880,7 @@ struct RustTypingSummary {
     public_structs_with_private_fields: BTreeSet<String>,
     impl_methods: std::collections::BTreeMap<String, BTreeSet<String>>,
     public_impl_methods: std::collections::BTreeMap<String, BTreeSet<String>>,
+    public_associated_factories: BTreeSet<String>,
     functions: BTreeSet<String>,
     public_functions: BTreeSet<String>,
     enum_variants: std::collections::BTreeMap<String, BTreeSet<String>>,
@@ -35704,21 +35706,73 @@ impl<'ast> Visit<'ast> for RustFailureVisitor {
     }
 }
 
-fn collect_rust_impl_methods(item_impl: &syn::ItemImpl, summary: &mut RustTypingSummary) {
+fn collect_rust_impl_methods(item_impl: &syn::ItemImpl, file: &syn::File, summary: &mut RustTypingSummary) {
     let Some(type_name) = rust_type_name(&item_impl.self_ty) else {
         return;
     };
 
     let methods = summary.impl_methods.entry(type_name.clone()).or_default();
-    let public_methods = summary.public_impl_methods.entry(type_name).or_default();
+    let public_methods = summary.public_impl_methods.entry(type_name.clone()).or_default();
     for item in &item_impl.items {
         if let ImplItem::Fn(function) = item {
             methods.insert(function.sig.ident.to_string());
             if matches!(function.vis, Visibility::Public(_)) {
                 public_methods.insert(function.sig.ident.to_string());
+                if rust_associated_factory_returns_owner(item_impl, function, file) {
+                    summary.public_associated_factories.insert(type_name.clone());
+                }
             }
         }
     }
+}
+
+fn rust_associated_factory_returns_owner(item: &syn::ItemImpl, function: &syn::ImplItemFn, file: &syn::File) -> bool {
+    let Type::Path(self_type) = item.self_ty.as_ref() else { return false; };
+    if self_type.qself.is_some() || self_type.path.segments.len() != 1 { return false; }
+    if item.trait_.is_some() || !matches!(function.vis, Visibility::Public(_))
+        || function.sig.receiver().is_some() || function.sig.unsafety.is_some()
+        || function.sig.asyncness.is_some() || has_cfg_test_attr(&function.attrs) { return false; }
+    let owner = |ty: &Type| {
+        let Type::Path(path) = ty else { return false; };
+        if path.qself.is_some() || path.path.segments.len() != 1 { return false; }
+        let segment = &path.path.segments[0];
+        if !matches!(segment.arguments, syn::PathArguments::None) { return false; }
+        if segment.ident == "Self" { return true; }
+        if function.sig.generics.params.iter().any(|parameter| matches!(parameter,
+            syn::GenericParam::Type(parameter) if parameter.ident == segment.ident)) { return false; }
+        let Type::Path(self_type) = item.self_ty.as_ref() else { return false; };
+        self_type.qself.is_none() && self_type.path.segments.len() == 1
+            && self_type.path.segments[0].ident == segment.ident
+            && matches!(self_type.path.segments[0].arguments, syn::PathArguments::None)
+    };
+    let syn::ReturnType::Type(_, returned) = &function.sig.output else { return false; };
+    if owner(returned) { return true; }
+    let Type::Path(path) = returned.as_ref() else { return false; };
+    if path.qself.is_some() { return false; }
+    let names = path.path.segments.iter().map(|segment| segment.ident.to_string()).collect::<Vec<_>>();
+    let root = match names.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["Result"] => "Result", ["std", "result", "Result"] => "std", ["core", "result", "Result"] => "core", _ => return false,
+    };
+    fn use_binds(tree: &syn::UseTree, name: &str) -> bool {
+        match tree {
+            syn::UseTree::Name(item) => item.ident == name,
+            syn::UseTree::Rename(item) => item.rename == name,
+            syn::UseTree::Path(item) => use_binds(&item.tree, name),
+            syn::UseTree::Group(item) => item.items.iter().any(|tree| use_binds(tree, name)),
+            syn::UseTree::Glob(_) => true,
+        }
+    }
+    if file.items.iter().any(|item| match item {
+        Item::Struct(item) => item.ident == root, Item::Enum(item) => item.ident == root,
+        Item::Type(item) => item.ident == root, Item::Mod(item) => item.ident == root,
+        Item::Trait(item) => item.ident == root, Item::Union(item) => item.ident == root,
+        Item::Use(item) => use_binds(&item.tree, root),
+        Item::ExternCrate(item) => item.rename.as_ref().map(|(_, ident)| ident).unwrap_or(&item.ident) == root,
+        _ => false,
+    }) || item.generics.params.iter().chain(&function.sig.generics.params).any(|parameter| matches!(parameter, syn::GenericParam::Type(parameter) if parameter.ident == root)) { return false; }
+    let Some(segment) = path.path.segments.last() else { return false; };
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else { return false; };
+    matches!(arguments.args.iter().collect::<Vec<_>>().as_slice(), [syn::GenericArgument::Type(ok), syn::GenericArgument::Type(_)] if owner(ok))
 }
 
 fn rust_type_name(ty: &Type) -> Option<String> {
@@ -107107,6 +107161,44 @@ pub fn run_plan(_state: WidgetState, _input: WidgetInput) -> WidgetTransition {
         assert!(rust_symbol_exists(&summary, "crate::widget::Widget::new"));
         assert!(rust_symbol_exists(&summary, "src/widget.rs#Widget::new"));
         assert!(!rust_symbol_exists(&summary, "Widget::missing"));
+    }
+
+    #[test]
+    fn rust_constructor_evidence_recognizes_typed_public_factories() {
+        let classify = |prefix: &str, method: &str| {
+            let file = syn::parse_file(&format!("{prefix}\npub struct Widget {{ value: u8 }}\nimpl Widget {{ {method} }}")).unwrap();
+            let item = file.items.iter().find_map(|item| if let Item::Impl(item) = item { Some(item) } else { None }).unwrap();
+            let function = item.items.iter().find_map(|item| if let ImplItem::Fn(item) = item { Some(item) } else { None }).unwrap();
+            rust_associated_factory_returns_owner(item, function, &file)
+        };
+        for method in [
+            "pub fn init() -> Self { Self { value: 0 } }",
+            "pub fn open() -> Result<Self, ()> { Ok(Self { value: 0 }) }",
+            "pub fn acquire() -> std::result::Result<Widget, ()> { Ok(Widget { value: 0 }) }",
+            "pub fn restore() -> core::result::Result<Self, ()> { Ok(Self { value: 0 }) }",
+        ] { assert!(classify("", method), "{method}"); }
+        for method in [
+            "fn open() -> Self { Self { value: 0 } }",
+            "pub(crate) fn open() -> Self { Self { value: 0 } }",
+            "pub fn open(&self) -> Self { Self { value: 0 } }",
+            "pub fn open() -> u8 { 0 }",
+            "pub fn open() -> Result<(), Self> { Ok(()) }",
+            "pub fn open() -> Option<Self> { None }",
+            "pub fn open() -> Result<other::Widget, ()> { loop {} }",
+            "pub unsafe fn open() -> Self { loop {} }",
+            "#[cfg(test)] pub fn open() -> Self { loop {} }",
+        ] { assert!(!classify("", method), "{method}"); }
+        for prefix in ["type Result<T, E> = (T, E);", "use custom::Result;", "use custom::*;", "use custom::Outcome as Result;"] {
+            assert!(!classify(prefix, "pub fn open() -> Result<Self, ()> { loop {} }"));
+        }
+        assert!(!classify("", "pub fn open<Result>() -> Result<Self, ()> { loop {} }"));
+        assert!(!classify("", "pub fn open<Widget>() -> Widget { loop {} }"));
+        assert!(!classify("", "pub fn open<Widget>() -> Result<Widget, ()> { loop {} }"));
+        let root = rust_typing_fixture("public-factory-return-owner", &["core"], "",
+            "pub struct Widget { value: u8 }\nimpl Widget { pub fn open() -> Result<Self, ()> { Ok(Self { value: 0 }) } }\n");
+        let diagnostics = validate_fixture_implementation(&root);
+        assert!(!diagnostics.iter().any(|diagnostic| diagnostic.check == "implementation.rust.typing.constructor"), "{diagnostics:?}");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
