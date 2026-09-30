@@ -12,7 +12,7 @@ mod rust_effect_types;
 use rust_effect_types::{RustTypeIndex, RustValueType};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
-pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.5";
+pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.6";
 pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.5";
 
 #[derive(Clone, Debug)]
@@ -1598,6 +1598,15 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             return;
         }
         if let syn::Expr::Path(path) = node.func.as_ref() {
+            if self.type_index.local_enum_constructor(path, node.args.len())
+                && path.path.segments.first().is_some_and(|root|
+                    !self.value_types.contains_key(&root.ident.to_string())
+                        && !self.dynamic_symbols.contains(&root.ident.to_string()))
+            {
+                // Constructing a proven variant is pure; its arguments may not be.
+                visit::visit_expr_call(self, node);
+                return;
+            }
             if path.path.leading_colon.is_none() && path.path.segments.first().is_some_and(|root|
                 (self.type_index.call_root_shadowed(&root.ident.to_string())
                     || self.value_types.contains_key(&root.ident.to_string()))
@@ -4805,6 +4814,43 @@ fn decide() {
         }
         let constructors = "enum Input { Ready } fn run() { use Input::*; let value = Some(Ready); let values: Vec<Input> = Vec::new(); }";
         assert_eq!(report("rust", "src/lib.rs", constructors, expectation("run", "pure", &[])).result, AnalysisResult::Pass);
+    }
+
+    #[test]
+    fn rust_local_enum_alias_constructors_preserve_purity_without_blessing_calls() {
+        let definitions = "enum State { Pending(u8) } impl State { fn Make() { std::env::var(\"X\"); } }";
+        for body in [
+            "use State as S; S::Pending(1);",
+            "use State as S; { S::Pending(1); }",
+        ] {
+            let source = format!("{definitions} fn run() {{ {body} }}");
+            let result = report("rust", "src/lib.rs", &source, expectation("run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for (signature, body) in [
+            ("", "use unknown::State as S; S::Pending(1);"),
+            ("", "#[cfg(feature=\"maybe\")] use State as S; S::Pending(1);"),
+            ("", "use State as S; use Other as S; S::Pending(1);"),
+            ("", "use State as S; { struct S; S::Pending(1); }"),
+            ("<State>", "use State as S; S::Pending(1);"),
+            ("", "use State as S; S::Make();"),
+            ("", "use State as S; S::Missing(1);"),
+            ("", "use State as S; S::Pending();"),
+            ("", "use State as S; S::Pending({ std::env::var(\"X\"); 1 });"),
+            ("", "use State as S; S::Pending(unknown());"),
+        ] {
+            let source = format!("{definitions} fn run{signature}() {{ {body} }}");
+            assert_eq!(report("rust", "src/lib.rs", &source, expectation("run", "pure", &[])).result, AnalysisResult::Fail, "{source}");
+        }
+        let result = analyze(AnalysisInput { binding: "rust".into(), source_digest: "test".into(), tool_digest: "test".into(),
+            sources: BTreeMap::from([
+                ("src/lib.rs".into(), "mod representation; pub use crate::representation::*;".into()),
+                ("src/representation.rs".into(), "pub enum State { Pending(u8) }".into()),
+                ("src/transition.rs".into(), "use crate::*; fn run() { use State as S; S::Pending(1); }".into()),
+            ]),
+            semantic_functions: vec![expectation("src/transition.rs#run", "pure", &[])],
+            authority_facades: vec![], trusted_external_calls: BTreeSet::new() });
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
     }
 
     #[test]

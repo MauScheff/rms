@@ -55,6 +55,7 @@ pub(super) struct RustTypeIndex {
     mutable_sequences: BTreeMap<String, Vec<Option<RustValueType>>>,
     variants: BTreeMap<(String, String), Vec<RustValueType>>,
     generic_names: BTreeSet<String>,
+    local_enum_aliases: BTreeMap<String, String>,
     sources: BTreeMap<String, String>,
     path: String,
 }
@@ -93,6 +94,7 @@ impl RustTypeIndex {
             mutable_sequences: BTreeMap::new(),
             variants: BTreeMap::new(),
             generic_names: BTreeSet::new(),
+            local_enum_aliases: BTreeMap::new(),
             sources: sources.clone(),
             path: String::new(),
         };
@@ -233,14 +235,49 @@ impl RustTypeIndex {
                             syn::UseTree::Group(group) => { for item in &group.items { collect_names(item, names); } }
                         }
                     }
-                    collect_names(&item.tree, &mut result.generic_names);
+                    let mut names = BTreeSet::new();
+                    collect_names(&item.tree, &mut names);
+                    for name in &names { result.local_enum_aliases.remove(name); }
+                    if names.contains("*") { result.local_enum_aliases.clear(); }
+                    result.generic_names.extend(names);
                     None
                 }
                 _ => None,
             };
-            if let Some(name) = name { result.generic_names.insert(name); }
+            if let Some(name) = name {
+                result.local_enum_aliases.remove(&name);
+                result.generic_names.insert(name);
+            }
+        }
+        let local = syn::File { shebang: None, attrs: vec![], items: block.stmts.iter().filter_map(|statement|
+            if let syn::Stmt::Item(item) = statement { Some(item.clone()) } else { None }).collect() };
+        let unique = super::rust_unique_unconditional_imports(&local);
+        for (alias, target) in super::rust_import_aliases(&local) {
+            let root = target.split("::").next().unwrap_or("");
+            if !unique.contains(&alias) || self.generic_names.contains(&alias)
+                || result.generic_names.contains(root) || result.generic_names.contains("*")
+                || local.items.iter().any(|item| match item {
+                    Item::Struct(item) => item.ident == alias,
+                    Item::Enum(item) => item.ident == alias,
+                    Item::Type(item) => item.ident == alias,
+                    Item::Mod(item) => item.ident == alias,
+                    _ => false,
+                }) { continue; }
+            if let Some(owner) = self.resolve_named_type(&target) {
+                if self.variants.keys().any(|(name, _)| name == &owner) {
+                    result.local_enum_aliases.insert(alias, owner);
+                }
+            }
         }
         result
+    }
+
+    pub(super) fn local_enum_constructor(&self, path: &syn::ExprPath, arity: usize) -> bool {
+        if path.qself.is_some() || path.path.leading_colon.is_some() || path.path.segments.len() != 2
+            || path.path.segments.iter().any(|part| !matches!(part.arguments, PathArguments::None)) { return false; }
+        let Some(owner) = self.local_enum_aliases.get(&path.path.segments[0].ident.to_string()) else { return false; };
+        self.variants.get(&(owner.clone(), path.path.segments[1].ident.to_string()))
+            .is_some_and(|fields| fields.len() == arity)
     }
 
     pub(super) fn standard_str_available(&self, signature: &Signature, block: &syn::Block) -> bool {
