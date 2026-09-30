@@ -87503,7 +87503,14 @@ fn validate_integration_package_rebind(root: &Path, context: &SpecTargetContext,
             bail!("selector rebind permits only properties.set; `{field}` contains an operation");
         }
     }
-    if change.module.as_deref().is_some_and(|name| name != owner) { bail!("selector rebind owner mismatch"); }
+    if let Some(reference) = change.module.as_deref() {
+        let matches_owner = reference == owner || fs::canonicalize(root.join(reference)).is_ok_and(|requested| {
+            [&module.path, &implementation.path].iter().any(|path| {
+                fs::canonicalize(path).is_ok_and(|selected| selected == requested)
+            })
+        });
+        if !matches_owner { bail!("selector rebind owner mismatch"); }
+    }
     let properties = change.properties.as_ref().ok_or_else(|| anyhow!("selector rebind requires properties.set"))?;
     if properties.replace.is_empty() || !properties.add.is_empty() || !properties.remove.is_empty() { bail!("selector rebind requires only nonempty properties.set"); }
     let current = property_targets_from_module(module, "semantic").into_iter().chain(fuzz_targets_from_module(module)).collect::<Vec<_>>();
@@ -87513,7 +87520,21 @@ fn validate_integration_package_rebind(root: &Path, context: &SpecTargetContext,
         if !seen.insert(&proposed.id) { bail!("duplicate property in selector rebind"); }
         let candidates = current.iter().filter(|property| property.id == proposed.id).collect::<Vec<_>>();
         let [existing] = candidates.as_slice() else { bail!("selector rebind requires one exact existing property `{}`", proposed.id); };
-        let mut expected: SemanticPropertyChange = serde_yaml::from_value(existing.definition.clone())?;
+        // Canonical properties omit the evidence kind that change requests require.
+        let mut definition = existing.definition.clone();
+        let evidence = definition.as_mapping_mut().and_then(|mapping| mapping.remove(yaml_key("evidence")));
+        let mut expected: SemanticPropertyChange = serde_yaml::from_value(definition)?;
+        if let Some(evidence) = evidence {
+            let path = evidence.as_str().or_else(|| get_str(&evidence, &["path"]))
+                .ok_or_else(|| anyhow!("existing property evidence path missing"))?;
+            if evidence.as_mapping().is_some_and(|mapping| mapping.len() != 1) {
+                bail!("selector rebind requires canonical property evidence");
+            }
+            expected.evidence = Some(SemanticPropertyEvidenceRef {
+                kind: if semantic_property_is_fuzz(&expected) { "fuzz" } else { "property" }.into(),
+                path: path.into(),
+            });
+        }
         for realization in &mut expected.realizations {
             if realization.strategy != "integration-test" || realization.owner_module.as_deref() != Some(owner) { continue; }
             let working = realization.working_directory.as_deref().ok_or_else(|| anyhow!("integration working directory missing"))?;
@@ -88961,12 +88982,13 @@ mod tests {
     fn integration_package_rebind_guard_preserves_every_other_field() {
         let root = unique_test_dir("integration-package-rebind");
         fs::create_dir_all(&root).unwrap();
-        let property = json!({"id":"law-proof", "kind":"semantic", "proves":"law", "oracle":["Preserve domain meaning"], "realizations":[
+        let property = json!({"id":"law-proof", "kind":"semantic", "proves":"law", "oracle":["Preserve domain meaning"], "evidence":{"kind":"property", "path":"verification/proof.md"}, "realizations":[
             {"profile":"ci", "strategy":"integration-test", "command":"integration", "runner":"tests/native.rs#proof", "owner_module":"owner", "package":"old", "working_directory":".", "test_selection":"proof"}
         ]});
-        fs::write(root.join("module.yaml"), serde_yaml::to_string(&json!({"spec":"rms/module/v0.1", "module":{"name":"owner"}, "properties":[property.clone()]})).unwrap()).unwrap();
+        let canonical = semantic_property_yaml(&serde_json::from_value::<SemanticPropertyChange>(property.clone()).unwrap());
+        fs::write(root.join("module.yaml"), serde_yaml::to_string(&json!({"spec":"rms/module/v0.1", "module":{"name":"owner"}, "properties":[canonical.clone()]})).unwrap()).unwrap();
         let path = root.join("implementation.yaml");
-        fs::write(&path, serde_yaml::to_string(&json!({"spec":IMPLEMENTATION_V2_SPEC, "module":"owner", "binding":"rust", "toolchain":{"package":"new"}, "architecture":{"reliability":{"properties":[property.clone()]}}})).unwrap()).unwrap();
+        fs::write(&path, serde_yaml::to_string(&json!({"spec":IMPLEMENTATION_V2_SPEC, "module":"owner", "binding":"rust", "toolchain":{"package":"new"}, "architecture":{"reliability":{"properties":[canonical]}}})).unwrap()).unwrap();
         fs::write(root.join("prior.yaml"), "prior: immutable\n").unwrap();
         seal_implementation_semantics(&mut load_manifest(&path).unwrap(), &root.join("prior.yaml"), SemanticRevisionAuthority::SpecApply).unwrap();
         let context = load_spec_target(&path).unwrap();
@@ -88975,6 +88997,18 @@ mod tests {
         let make = |property: JsonValue| serde_json::from_value::<SemanticChange>(json!({"spec":"rms/semantic-change/v0.1", "properties":{"set":[property]}})).unwrap();
         let original = fs::read(&path).unwrap();
         validate_integration_package_rebind(&root, &context, &make(proposed.clone())).unwrap();
+        for reference in ["owner".to_string(), "implementation.yaml".into(), "module.yaml".into(), path.display().to_string(), root.join("module.yaml").display().to_string()] {
+            let mut change = make(proposed.clone());
+            change.module = Some(reference);
+            validate_integration_package_rebind(&root, &context, &change).unwrap();
+        }
+        fs::create_dir_all(root.join("other")).unwrap();
+        fs::write(root.join("other/implementation.yaml"), &original).unwrap();
+        for reference in ["other-owner", "other/implementation.yaml", "missing/implementation.yaml"] {
+            let mut change = make(proposed.clone());
+            change.module = Some(reference.into());
+            assert!(validate_integration_package_rebind(&root, &context, &change).is_err(), "{reference}");
+        }
         assert_eq!(fs::read(&path).unwrap(), original);
         assert!(validate_integration_package_rebind(&root, &context, &make(property)).is_err());
         for field in ["package", "runner", "command", "owner_module", "working_directory", "test_selection", "strategy"] {
@@ -88985,6 +89019,11 @@ mod tests {
         let mut invalid = proposed.clone();
         invalid["oracle"] = json!(["Changed meaning"]);
         assert!(validate_integration_package_rebind(&root, &context, &make(invalid)).is_err());
+        for field in ["kind", "path"] {
+            let mut invalid = proposed.clone();
+            invalid["evidence"][field] = json!("unrelated");
+            assert!(validate_integration_package_rebind(&root, &context, &make(invalid)).is_err(), "evidence {field}");
+        }
         let mut change = make(proposed);
         change.supersedes.push("unrelated.yaml".into());
         assert!(validate_integration_package_rebind(&root, &context, &change).is_err());
