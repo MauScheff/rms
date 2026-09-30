@@ -25545,7 +25545,9 @@ fn verify_probe_handshake(implementation: &Path, timeout_seconds: u64) -> Result
     result
 }
 
-const MAX_VERIFY_PROBE_MATRIX_CASES: usize = 512;
+// Bound allocation without sampling the representative Cartesian product.
+// Runner timeouts and per-case trace conformance remain independent limits.
+const MAX_VERIFY_PROBE_MATRIX_CASES: usize = 4096;
 
 fn build_probe_verification_matrix(
     binding: &ProbeBinding,
@@ -117231,6 +117233,34 @@ semantic_functions:
         let outcome = wait_child_with_timeout(&mut child, Duration::from_millis(25)).unwrap();
 
         assert!(matches!(outcome, ProviderProcessOutcome::TimedOut { .. }));
+    }
+
+    #[test]
+    fn probe_verification_matrix_preserves_complete_bounded_product() {
+        let binding = ProbeBinding {
+            implementation: LoadedManifest { path: PathBuf::from("implementation.yaml"), value: YamlValue::Null },
+            protocol: "rms/machine-probe/v0.2".into(),
+            command: String::new(), runner: String::new(), machine: "Matrix".into(),
+        };
+        let description = |states: usize, inputs: usize| serde_yaml::to_value(json!({
+            "states": (0..states).map(|state| json!({"examples": [state]})).collect::<Vec<_>>(),
+            "inputs": (0..inputs).map(|input| json!({"example": input})).collect::<Vec<_>>()
+        })).unwrap();
+        for (states, inputs) in [(16, 44), (64, 64)] {
+            let matrix = build_probe_verification_matrix(&binding, &description(states, inputs)).unwrap();
+            let cases = get_path(&matrix, &["cases"]).unwrap().as_sequence().unwrap();
+            assert_eq!(cases.len(), states * inputs);
+            for (index, case) in cases.iter().enumerate() {
+                assert_eq!(serde_json::to_value(case).unwrap(), json!({
+                    "id": format!("verify-state-{}-input-{}", index / inputs, index % inputs),
+                    "state": index / inputs, "input": index % inputs
+                }));
+            }
+        }
+        let error = build_probe_verification_matrix(&binding, &description(1, 4097)).unwrap_err().to_string();
+        assert!(error.contains("4097 cases; maximum is 4096"), "{error}");
+        assert!(build_probe_verification_matrix(&binding, &description(0, 44)).is_err());
+        assert!(build_probe_verification_matrix(&binding, &description(16, 0)).is_err());
     }
 
     #[test]
