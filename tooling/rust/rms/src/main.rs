@@ -17820,6 +17820,10 @@ fn execute_property_realizations_with_batch_and_cache(
             };
             let runner_symbol = binding_reference_symbol(&realization.runner)
                 .unwrap_or(realization.runner.as_str());
+            let coverage_fuzzer = realization.strategy == "coverage-fuzzer";
+            let declared_test = coverage_fuzzer
+                && get_str(&manifest.value, &["binding"]) == Some("rust")
+                && rust_property_runner_is_test(&execution_root, &realization.runner).unwrap_or(true);
             if !integration_test
                 && command_frequencies
                     .get(&realization.command)
@@ -17864,6 +17868,8 @@ fn execute_property_realizations_with_batch_and_cache(
                 suite_started: realization_suite_started,
             };
             let cache_key = verification::ProofCache::key(&[
+                "property-execution-evidence/v2",
+                realization.strategy.as_str(),
                 implementation.to_string_lossy().as_ref(),
                 profile.label(),
                 target.id.as_str(),
@@ -17871,7 +17877,7 @@ fn execute_property_realizations_with_batch_and_cache(
                 realization.runner.as_str(),
                 realization.generator.as_deref().unwrap_or(""),
             ]);
-            if let Some(pass_line) = (!proof_command_is_test_backed(&command))
+            if let Some(pass_line) = (!coverage_fuzzer && !proof_command_is_test_backed(&command))
                 .then(|| {
                     batch_evidence
                         .and_then(|batch| batch.exact_pass_line(&command, &realization.runner))
@@ -17914,7 +17920,9 @@ fn execute_property_realizations_with_batch_and_cache(
                 .and_then(|cache| cache.load::<PropertyRunCommandReport>(&cache_key))
                 .filter(|cached| {
                     cached.status == "pass"
-                        && (!(integration_test || proof_command_is_test_backed(&command))
+                        && cached.exit_code == Some(0)
+                        && (!coverage_fuzzer || libfuzzer_execution_count(&cached.stdout, &cached.stderr).is_some())
+                        && (!property_execution_is_test_backed(coverage_fuzzer, integration_test, declared_test, &command, &cached.stdout, &cached.stderr)
                             || cached.selected_tests.is_some_and(|count| count > 0))
                 })
             {
@@ -17978,7 +17986,15 @@ fn execute_property_realizations_with_batch_and_cache(
                     ),
                 ));
             }
-            let test_backed = integration_test || proof_command_is_test_backed(&command);
+            let test_backed = property_execution_is_test_backed(coverage_fuzzer, integration_test, declared_test, &command, &output.stdout, &output.stderr);
+            let fuzz_executions = coverage_fuzzer.then(|| libfuzzer_execution_count(&output.stdout, &output.stderr)).flatten();
+            if coverage_fuzzer && fuzz_executions.is_none() {
+                diagnostics.push(error(
+                    "proof.fuzz-execution-unavailable",
+                    implementation,
+                    format!("property `{}` coverage-fuzzer runner `{}` must report a completed instrumented libFuzzer run with positive executions and coverage", target.id, realization.runner),
+                ));
+            }
             let selected_tests = test_backed
                 .then(|| selected_test_count(&output.stdout, &output.stderr))
                 .flatten();
@@ -18018,6 +18034,7 @@ fn execute_property_realizations_with_batch_and_cache(
             };
             let proof_passed = output.status.success()
                 && !output.timed_out
+                && (!coverage_fuzzer || fuzz_executions.is_some())
                 && (!test_backed || selected_tests.is_some_and(|count| count > 0));
             let command_report = PropertyRunCommandReport {
                 kind: format!("{}:{}", target.kind, realization.strategy),
@@ -67084,6 +67101,65 @@ fn integration_test_execution(
     Ok((command.to_string(), execution_root))
 }
 
+fn rust_property_runner_is_test(base: &Path, runner: &str) -> Option<bool> {
+    let (path, symbol) = binding_reference_parts(runner)?;
+    let source = fs::read_to_string(base.join(path)).ok()?;
+    let file = syn::parse_file(&source).ok()?;
+    fn find(items: &[Item], symbol: &str, found: &mut Vec<bool>) {
+        for item in items {
+            match item {
+                Item::Fn(function) if function.sig.ident == symbol => {
+                    found.push(function.attrs.iter().any(|attribute| {
+                        attribute.path().segments.last().is_some_and(|segment| segment.ident == "test")
+                            || attribute.path().is_ident("cfg_attr")
+                    }));
+                }
+                Item::Mod(module) => if let Some((_, items)) = &module.content { find(items, symbol, found); },
+                _ => {},
+            }
+        }
+    }
+    let mut found = Vec::new();
+    find(&file.items, symbol, &mut found);
+    (found.len() == 1).then(|| found[0])
+}
+
+fn property_execution_is_test_backed(coverage_fuzzer: bool, integration: bool, declared_test: bool, command: &str, stdout: &str, stderr: &str) -> bool {
+    integration || declared_test || if coverage_fuzzer {
+        // A dispatcher may contain an unexecuted `cargo test` fallback. Runtime
+        // test summaries and actual test attributes still require nonzero tests.
+        selected_test_count(stdout, stderr).is_some()
+    } else { proof_command_is_test_backed(command) }
+}
+
+fn libfuzzer_execution_count(stdout: &str, stderr: &str) -> Option<u64> {
+    let mut instrumented = false;
+    let mut done = Vec::new();
+    let mut summaries = Vec::new();
+    for line in stdout.lines().chain(stderr.lines()).map(str::trim) {
+        if let Some(rest) = line.strip_prefix("INFO: Loaded ") {
+            instrumented |= rest.split_whitespace().next().and_then(|n| n.parse::<u64>().ok()).is_some_and(|n| n > 0)
+                && rest.contains("inline 8-bit counters");
+        }
+        if let Some(rest) = line.strip_prefix('#') {
+            let words = rest.split_whitespace().collect::<Vec<_>>();
+            if words.get(1) == Some(&"DONE") {
+                let count = words.first()?.parse::<u64>().ok()?;
+                let coverage = words.windows(2).find(|pair| pair[0] == "cov:")?[1].parse::<u64>().ok()?;
+                if count == 0 || coverage == 0 { return None; }
+                done.push(count);
+            }
+        }
+        if let Some(rest) = line.strip_prefix("Done ") {
+            let words = rest.split_whitespace().collect::<Vec<_>>();
+            if words.len() != 5 || words[1] != "runs" || words[2] != "in" || words[4] != "second(s)"
+                || words[3].parse::<u64>().is_err() { return None; }
+            summaries.push(words[0].parse::<u64>().ok()?);
+        }
+    }
+    if instrumented && done.len() == 1 && summaries == done { Some(done[0]) } else { None }
+}
+
 fn proof_command_is_test_backed(command: &str) -> bool {
     let command = command.to_ascii_lowercase();
     [
@@ -100058,6 +100134,72 @@ architecture:
         assert!(first_log.contains("second-property|scripts/properties.sh#second_runner"));
         assert_eq!(resumed_log.lines().count(), 2);
         assert_eq!(changed_log.lines().count(), 4);
+    }
+
+    #[test]
+    fn coverage_fuzzer_requires_completed_instrumented_execution_not_test_counts() {
+        let transcript = "INFO: Loaded 1 modules (9604 inline 8-bit counters): 9604\n#5375319 DONE cov: 798 ft: 4345 corp: 1346/144Kb\nDone 5375319 runs in 31 second(s)\n";
+        assert_eq!(libfuzzer_execution_count("", transcript), Some(5_375_319));
+        for invalid in [
+            String::new(),
+            "test result: ok. 1 passed; 0 failed\n".to_string(),
+            transcript.replace("5375319", "0"),
+            transcript.replace("cov: 798", "cov: 0"),
+            transcript.replace("DONE", "NEW"),
+            transcript.replace("Done 5375319", "Done 5"),
+            transcript.replace("inline 8-bit counters", "uninstrumented"),
+            transcript.replace("Done 5375319 runs in 31 second(s)\n", ""),
+            format!("{transcript}{transcript}"),
+        ] {
+            assert_eq!(libfuzzer_execution_count("", &invalid), None, "{invalid}");
+        }
+        let dispatch = "if [ selection = fuzz ]; then cargo fuzz run exact; else cargo test exact; fi";
+        assert!(!property_execution_is_test_backed(true, false, false, dispatch, "", transcript));
+        assert!(property_execution_is_test_backed(false, false, false, dispatch, "", transcript));
+        assert!(property_execution_is_test_backed(true, false, true, dispatch, "", transcript));
+        assert!(property_execution_is_test_backed(true, false, false, dispatch, "test result: ok. 0 passed; 0 failed", transcript));
+    }
+
+    #[test]
+    fn coverage_fuzzer_dispatch_keeps_zero_test_and_exit_failure_guards() {
+        let root = unique_test_dir("coverage-fuzzer-execution-evidence");
+        fs::create_dir_all(root.join("tests/support")).unwrap();
+        fs::write(root.join("tests/support/fuzz.rs"), "pub fn fuzz_parser() { assert!(true); }").unwrap();
+        fs::write(root.join("implementation.yaml"), r#"spec: rms/implementation/v0.1
+module: fuzz-evidence
+binding: rust
+commands:
+  fuzz: 'if [ "${RMS_PROPERTY_RUNNER##*#}" = fuzz_parser ]; then sh fuzz.sh; else cargo test exact; fi'
+architecture:
+  reliability:
+    fuzz_targets:
+      - id: parser
+        input_space: generated parser bytes
+        oracle: [parser does not panic]
+        realizations:
+          - {profile: nightly, strategy: coverage-fuzzer, command: fuzz, runner: tests/support/fuzz.rs#fuzz_parser}
+  roles: {}
+  machine: {}
+"#).unwrap();
+        let transcript = "INFO: Loaded 1 modules (4 inline 8-bit counters): 4\n#123 DONE cov: 4 ft: 4\nDone 123 runs in 1 second(s)";
+        let run = |output: &str, exit: u8| {
+            fs::write(root.join("fuzz.sh"), format!("printf '%s\\n' '{output}' >&2\nexit {exit}\n")).unwrap();
+            execute_property_realizations(&root.join("implementation.yaml"), PropertyProfile::Nightly, false, 10).unwrap()
+        };
+        let passed = run(transcript, 0);
+        assert_eq!(passed.commands[0].status, "pass", "{passed:#?}");
+        assert_eq!(passed.commands[0].selected_tests, None);
+        assert!(!passed.diagnostics.iter().any(|diagnostic| diagnostic.check == "proof.test-count-unavailable"));
+        assert_eq!(run(transcript, 1).commands[0].status, "fail");
+        assert_eq!(run("", 0).commands[0].status, "fail");
+        let zero = run(&format!("{transcript}\ntest result: ok. 0 passed; 0 failed"), 0);
+        assert_eq!(zero.commands[0].status, "fail");
+        assert!(zero.diagnostics.iter().any(|diagnostic| diagnostic.check == "proof.zero-tests-selected"));
+        fs::write(root.join("tests/support/fuzz.rs"), "#[test] pub fn fuzz_parser() { assert!(true); }").unwrap();
+        let missing = run(transcript, 0);
+        assert_eq!(missing.commands[0].status, "fail");
+        assert!(missing.diagnostics.iter().any(|diagnostic| diagnostic.check == "proof.test-count-unavailable"));
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
