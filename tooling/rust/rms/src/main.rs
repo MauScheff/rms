@@ -1481,6 +1481,20 @@ enum AdoptionCommands {
 
 #[derive(Subcommand)]
 enum BindingCommands {
+    /// Set the native Rust package identity without renaming its RMS module or Cargo files.
+    SetPackage {
+        implementation: PathBuf,
+        /// Exact current toolchain.package value (compare before writing).
+        #[arg(long)]
+        from: String,
+        /// New Cargo package identity for this existing binding.
+        #[arg(long)]
+        package: String,
+        #[arg(long = "route-receipt")]
+        route_receipt: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Declare an allowed external Rust crate without editing Cargo.toml.
     AddExternalCrate {
         /// Path to a Rust implementation.yaml.
@@ -10778,6 +10792,13 @@ fn run_main() -> Result<()> {
             Ok(())
         }
         Commands::Binding { command } => match command {
+            BindingCommands::SetPackage { implementation, from, package, route_receipt, dry_run } => {
+                let root = repository_root_for_target(&implementation)?;
+                let receipt = require_route_receipt(&root, &route_receipt, "binding-package-set", &implementation, None);
+                run_set_rust_package(&implementation, &from, &package, dry_run)?;
+                println!("route receipt: {}", receipt.receipt_id);
+                Ok(())
+            }
             BindingCommands::AddExternalCrate {
                 implementation,
                 crate_name,
@@ -22112,16 +22133,24 @@ fn rust_runner_called_symbols(base: &Path, runner: &str) -> Option<BTreeSet<Stri
 }
 
 fn rust_function_called_symbols(items: &[Item], symbol: &str) -> Option<BTreeSet<String>> {
+    rust_function_called_symbols_in_scope(items, symbol, &BTreeSet::new())
+}
+
+fn rust_function_called_symbols_in_scope(items: &[Item], symbol: &str, inherited: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+    let mut shadows = RustAssertionShadows { names: inherited.clone() };
+    for item in items { shadows.visit_item(item); }
     for item in items {
         match item {
             Item::Fn(function) if function.sig.ident == symbol => {
+                shadows.visit_block(&function.block);
                 let mut visitor = RustCalledSymbolVisitor::default();
+                visitor.assertion_shadows = shadows.names;
                 visitor.visit_block(&function.block);
                 return Some(visitor.symbols);
             }
             Item::Mod(module) => {
                 if let Some((_, nested)) = &module.content {
-                    if let Some(symbols) = rust_function_called_symbols(nested, symbol) {
+                    if let Some(symbols) = rust_function_called_symbols_in_scope(nested, symbol, &shadows.names) {
                         return Some(symbols);
                     }
                 }
@@ -22135,9 +22164,51 @@ fn rust_function_called_symbols(items: &[Item], symbol: &str) -> Option<BTreeSet
 #[derive(Default)]
 struct RustCalledSymbolVisitor {
     symbols: BTreeSet<String>,
+    assertion_shadows: BTreeSet<String>,
+}
+
+#[derive(Default)]
+struct RustAssertionShadows { names: BTreeSet<String> }
+
+impl<'ast> Visit<'ast> for RustAssertionShadows {
+    fn visit_item_fn(&mut self, _node: &'ast syn::ItemFn) {}
+    fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
+        self.names.insert(node.ident.to_string());
+    }
+    fn visit_item_macro(&mut self, node: &'ast syn::ItemMacro) {
+        if let Some(name) = &node.ident { self.names.insert(name.to_string()); }
+        visit::visit_item_macro(self, node);
+    }
+    fn visit_use_tree(&mut self, node: &'ast UseTree) {
+        match node {
+            UseTree::Name(name) => { self.names.insert(name.ident.to_string()); }
+            UseTree::Rename(rename) => { self.names.insert(rename.rename.to_string()); }
+            UseTree::Glob(_) => { self.names.insert("*".to_string()); }
+            _ => {}
+        }
+        visit::visit_use_tree(self, node);
+    }
 }
 
 impl<'ast> Visit<'ast> for RustCalledSymbolVisitor {
+    fn visit_macro(&mut self, node: &'ast Macro) {
+        let segments = node.path.segments.iter().map(|part| part.ident.to_string()).collect::<Vec<_>>();
+        let Some(name) = segments.last() else { return; };
+        let operands = match name.as_str() { "assert" => 1, "assert_eq" | "assert_ne" => 2, _ => return };
+        let trusted = match segments.as_slice() {
+            [_] => !self.assertion_shadows.contains(name) && !self.assertion_shadows.contains("*"),
+            [root, _] => matches!(root.as_str(), "std" | "core") && !self.assertion_shadows.contains(root),
+            _ => false,
+        };
+        if !trusted { return; }
+        let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+        let Ok(arguments) = syn::parse::Parser::parse2(parser, node.tokens.clone()) else { return; };
+        // Inspect evaluated assertion operands, never diagnostic strings or custom macro tokens.
+        let mut nested = Self { symbols: BTreeSet::new(), assertion_shadows: self.assertion_shadows.clone() };
+        for argument in arguments.iter().take(operands) { nested.visit_expr(argument); }
+        self.symbols.extend(nested.symbols);
+    }
+
     fn visit_expr_call(&mut self, node: &'ast ExprCall) {
         let called = quote_path(&node.func);
         if let Some(symbol) = called
@@ -42274,6 +42345,17 @@ fn build_next_report_with_optional_program(
         ];
     }
     let external_rust_crate_declaration = task_requests_external_rust_crate_declaration(task);
+    let rust_package_identity_change = task_requests_rust_package_identity_change(task)
+        && intent.as_ref().is_some_and(|intent| {
+            intent.change_scope == IntentChangeScope::ExistingModule
+                && [&intent.facts.domain_decisions, &intent.facts.lifecycle, &intent.facts.effects, &intent.facts.runnable_surface]
+                    .iter().all(|fact| fact.disposition == IntentDisposition::Absent)
+        });
+    if rust_package_identity_change {
+        classification.lane = TaskLane::ImplementationCandidate;
+        classification.confidence = "deterministic".to_string();
+        classification.reasons = vec!["task changes only the native Rust package identity of an existing binding".to_string()];
+    }
     if external_rust_crate_declaration {
         classification.lane = TaskLane::ImplementationCandidate;
         classification.confidence = "deterministic".to_string();
@@ -42685,6 +42767,9 @@ fn build_next_report_with_optional_program(
         if context.implementation.is_some() && external_rust_crate_declaration {
             allowed_actions.push("external-crate-add");
         }
+        if context.implementation.is_some() && rust_package_identity_change {
+            allowed_actions.push("binding-package-set");
+        }
     }
     let owner_path = owner
         .selected_module()
@@ -42899,6 +42984,12 @@ fn task_requests_implementation_binding_attachment(task: &str) -> bool {
     .iter()
     .any(|verb| task_mentions_token(task, verb));
     binding && attach
+}
+
+fn task_requests_rust_package_identity_change(task: &str) -> bool {
+    let normalized = task.to_ascii_lowercase();
+    normalized.contains("toolchain.package") && task_mentions_token(task, "rust")
+        && ["set", "rename", "change"].iter().any(|verb| task_mentions_token(task, verb))
 }
 
 fn task_requests_external_rust_crate_declaration(task: &str) -> bool {
@@ -45856,7 +45947,9 @@ fn build_next_steps(
                 None,
             )),
             TaskLane::ImplementationCandidate => declare.push(manual_next_step(
-                if task_requests_external_rust_crate_declaration(task) {
+                if task_requests_rust_package_identity_change(task) {
+                    "Declare the package identity with `rms binding set-package <implementation.yaml> --from <CURRENT_PACKAGE> --package <NEW_PACKAGE> --route-receipt <RUN_ID>`. Review with `--dry-run` first. This changes only toolchain.package, not RMS module identity, Cargo.toml, dependencies, contracts, or topology. Then update native Cargo package/import references and run native verification plus rms structure."
+                } else if task_requests_external_rust_crate_declaration(task) {
                     "Declare the external Rust dependency with `rms binding add-external-crate <implementation.yaml> --crate <IMPORT_ID> --package <CARGO_PACKAGE> --version-requirement <CARGO_REQUIREMENT> --route-receipt <RUN_ID>`. Review with `--dry-run` first. Then edit Cargo.toml normally inside the declared native role; use the exact dependency key, package, and version requirement that RMS recorded. This command does not edit Cargo.toml and does not change `dependencies.local_modules`."
                 } else if task_requests_existing_contract_native_realization(task) {
                     "Confirm the selected canonical contract already declares every task-owned input, output, invariant, and failure rule. Make no canonical change. If any promise is missing, stop and rerun `rms next` with that exact semantic change."
@@ -45887,6 +45980,13 @@ fn build_next_steps(
             )
         {
             if classification.lane == TaskLane::ImplementationCandidate
+                && task_requests_rust_package_identity_change(task)
+            {
+                implement.push(manual_next_step(
+                    "Update the existing native Cargo package and its affected import/dependency selectors to the declared package name. Preserve the RMS module identity and all canonical semantics. A library/CLI owner split requires a separate topology route; this operation only names one existing package.",
+                    None,
+                ));
+            } else if classification.lane == TaskLane::ImplementationCandidate
                 && task_requests_external_rust_crate_declaration(task)
             {
                 implement.push(manual_next_step(
@@ -69618,6 +69718,7 @@ enum SemanticRevisionAuthority {
     SpecApply,
     MachineApply,
     SurfaceApply,
+    BindingPackageSet,
     RepositoryMaintainerSeal,
 }
 
@@ -69627,6 +69728,7 @@ impl SemanticRevisionAuthority {
             Self::SpecApply => "rms spec apply",
             Self::MachineApply => "rms machine apply",
             Self::SurfaceApply => "rms surface apply",
+            Self::BindingPackageSet => "rms binding set-package",
             Self::RepositoryMaintainerSeal => "repository maintainer seal",
         }
     }
@@ -69636,6 +69738,7 @@ impl SemanticRevisionAuthority {
             "rms spec apply" => Some(Self::SpecApply),
             "rms machine apply" => Some(Self::MachineApply),
             "rms surface apply" => Some(Self::SurfaceApply),
+            "rms binding set-package" => Some(Self::BindingPackageSet),
             "repository maintainer seal" => Some(Self::RepositoryMaintainerSeal),
             _ => None,
         }
@@ -77533,6 +77636,48 @@ fn validate_external_rust_crate_declaration(
         bail!(
             "external Cargo version requirement must be nonblank and contain no control characters"
         );
+    }
+    Ok(())
+}
+
+fn run_set_rust_package(implementation: &Path, from: &str, package: &str, dry_run: bool) -> Result<()> {
+    let mut manifest = load_manifest(implementation)?;
+    if get_str(&manifest.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC)
+        || get_str(&manifest.value, &["binding"]) != Some("rust") {
+        bail!("package identity changes require an rms/implementation/v0.2 Rust binding");
+    }
+    if !valid_cargo_package_identity(package) || package.trim() != package {
+        bail!("invalid Cargo package identity `{package}`");
+    }
+    let current = get_str(&manifest.value, &["toolchain", "package"])
+        .ok_or_else(|| anyhow!("the Rust binding has no current toolchain.package identity"))?;
+    if current != from {
+        bail!("toolchain.package is `{current}`, not expected `{from}`; no change was written");
+    }
+    // A metadata operation must not authorize unrelated canonical drift.
+    let mut checks = Vec::new();
+    append_semantic_revision_audit_check(&manifest, true, &mut checks);
+    if let Some(check) = checks.iter().find(|check| check.result != "pass") {
+        bail!("package identity requires an intact prior revision: {}: {}", check.id, check.note);
+    }
+    let previous_revision = get_path(&manifest.value, &["x-rms", "semantic_revision"]).cloned();
+    set_yaml_string_path(&mut manifest.value, &["toolchain", "package"], package);
+    let rendered = serde_yaml::to_string(&manifest.value)?;
+    if dry_run { print!("{rendered}"); }
+    else {
+        let directory = implementation.parent().unwrap_or_else(|| Path::new("."))
+            .join("verification/binding-changes");
+        fs::create_dir_all(&directory)?;
+        let record = directory.join(format!("package-{}.yaml", SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()));
+        let content = serde_yaml::to_string(&json!({
+            "spec": "rms/binding-package-change/v0.1",
+            "from": from,
+            "package": package,
+            "previous_revision": previous_revision,
+        }))?;
+        fs::OpenOptions::new().write(true).create_new(true).open(&record)?.write_all(content.as_bytes())?;
+        seal_implementation_semantics(&mut manifest, &record, SemanticRevisionAuthority::BindingPackageSet)?;
+        println!("declared Rust package `{package}` in {}; Cargo.toml and RMS module identity are unchanged", implementation.display());
     }
     Ok(())
 }
@@ -88574,6 +88719,97 @@ mod tests {
     }
 
     #[test]
+    fn rust_package_set_changes_only_identity_and_compares_expected_value() {
+        let root = unique_test_dir("rust-package-set");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("implementation.yaml");
+        let source = "spec: rms/implementation/v0.2\nmodule: stable-owner\nbinding: rust\ntoolchain: {cargo_manifest: Cargo.toml, package: old-package}\ncommands: {verify: cargo test}\narchitecture: {roles: {representation: [src/lib.rs]}}\n";
+        fs::write(&path, source).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname = 'old-package'\n").unwrap();
+        assert!(run_set_rust_package(&path, "old-package", "public-library", false).is_err());
+        fs::write(root.join("module.yaml"), "spec: rms/module/v0.1\nmodule: {name: stable-owner}\n").unwrap();
+        let prior_record = root.join("prior.yaml");
+        fs::write(&prior_record, "prior: immutable\n").unwrap();
+        let mut original = load_manifest(&path).unwrap();
+        seal_implementation_semantics(&mut original, &prior_record, SemanticRevisionAuthority::SpecApply).unwrap();
+        let source = fs::read_to_string(&path).unwrap();
+        let original_module = fs::read_to_string(root.join("module.yaml")).unwrap();
+        run_set_rust_package(&path, "old-package", "public-library", true).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), source);
+        assert_eq!(fs::read_to_string(root.join("module.yaml")).unwrap(), original_module);
+        assert!(!root.join("verification/binding-changes").exists());
+        for (from, package) in [("wrong", "public-library"), ("old-package", ""), ("old-package", "bad/name"), ("old-package", " trailing ")] {
+            assert!(run_set_rust_package(&path, from, package, false).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), source);
+        }
+        run_set_rust_package(&path, "old-package", "public-library", false).unwrap();
+        let mut expected: YamlValue = serde_yaml::from_str(&source).unwrap();
+        set_yaml_string_path(&mut expected, &["toolchain", "package"], "public-library");
+        remove_yaml_path(&mut expected, &["x-rms", "semantic_revision"]);
+        let final_manifest = load_manifest(&path).unwrap();
+        let mut actual = final_manifest.value.clone();
+        remove_yaml_path(&mut actual, &["x-rms", "semantic_revision"]);
+        assert_eq!(actual, expected);
+        let mut checks = Vec::new();
+        append_semantic_revision_audit_check(&final_manifest, true, &mut checks);
+        assert!(checks.iter().all(|check| check.result == "pass"), "{checks:?}");
+        assert_eq!(fs::read_to_string(&prior_record).unwrap(), "prior: immutable\n");
+        assert_eq!(fs::read_dir(root.join("verification/binding-changes")).unwrap().count(), 1);
+        assert_eq!(fs::read_to_string(root.join("Cargo.toml")).unwrap(), "[package]\nname = 'old-package'\n");
+        assert!(run_set_rust_package(&path, "old-package", "another", false).is_err());
+        let mut drifted = final_manifest.value.clone();
+        set_yaml_string_path(&mut drifted, &["commands", "verify"], "unrelated drift");
+        let drifted_source = serde_yaml::to_string(&drifted).unwrap();
+        fs::write(&path, &drifted_source).unwrap();
+        assert!(run_set_rust_package(&path, "public-library", "another", false).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), drifted_source);
+        for invalid in [source.replace("binding: rust", "binding: swift"), source.replace("v0.2", "v0.1")] {
+            fs::write(&path, &invalid).unwrap();
+            assert!(run_set_rust_package(&path, "old-package", "public-library", false).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn next_routes_rust_package_set_without_semantic_or_other_owner_authority() {
+        let root = unique_test_dir("next-rust-package-set");
+        run_add_module(add_module_request(&root, "package-owner", "Own package behavior.", "library", &[], Some(ScaffoldShape::DomainEngine), Some("rust")), &no_provider_options()).unwrap();
+        initialize_test_git_repository(&root);
+        let task = "Set the Rust toolchain.package for package-owner from package-owner to public-library. Preserve module identity, contracts, behavior, effects, and topology.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [package-owner]
+facts:
+  domain_decisions: {disposition: absent, basis: inferred, rationale: native package metadata only}
+  lifecycle: {disposition: absent, basis: inferred, rationale: native package metadata only}
+  effects: {disposition: absent, basis: inferred, rationale: native package metadata only}
+  runnable_surface: {disposition: absent, basis: inferred, rationale: native package metadata only}
+  reuse: {disposition: absent, basis: inferred, rationale: native package metadata only}
+responsibilities: []
+surface_kinds: []
+binding_preferences: [rust]
+open_questions: []
+"#;
+        let report = build_next_report_with_intent(&root, Some(&root.join("module.yaml")), task,
+            RawIntentInput { yaml: Some(intent.to_string()), ..Default::default() }, None).unwrap();
+        assert_eq!(report.result, NextResult::Ready, "{report:#?}");
+        assert_eq!(report.task_classification.lane, TaskLane::ImplementationCandidate);
+        assert!(report.steps.iter().flat_map(|group| &group.steps).any(|step| step.description.contains("rms binding set-package")));
+        let receipt = Path::new(&report.receipt_path);
+        assert!(validate_route_receipt(&root, receipt, "binding-package-set", &root.join("implementation.yaml"), None).is_ok());
+        assert!(validate_route_receipt(&root, receipt, "binding-package-set", &root.join("other/implementation.yaml"), None).is_err());
+        assert!(validate_route_receipt(&root, receipt, "spec-apply", &root.join("module.yaml"), None).is_err());
+        let semantic_intent = intent.replace("domain_decisions: {disposition: absent", "domain_decisions: {disposition: required");
+        let semantic_report = build_next_report_with_intent(&root, Some(&root.join("module.yaml")), task,
+            RawIntentInput { yaml: Some(semantic_intent), ..Default::default() }, None).unwrap();
+        let semantic_receipt: RouteReceipt = serde_json::from_slice(&fs::read(&semantic_report.receipt_path).unwrap()).unwrap();
+        assert!(!semantic_receipt.payload.allowed_action_families.contains(&"binding-package-set".to_string()));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn next_routes_external_rust_crate_declaration_to_bounded_mutator() {
         let root = unique_test_dir("next-external-rust-crate-declaration");
         run_add_module(
@@ -98446,6 +98682,31 @@ architecture:
             }),
             "{diagnostics:#?}"
         );
+    }
+
+    #[test]
+    fn rust_property_calls_inside_standard_assertion_operands() {
+        for (source, expected) in [
+            ("fn proof() { assert!(parse_link_request().is_err()); }", true),
+            ("fn proof() { assert_eq!(parse_link_request(), expected); }", true),
+            ("fn proof() { std::assert_ne!(expected, parse_link_request()); }", true),
+            ("fn unrelated() { use custom::*; } fn proof() { assert!(parse_link_request()); }", true),
+            ("mod unrelated { use custom::*; } fn proof() { assert!(parse_link_request()); }", true),
+            ("macro_rules! assert { ($($t:tt)*) => {} } mod nested { fn proof() { assert!(parse_link_request()); } }", false),
+            ("fn proof() { assert!(true, \"parse_link_request()\"); }", false),
+            ("fn proof() { assert!(true, \"{}\", parse_link_request()); }", false),
+            ("fn proof() { custom!(parse_link_request()); }", false),
+            ("fn proof() { debug_assert!(parse_link_request()); }", false),
+            ("macro_rules! assert { ($($t:tt)*) => {} } fn proof() { assert!(parse_link_request()); }", false),
+            ("fn proof() { macro_rules! assert { ($($t:tt)*) => {} } assert!(parse_link_request()); }", false),
+            ("use custom::assert; fn proof() { assert!(parse_link_request()); }", false),
+            ("use custom::*; fn proof() { assert!(parse_link_request()); }", false),
+            ("mod std {} fn proof() { std::assert!(parse_link_request()); }", false),
+        ] {
+            let file = syn::parse_file(source).unwrap();
+            let calls = rust_function_called_symbols(&file.items, "proof").unwrap();
+            assert_eq!(calls.contains("parse_link_request"), expected, "{source}: {calls:?}");
+        }
     }
 
     #[test]
@@ -120571,6 +120832,7 @@ open_questions: []
             &["add-binding"][..],
             &["add-capability-tree"][..],
             &["binding", "add-external-crate"][..],
+            &["binding", "set-package"][..],
             &["machine", "apply"][..],
             &["surface", "apply"][..],
             &["spec", "apply"][..],
