@@ -62316,6 +62316,11 @@ fn normalize_required_contract_provider_syncs(
             // provider edge remains an ordinary caller-owned replacement.
             continue;
         }
+        if declared_for_capability.iter().all(|binding| binding.resolution == "external") {
+            // External contracts remain consumer-owned. Ordinary validation
+            // still checks their body, evidence, consumer, and binding fields.
+            continue;
+        }
         let matching = declared_for_capability
             .iter()
             .copied()
@@ -113337,6 +113342,68 @@ dependency_behavior_bindings:
             Some("contracts/playout-liveness.v1.yaml")
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn required_contract_external_add_and_set_preserve_consumer_body_and_validation() {
+        for contract_operation in ["add", "set"] {
+            for binding_operation in ["add", "set"] {
+                let root = unique_test_dir("external-required-contract");
+                fs::create_dir_all(root.join("contracts")).unwrap();
+                write_compose_module(&root.join("module.yaml"), "consumer", "  capabilities: []\n", "",
+                    if contract_operation == "set" { "  capabilities:\n    - name: external-identity\n      contract: contracts/external-identity.v1.yaml\n" } else { "" });
+                fs::write(root.join("implementation.yaml"), "spec: rms/implementation/v0.1\nmodule: consumer\nbinding: rust\narchitecture: {}\n").unwrap();
+                let predicate = json!({"equals":{"left":{"literal":true},"right":{"literal":true}}});
+                let semantics = json!({"behavior":{"observability":"none","observations":[],"assumptions":[],"requires":[],"guarantees":[],"failures":[],"cases":[{
+                    "id":"external-evidence-accepted","statement":"The consumer accepts the declared external evidence.",
+                    "when":predicate,"outcome":{"kind":"accepted","expression":predicate},"ensures":[],
+                    "permits":{"state_changes":[],"events":[],"effects":[]}
+                }],"invariants":[],"case_policy":{"coverage":"exhaustive","overlap":"forbidden"}}});
+                if contract_operation == "set" {
+                    fs::write(root.join("contracts/external-identity.v1.yaml"), serde_yaml::to_string(&json!({
+                        "spec":"rms/contract/v0.3","name":"external-identity","kind":"capability","version":"1","meaning":"Prior consumer-owned meaning.","semantics":semantics,"compatibility":{"policy":"backward-compatible-within-major"}
+                    })).unwrap()).unwrap();
+                }
+                let context = load_spec_target(&root.join("module.yaml")).unwrap();
+                let source = json!({
+                    "spec":"rms/semantic-change/v0.1",
+                    "contracts":{contract_operation:[{"name":"external-identity","kind":"capability","direction":"required","version":"1","meaning":"Retain explicit external consumer assumptions.","semantics":semantics}]},
+                    "dependency_behavior_bindings":{binding_operation:[{"id":"external-identity-consumer","capability":"external-identity","contract":"contracts/external-identity.v1.yaml","consumer":"src/lib.rs#consume","resolution":"external"}]},
+                    "evidence":{"add":[{"kind":"contract","proves":"external-identity","path":"verification/contracts/external-identity.md"}]}
+                });
+                let parse = |source: &JsonValue| parse_semantic_change(Some(&source.to_string()), None, None).unwrap();
+                let prepared = prepare_semantic_change_for_apply(&context, parse(&source));
+                assert!(prepared.required_contract_syncs.is_empty());
+                assert!(prepared.required_contract_sync_diagnostics.is_empty());
+                let contracts = prepared.contracts.as_ref().unwrap();
+                let contract = contracts.add.iter().chain(&contracts.replace).next().unwrap();
+                assert_eq!(contract.meaning.as_deref(), Some("Retain explicit external consumer assumptions."));
+                assert_eq!(serde_json::to_value(contract.semantics.as_ref().unwrap()).unwrap(), semantics);
+                assert_eq!(serde_json::to_value(&prepared.dependency_behavior_bindings).unwrap(), serde_json::to_value(&parse(&source).dependency_behavior_bindings).unwrap());
+                let candidate = spec_apply_candidate_context(&context, &prepared, None).unwrap();
+                let mut diagnostics = validate_semantic_change(&context, &prepared);
+                validate_spec_candidate_capability_contracts(&candidate, &prepared, &mut diagnostics);
+                assert!(diagnostics.iter().all(|diagnostic| diagnostic.severity != Severity::Error), "{diagnostics:?}");
+                for (field, value, expected) in [
+                    ("provider_module", json!("invented-provider"), "semantic.dependency-binding-provider-invalid"),
+                    ("contract", json!("contracts/wrong.yaml"), "semantic.dependency-binding-contract-mismatch"),
+                    ("consumer", json!("../outside.rs#consume"), "semantic.dependency-binding-consumer-invalid"),
+                ] {
+                    let mut invalid = source.clone(); invalid["dependency_behavior_bindings"][binding_operation][0][field] = value;
+                    let invalid = prepare_semantic_change_for_apply(&context, parse(&invalid));
+                    assert!(validate_semantic_change(&context, &invalid).iter().any(|diagnostic| diagnostic.check == expected), "{expected}");
+                }
+                let mut missing_evidence = source.clone(); missing_evidence.as_object_mut().unwrap().remove("evidence");
+                let missing_evidence = prepare_semantic_change_for_apply(&context, parse(&missing_evidence));
+                assert!(validate_semantic_change(&context, &missing_evidence).iter().any(|diagnostic| diagnostic.check == "semantic.contract-without-evidence"));
+                let mut applying = context.clone();
+                apply_semantic_change(&mut applying, &candidate, &prepared, None).unwrap();
+                let rendered = load_yaml_value(&root.join("contracts/external-identity.v1.yaml")).unwrap();
+                assert_eq!(get_str(&rendered, &["meaning"]), Some("Retain explicit external consumer assumptions."));
+                assert_eq!(serde_json::to_value(get_path(&rendered, &["semantics"]).unwrap()).unwrap(), semantics);
+                fs::remove_dir_all(root).unwrap();
+            }
+        }
     }
 
     #[test]
