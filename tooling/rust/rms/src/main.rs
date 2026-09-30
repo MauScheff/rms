@@ -27549,6 +27549,35 @@ fn validate_effect_analysis(manifest: &LoadedManifest, diagnostics: &mut Vec<Dia
     }
 }
 
+fn append_nested_owning_crate_aliases(manifest: &LoadedManifest, sources: &mut BTreeMap<String, String>) {
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let cargo_path = base.join(get_str(&manifest.value, &["toolchain", "cargo_manifest"]).unwrap_or("Cargo.toml"));
+    let Some(cargo) = fs::read_to_string(&cargo_path).ok().and_then(|text| text.parse::<TomlValue>().ok()) else { return; };
+    let Some(package) = cargo.get("package").and_then(|value| value.get("name")).and_then(TomlValue::as_str) else { return; };
+    // The existing exact-source resolver supports standard src/lib.rs layouts only.
+    if cargo.get("lib").and_then(|value| value.get("path")).and_then(TomlValue::as_str).is_some_and(|path| path != "src/lib.rs") { return; }
+    let owner_dir = cargo_path.parent().unwrap_or(base);
+    let Some(owner) = fs::canonicalize(owner_dir).ok() else { return; };
+    let library_path = display_relative(base, &owner_dir.join("src/lib.rs"));
+    if !sources.contains_key(&library_path) { return; }
+    let owner_prefix = library_path.strip_suffix("src/lib.rs").unwrap_or("").trim_end_matches('/');
+    let library_name = cargo.get("lib").and_then(|value| value.get("name")).and_then(TomlValue::as_str)
+        .unwrap_or(package).replace('-', "_");
+    let callers = sources.keys().filter_map(|path| path.split_once("/src/").map(|(prefix, _)| prefix.to_string())).collect::<BTreeSet<_>>();
+    for caller in callers {
+        let caller_dir = base.join(&caller);
+        let Some(cargo) = fs::read_to_string(caller_dir.join("Cargo.toml")).ok().and_then(|text| text.parse::<TomlValue>().ok()) else { continue; };
+        let Some(dependencies) = cargo.get("dependencies").and_then(TomlValue::as_table) else { continue; };
+        for (alias, dependency) in dependencies {
+            if dependency.get("package").and_then(TomlValue::as_str).unwrap_or(alias) != package { continue; }
+            let Some(path) = dependency.get("path").and_then(TomlValue::as_str) else { continue; };
+            if !fs::canonicalize(caller_dir.join(path)).is_ok_and(|target| target == owner) { continue; }
+            let alias = if alias == package { library_name.clone() } else { alias.replace('-', "_") };
+            sources.insert(format!("rms-metadata/rust-crate-alias/{caller}/{alias}"), owner_prefix.into());
+        }
+    }
+}
+
 fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::EffectAnalysis> {
     let binding = get_str(&manifest.value, &["binding"])
         .unwrap_or_default()
@@ -27606,6 +27635,7 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
         }
     }
     append_verified_dependency_sources(manifest, &binding, extensions, &mut sources);
+    if binding == "rust" { append_nested_owning_crate_aliases(manifest, &mut sources); }
     let digest_input = sources
         .iter()
         .flat_map(|(path, source)| [path.as_bytes(), b"\0", source.as_bytes(), b"\0"])
@@ -89028,6 +89058,28 @@ mod tests {
         change.supersedes.push("unrelated.yaml".into());
         assert!(validate_integration_package_rebind(&root, &context, &change).is_err());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn effect_analysis_maps_nested_cli_dependency_to_exact_owner() {
+        let root = unique_test_dir("nested-cli-effect-owner");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("cli/src")).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname='memory-library'\nversion='0.1.0'\n").unwrap();
+        fs::write(root.join("cli/Cargo.toml"), "[dependencies]\nmemory-library={path='..'}\n").unwrap();
+        fs::write(root.join("src/lib.rs"), "mod repo; pub use crate::repo::Repo;").unwrap();
+        fs::write(root.join("src/repo.rs"), "pub struct Repo; impl Repo { pub fn open() { std::env::var(\"X\"); } }").unwrap();
+        fs::write(root.join("cli/src/main.rs"), "use memory_library::Repo; use std::io::{self, Read}; fn run() { io::stdin(); Repo::open(); }").unwrap();
+        let path = root.join("implementation.yaml");
+        fs::write(&path, "spec: rms/implementation/v0.2\nmodule: owner\nbinding: rust\nsource: {root: .}\nsemantic_functions:\n- {id: cli, symbol: 'cli/src/main.rs#run', purity: effectful, authorities: [environment, process]}\n").unwrap();
+        let manifest = load_manifest(&path).unwrap();
+        let result = build_effect_analysis(&manifest).unwrap();
+        assert_eq!(result.result, effect_analysis::AnalysisResult::Pass, "{result:#?}");
+        for dependency in ["memory-library='1'", "memory-library={path='../other'}", "memory-library={path='..',package='other'}"] {
+            fs::write(root.join("cli/Cargo.toml"), format!("[dependencies]\n{dependency}\n")).unwrap();
+            assert_eq!(build_effect_analysis(&manifest).unwrap().result, effect_analysis::AnalysisResult::Fail, "{dependency}");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

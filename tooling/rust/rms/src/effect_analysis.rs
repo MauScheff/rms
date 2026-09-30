@@ -13,7 +13,7 @@ use rust_effect_types::{RustTypeIndex, RustValueType};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
 pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.5";
-pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.4";
+pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.5";
 
 #[derive(Clone, Debug)]
 pub(crate) struct SemanticFunctionExpectation {
@@ -1598,6 +1598,16 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             return;
         }
         if let syn::Expr::Path(path) = node.func.as_ref() {
+            if path.path.leading_colon.is_none() && path.path.segments.first().is_some_and(|root|
+                (self.type_index.call_root_shadowed(&root.ident.to_string())
+                    || self.value_types.contains_key(&root.ident.to_string()))
+                    && !self.callback_bindings.contains_key(&root.ident.to_string())
+                    && !self.local_closures.contains(&root.ident.to_string()))
+            {
+                self.calls.insert("<dynamic-call>".into());
+                visit::visit_expr_call(self, node);
+                return;
+            }
             if node.args.is_empty() && self.type_index.external_uuid_v4(path)
                 && path.path.segments.first().is_some_and(|root|
                     !self.value_types.contains_key(&root.ident.to_string())
@@ -2467,6 +2477,8 @@ fn extract_rust_functions_with_types(
     };
     let mut aliases = rust_import_aliases(&file);
     let safe_aliases = rust_unique_unconditional_imports(&file);
+    aliases.retain(|name, target| safe_aliases.contains(name)
+        && (!target.starts_with("std::") || types.for_path(path).unshadowed_external_root("std")));
     for (name, target) in &mut aliases {
         if !safe_aliases.contains(name) || function_counts.contains_key(name) {
             continue;
@@ -2566,8 +2578,19 @@ fn rust_exact_item_reference(
                 .map(|(prefix, _)| prefix.to_string())
                 .unwrap_or_default()
         } else {
+            let file = syn::parse_file(sources.get(path)?).ok()?;
+            if file.items.iter().any(|item| match item {
+                syn::Item::Mod(item) => item.ident == parts[0],
+                syn::Item::Struct(item) => item.ident == parts[0],
+                syn::Item::Enum(item) => item.ident == parts[0],
+                syn::Item::Type(item) => item.ident == parts[0],
+                syn::Item::ExternCrate(item) => item.rename.as_ref().map(|(_, name)| name).unwrap_or(&item.ident) == parts[0],
+                _ => false,
+            }) { return None; }
+            let caller = path.split_once("/src/").map(|(prefix, _)| prefix).unwrap_or("");
             sources
-                .get(&format!("rms-metadata/rust-crate-alias/{}", parts[0]))?
+                .get(&format!("rms-metadata/rust-crate-alias/{caller}/{}", parts[0]))
+                .or_else(|| sources.get(&format!("rms-metadata/rust-crate-alias/{}", parts[0])))?
                 .clone()
         };
         let root = if prefix.is_empty() {
@@ -2700,13 +2723,17 @@ fn collect_rust_use_aliases(
             collect_rust_use_aliases(&path.tree, prefix, aliases);
         }
         UseTree::Name(name) => {
+            if name.ident == "self" {
+                if let Some(local) = prefix.last() { aliases.insert(local.clone(), prefix.join("::")); }
+                return;
+            }
             let mut target = prefix;
             target.push(name.ident.to_string());
             aliases.insert(name.ident.to_string(), target.join("::"));
         }
         UseTree::Rename(rename) => {
             let mut target = prefix;
-            target.push(rename.ident.to_string());
+            if rename.ident != "self" { target.push(rename.ident.to_string()); }
             aliases.insert(rename.rename.to_string(), target.join("::"));
         }
         UseTree::Group(group) => {
@@ -4757,6 +4784,55 @@ fn decide() {
             authority_facades: Vec::new(), trusted_external_calls: BTreeSet::new(),
         });
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+    }
+
+    #[test]
+    fn rust_grouped_self_import_preserves_stdio_and_rejects_shadows() {
+        for import in ["use std::io::{self, Read};", "use std::io::{self as input, Read};"] {
+            let name = if import.contains("as input") { "input" } else { "io" };
+            let source = format!("{import} fn run() {{ {name}::stdin(); }}");
+            let result = report("rust", "src/lib.rs", &source, expectation("run", "effectful", &["process"]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for source in [
+            "#[cfg(feature=\"maybe\")] use std::io::{self, Read}; fn run() { io::stdin(); }",
+            "use std::io::{self, Read}; fn run<io>() { io::stdin(); }",
+            "use std::io::{self, Read}; fn run() { use other as io; io::stdin(); }",
+            "use std::io::{self, Read}; fn run() { use other::*; io::stdin(); }",
+            "mod std {} use std::io::{self, Read}; fn run() { io::stdin(); }",
+        ] {
+            assert_eq!(report("rust", "src/lib.rs", source, expectation("run", "effectful", &["process"])).result, AnalysisResult::Fail, "{source}");
+        }
+        let constructors = "enum Input { Ready } fn run() { use Input::*; let value = Some(Ready); let values: Vec<Input> = Vec::new(); }";
+        assert_eq!(report("rust", "src/lib.rs", constructors, expectation("run", "pure", &[])).result, AnalysisResult::Pass);
+    }
+
+    #[test]
+    fn rust_nested_cli_resolves_only_its_exact_owning_library() {
+        let sources = BTreeMap::from([
+            ("src/lib.rs".into(), "mod repo; pub use crate::repo::Repo;".into()),
+            ("src/repo.rs".into(), "pub struct Repo; impl Repo { pub fn init() { std::env::var(\"X\"); } pub fn open() { std::fs::read(\"x\"); } }".into()),
+            ("cli/src/main.rs".into(), "use memory::Repo; fn run() { Repo::init(); Repo::open(); }".into()),
+            ("rms-metadata/rust-crate-alias/cli/memory".into(), "".into()),
+        ]);
+        let run = |sources| analyze(AnalysisInput { binding: "rust".into(), source_digest: "test".into(), tool_digest: "test".into(), sources,
+            semantic_functions: vec![expectation("cli/src/main.rs#run", "effectful", &["environment", "filesystem"])],
+            authority_facades: vec![], trusted_external_calls: BTreeSet::new() });
+        assert_eq!(run(sources.clone()).result, AnalysisResult::Pass);
+        for source in [
+            "use other::Repo; fn run() { Repo::init(); Repo::open(); }",
+            "mod memory {} fn run() { memory::Repo::init(); memory::Repo::open(); }",
+            "fn run<memory>() { memory::Repo::init(); memory::Repo::open(); }",
+            "use memory::Repo; fn run<Repo>() { Repo::init(); Repo::open(); }",
+        ] {
+            let mut changed = sources.clone();
+            changed.insert("cli/src/main.rs".into(), source.into());
+            assert_eq!(run(changed).result, AnalysisResult::Fail, "{source}");
+        }
+        let mut changed = sources;
+        changed.remove("rms-metadata/rust-crate-alias/cli/memory");
+        changed.insert("rms-metadata/rust-crate-alias/another-cli/memory".into(), "".into());
+        assert_eq!(run(changed).result, AnalysisResult::Fail);
     }
 
     #[test]

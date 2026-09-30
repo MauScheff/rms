@@ -202,6 +202,16 @@ impl RustTypeIndex {
 
     pub(super) fn is_generic(&self, name: &str) -> bool { self.generic_names.contains(name) || self.generic_names.contains("*") }
 
+    pub(super) fn call_root_shadowed(&self, name: &str) -> bool {
+        if self.generic_names.contains(name) { return true; }
+        if !self.generic_names.contains("*") { return false; }
+        let caller = self.path.split_once("/src/").map(|(prefix, _)| prefix).unwrap_or("");
+        self.sources.contains_key(&format!("rms-metadata/rust-crate-alias/{caller}/{name}"))
+            || self.sources.contains_key(&format!("rms-metadata/rust-crate-alias/{name}"))
+            || self.sources.get(&self.path).and_then(|source| syn::parse_file(source).ok())
+                .is_some_and(|file| super::rust_import_aliases(&file).contains_key(name))
+    }
+
     pub(super) fn is_declared_type(&self, name: &str) -> bool { self.shadowed_types.contains(name) }
 
     pub(super) fn with_local_type_shadows(&self, block: &syn::Block) -> Self {
