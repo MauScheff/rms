@@ -13,7 +13,7 @@ use rust_effect_types::{RustTypeIndex, RustValueType};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
 pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.5";
-pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.3";
+pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.4";
 
 #[derive(Clone, Debug)]
 pub(crate) struct SemanticFunctionExpectation {
@@ -825,6 +825,9 @@ fn authorities_for_node(
 }
 
 fn authority_for_call(binding: &str, call: &str) -> Option<String> {
+    if binding == "rust" && call == "<rust-external-uuid-v4>" {
+        return Some("randomness".into());
+    }
     if binding == "python" {
         match call {
             "python-stdlib.urllib.request.urlopen" => return Some("network".to_string()),
@@ -1595,6 +1598,15 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             return;
         }
         if let syn::Expr::Path(path) = node.func.as_ref() {
+            if node.args.is_empty() && self.type_index.external_uuid_v4(path)
+                && path.path.segments.first().is_some_and(|root|
+                    !self.value_types.contains_key(&root.ident.to_string())
+                        && !self.dynamic_symbols.contains(&root.ident.to_string()))
+            {
+                self.calls.insert("<rust-external-uuid-v4>".into());
+                visit::visit_expr_call(self, node);
+                return;
+            }
             let call = path
                 .path
                 .segments
@@ -5024,6 +5036,45 @@ fn decide() {
         }
         let shadowed = "struct Result<T, E>(T, E); struct Journal; fn execute(value: Result<Journal, ()>) { value.and_then(|journal| journal.check()); }";
         assert_eq!(report("rust", "src/lib.rs", shadowed, expectation("execute", "pure", &[])).result, AnalysisResult::Fail);
+    }
+
+    #[test]
+    fn rust_uuid_v4_requires_exact_external_identity_and_is_never_pure() {
+        for source in [
+            "fn generate() { uuid::Uuid::new_v4(); }",
+            "fn generate() { ::uuid::Uuid::new_v4(); }",
+            "use uuid::Uuid; fn generate() { Uuid::new_v4(); }",
+            "use uuid::Uuid as OperationId; fn generate() { OperationId::new_v4(); }",
+            "use uuid as ids; fn generate() { ids::Uuid::new_v4(); }",
+        ] {
+            let effectful = report("rust", "src/lib.rs", source, expectation("generate", "effectful", &["randomness"]));
+            assert_eq!(effectful.result, AnalysisResult::Pass, "{source}: {effectful:#?}");
+            assert_eq!(effectful.functions[0].transitive_authorities, vec!["randomness"]);
+            assert_eq!(report("rust", "src/lib.rs", source, expectation("generate", "pure", &[])).result, AnalysisResult::Fail);
+        }
+        for source in [
+            "fn generate() { uuid::Uuid::new_v7(); }",
+            "mod uuid { pub struct Uuid; impl Uuid { pub fn new_v4() { unknown(); } } } fn generate() { uuid::Uuid::new_v4(); }",
+            "use other::Uuid; fn generate() { Uuid::new_v4(); }",
+            "use other as uuid; fn generate() { uuid::Uuid::new_v4(); }",
+            "extern crate other as uuid; fn generate() { uuid::Uuid::new_v4(); }",
+            "#[cfg(feature=\"maybe\")] use uuid::Uuid; fn generate() { Uuid::new_v4(); }",
+            "use uuid::Uuid; use other::Uuid; fn generate() { Uuid::new_v4(); }",
+            "use unknown::*; fn generate() { uuid::Uuid::new_v4(); }",
+            "use uuid as ids; mod ids {} fn generate() { ids::Uuid::new_v4(); }",
+            "use uuid::Uuid; fn generate<Uuid>() { Uuid::new_v4(); }",
+            "use uuid::Uuid; fn generate() { struct Uuid; Uuid::new_v4(); }",
+            "fn generate() { use other as uuid; uuid::Uuid::new_v4(); }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("generate", "effectful", &["randomness"]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+            assert!(!result.functions[0].transitive_authorities.contains(&"randomness".to_string()), "{source}: {result:#?}");
+        }
+        let mixed = report("rust", "src/lib.rs", "fn generate() { uuid::Uuid::new_v4(); std::env::var(\"FAULT\"); std::process::abort(); }", expectation("generate", "effectful", &["randomness", "environment", "process"]));
+        assert_eq!(mixed.result, AnalysisResult::Pass, "{mixed:#?}");
+        let unknown = report("rust", "src/lib.rs", "fn generate() { uuid::Uuid::new_v4(); unverified::call(); }", expectation("generate", "effectful", &["randomness"]));
+        assert_eq!(unknown.result, AnalysisResult::Fail);
+        assert_eq!(unknown.functions[0].unresolved_calls, vec!["unverified::call"]);
     }
 
     #[test]

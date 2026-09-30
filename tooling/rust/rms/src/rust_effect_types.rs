@@ -422,6 +422,28 @@ impl RustTypeIndex {
         })
     }
 
+    pub(super) fn external_uuid_v4(&self, path: &syn::ExprPath) -> bool {
+        if path.qself.is_some() || path.path.segments.iter().any(|part| !matches!(part.arguments, PathArguments::None)) {
+            return false;
+        }
+        let Some(root) = path.path.segments.first().map(|part| part.ident.to_string()) else { return false; };
+        if self.is_generic(&root) || self.unique_types.contains(&format!("{}#{root}", self.path))
+            || !self.unshadowed_external_root("uuid") { return false; }
+        let Some(file) = self.sources.get(&self.path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
+        let reference = path.path.segments.iter().map(|part| part.ident.to_string()).collect::<Vec<_>>().join("::");
+        if file.items.iter().any(|item| match item {
+            Item::Mod(item) => item.ident == root,
+            Item::Trait(item) => item.ident == root,
+            Item::ExternCrate(item) => item.rename.as_ref().map(|(_, name)| name).unwrap_or(&item.ident) == &root,
+            _ => false,
+        }) { return false; }
+        let aliases = super::rust_import_aliases(&file);
+        if aliases.contains_key(&root) {
+            if path.path.leading_colon.is_some() || !super::rust_unique_unconditional_imports(&file).contains(&root) { return false; }
+        } else if root != "uuid" { return false; }
+        super::resolve_call_alias(&reference, &aliases) == "uuid::Uuid::new_v4"
+    }
+
     pub(super) fn standard_integer_available(&self, name: &str) -> bool {
         if !matches!(name, "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
             "i8" | "i16" | "i32" | "i64" | "i128" | "isize") || self.is_generic(name) { return false; }
