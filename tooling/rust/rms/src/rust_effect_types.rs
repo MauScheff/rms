@@ -32,6 +32,7 @@ impl RustValueType {
 
     pub(super) fn callback_inputs(&self, method: &str, argument: usize) -> Option<Vec<Self>> {
         match (self, method, argument) {
+            (Self::ResultOk(element), "and_then", 0) => Some(vec![(**element).clone()]),
             (Self::Optional(_), "map_or_else", 0) => Some(Vec::new()),
             (Self::Optional(element), "map_or_else", 1) => Some(vec![(**element).clone()]),
             (Self::Iterator(element), "fold", 1) => Some(vec![Self::Unknown, (**element).clone()]),

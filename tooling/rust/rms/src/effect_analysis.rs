@@ -12,7 +12,7 @@ mod rust_effect_types;
 use rust_effect_types::{RustTypeIndex, RustValueType};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
-pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.4";
+pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.5";
 pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.3";
 
 #[derive(Clone, Debug)]
@@ -1763,7 +1763,9 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         {
             for (position, argument) in node.args.iter().enumerate() {
                 let bounded_new_callback = matches!((node.method.to_string().as_str(), position),
-                    ("map_or_else", 0 | 1) | ("flat_map", 0) | ("fold", 1));
+                    ("map_or_else", 0 | 1) | ("flat_map", 0) | ("fold", 1))
+                    || (node.method == "and_then" && position == 0
+                        && matches!(inferred_receiver, Some(RustValueType::ResultOk(_))));
                 let typed_predicate = matches!(node.method.to_string().as_str(), "is_some_and" | "any" | "all")
                     && matches!(inferred_receiver, Some(RustValueType::Optional(_) | RustValueType::Iterator(_)));
                 if !bounded_new_callback && !typed_predicate && !matches!(node.method.to_string().as_str(), "map" | "filter_map") { continue; }
@@ -4993,6 +4995,35 @@ fn decide() {
             let result = report("rust", "src/lib.rs", &format!("{declarations} fn decide(root: &Root) {{ {body} }}"), expectation("decide", "pure", &[]));
             assert_eq!(result.result, expected, "{body}: {result:#?}");
         }
+    }
+
+    #[test]
+    fn rust_result_and_then_preserves_concrete_callback_types_and_effects() {
+        let definitions = "struct Journal; struct Context { journal: Journal } impl Context { fn journal(&self) -> Result<&Journal, ()> { Ok(&self.journal) } } impl Journal { fn check(&self) -> Result<(), ()> { Ok(()) } fn cleanup(&self) -> Result<(), ()> { std::fs::remove_file(\"journal\"); std::env::var(\"FAULT\"); std::process::abort(); Ok(()) } }";
+        for (body, authorities) in [
+            ("context.journal().and_then(|journal| journal.check());", vec![]),
+            ("context.journal().and_then(|journal| journal.cleanup());", vec!["environment", "filesystem", "process"]),
+            ("context.journal().and_then(cleanup);", vec!["environment", "filesystem", "process"]),
+        ] {
+            let source = format!("{definitions} fn cleanup(journal: &Journal) -> Result<(), ()> {{ journal.cleanup() }} fn execute(context: &Context) {{ {body} }}");
+            let result = report("rust", "src/lib.rs", &source, expectation("execute", "effectful", &authorities));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+            assert_eq!(result.functions[0].transitive_authorities, authorities);
+        }
+        for (signature, body) in [
+            ("context: &Context", "context.journal().and_then(|journal| { let journal = unknown(); journal.check() });"),
+            ("context: &Context, callback: fn(&Journal) -> Result<(), ()>", "context.journal().and_then(callback);"),
+            ("context: &Context", "context.journal().and_then(unknown::callback);"),
+            ("context: &Context", "context.journal().and_then(make_callback());"),
+            ("context: &Context", "context.journal().map_err(|error| error.check());"),
+            ("context: Unknown", "context.journal().and_then(|journal| journal.check());"),
+        ] {
+            let source = format!("{definitions} fn execute({signature}) {{ {body} }}");
+            let result = report("rust", "src/lib.rs", &source, expectation("execute", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+        }
+        let shadowed = "struct Result<T, E>(T, E); struct Journal; fn execute(value: Result<Journal, ()>) { value.and_then(|journal| journal.check()); }";
+        assert_eq!(report("rust", "src/lib.rs", shadowed, expectation("execute", "pure", &[])).result, AnalysisResult::Fail);
     }
 
     #[test]
