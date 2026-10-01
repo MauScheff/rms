@@ -2644,6 +2644,8 @@ struct SemanticChange {
     contracts: Option<SemanticContractsChange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     composition_exports: Option<SemanticCompositionExportsChange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    composition_contains: Option<SemanticCompositionContainsChange>,
     #[serde(default)]
     properties: Option<SemanticPropertiesChange>,
     #[serde(default)]
@@ -2760,6 +2762,20 @@ struct SemanticCompositionExportsChange {
     add: Vec<SemanticCompositionExport>,
     #[serde(default)]
     remove: Vec<SemanticCompositionExportKey>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticCompositionContainsChange {
+    add: Vec<SemanticCompositionChild>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticCompositionChild {
+    name: String,
+    visibility: String,
+    path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -51573,6 +51589,20 @@ fn append_semantic_change_module_reflection_checks(
     strict: bool,
     checks: &mut Vec<AuditCheck>,
 ) {
+    if let Some(contains) = &change.composition_contains {
+        let children = get_path(module, &["composition", "contains"]).and_then(YamlValue::as_sequence);
+        for child in &contains.add {
+            let reflected = children.is_some_and(|children| children.iter().any(|entry| {
+                get_str(entry, &["name"]) == Some(child.name.as_str())
+                    && get_str(entry, &["path"]) == Some(child.path.as_str())
+                    && get_str(entry, &["visibility"]) == Some(child.visibility.as_str())
+            }));
+            if !reflected {
+                push_applied_change_reflection_failure(checks, strict, "semantic.applied-change-not-reflected",
+                    change_path, format!("declared containment addition `{}` is not reflected exactly", child.name));
+            }
+        }
+    }
     if let Some(declaration) = &change.declaration {
         if declaration
             .purpose
@@ -61524,6 +61554,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
         .is_some_and(|module| get_str(&module.value, &["module", "kind"]) == Some("composite"))
     {
         writeln!(out, "composition_exports: null")?;
+        writeln!(out, "composition_contains: null")?;
         writeln!(out, "proof_delegations:")?;
         writeln!(out, "  set: null")?;
         writeln!(out, "  add: []")?;
@@ -61903,6 +61934,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Machine mode is independent of module shape. A `boundary-adapter` that performs one synchronous decision, retains no pointer, handle, resource, authority, or ordering state between calls, and always returns to `Ready` uses `machine.mode: stateless-decision-machine`, `machine.transition_signature: input-only`, one `Ready` state, `Ready -> Ready` transitions, and a concrete `machine.justification`. Do not use `boundary-machine` merely because the module has the `boundary` profile. Preserve the structured `declaration.boundary` for untrusted input and output obligations; never use `remove_boundary: true` while the boundary profile or trust boundary remains.")?;
     writeln!(out, "Machine transition items use `from`, `on`, `to`, stable ASCII identifier `case` values such as `valid_example_accepted` (not kebab-case), optional `events`, `commands`, `effects`, `reply`, `rejection`, and `no_reply_justification`. Every transition has a case, and different outcomes for the same state/input use different case names. Every transition on a declared command also supplies `reply`, `rejection`, or a non-empty `no_reply_justification`; an asynchronous command normally states `effect result is pending` and its effect-result transition supplies the terminal response.")?;
     writeln!(out, "When external observations use a different binding enum from emitted events, set `machine.types.observed_event` to that exact type. Omit it only for an intentional shared event enum; older declarations continue to fall back to `machine.types.event`.")?;
+    writeln!(out, "To attach an existing standalone child to an existing composite, use only `composition_contains: {{add: [{{name: exact-module-name, visibility: internal, path: ../exact-module-name/module.yaml}}]}}`. The path is relative to the parent manifest and must resolve inside the same RMS root to the unique named module. Only additive internal edges are supported; existing edges and exports remain unchanged. RMS rejects duplicate membership, another parent, self-containment, and cycles. Apply containment first with dry-run and a parent-owned route receipt. In a separate semantic change, use the existing `composition_exports.add` operation to synchronize the exact child contract. Never hand-edit composition or scaffold over an existing parent.")?;
     render_execution_binding_guidance(&mut out)?;
     writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Role add/set items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`; `kind: effect_executor` requires the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. One role kind cannot repeat the same path. If one implementation executes several private backend operations, model one aggregate boundary effect and one executor role, or use distinct declared effects with distinct executor paths. Shared effectful mechanism helpers use `kind: effect_support` and remain private from machine progression and runnable/public roles. Effectful stateful machines set `machine.driver_function`, set the exact `machine.transition_record_function` used by that driver, and declare the driver file as a `machine_driver` role. An explicitly effect-free replacement uses `stateful-transition-machine` when lifecycle state remains and omits the driver function and role. A rejection transition must follow one coherent terminal policy; it cannot preserve a declared success terminal while claiming movement to a separate rejection terminal. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; apply binds each executor as an effectful `effect-executor` semantic function. `atomicity: aggregate` additionally requires `aggregate_justification` and evidence. Effect-protocol removal items use `effect`. Resource-protocol add/set items use a scalar implementation identifier `resource` matching `^[A-Za-z_][A-Za-z0-9_]*$`, `ownership: exclusive|shared|borrowed`, closed `states`, `initial_state`, `terminal_states`, and transitions with `from`, `on`, `trigger_kind`, `operation: acquire|use|release|transfer`, and `to`; removal uses the same exact `resource`. Protocol bindings map one contract participant's semantic message to one machine case and `send|receive` direction. Authority bindings use exactly `{{authority, roles, safe_facade, evidence}}`. `roles` is a non-empty list of exact declared role kinds such as `effect_executor`, never method names. `safe_facade` is one exact relative `path#symbol`. `evidence` is always a non-empty list of module-relative paths, even when it contains one path. Role removal items use `kind` and optional `path`. A Swift public API or language library facade is a `public_facade` role, not a runnable surface. Role kinds are open stable identifiers for implementation ownership. Use `public_facade` for a maintained C header or language facade, `package_manifest` for `Package.swift` or another native package manifest, and `build_support` for a module-local build or link script. Declare each exact path through `roles.add` or `roles.set` before editing it. These files are not runnable product surfaces. Runnable surface items include scalar `usage_document` and scalar `smoke_command`, where `smoke_command` names a key under implementation `commands`.")?;
     writeln!(out, "`binding_dependencies` contains RMS module ids, not language package spellings. RMS applies set/remove/add in that order and lets the selected binding adapter realize allowlists and native local dependency metadata idiomatically. `set` is a complete replacement. Use `add` only for ids absent from the current complete set. If an existing dependency remains sufficient, leave this section unchanged; do not add it again.")?;
@@ -62325,6 +62357,9 @@ fn prepare_semantic_change_for_apply(
     context: &SpecTargetContext,
     mut change: SemanticChange,
 ) -> SemanticChange {
+    if change.composition_contains.as_ref().is_some_and(|contains| contains.add.is_empty()) {
+        change.composition_contains = None;
+    }
     if change
         .composition_exports
         .as_ref()
@@ -63973,6 +64008,8 @@ fn validate_semantic_change(
         .composition_exports
         .as_ref()
         .is_some_and(semantic_composition_exports_change_has_operations);
+    let has_composition_contains = change.composition_contains.as_ref()
+        .is_some_and(|contains| !contains.add.is_empty());
     let has_properties = change.properties.as_ref().is_some_and(|properties| {
         !properties.add.is_empty()
             || !properties.replace.is_empty()
@@ -64055,6 +64092,7 @@ fn validate_semantic_change(
         && !has_laws
         && !has_contracts
         && !has_composition_exports
+        && !has_composition_contains
         && !has_properties
         && !has_hunt_exceptions
         && !has_proof_delegations
@@ -64092,6 +64130,9 @@ fn validate_semantic_change(
     validate_semantic_contracts(context, change, evidence_items, &mut diagnostics);
     validate_semantic_required_contract_syncs(context, change, &mut diagnostics);
     validate_semantic_composition_exports(context, change, &mut diagnostics);
+    if let Err(failure) = validate_semantic_composition_contains(context, change) {
+        diagnostics.push(error("semantic.composition-contains", &context.target, failure.to_string()));
+    }
     validate_semantic_proof_delegations(context, change, &mut diagnostics);
     validate_semantic_properties(context, change, evidence_items, &mut diagnostics);
     validate_trace_producers(context, change, &mut diagnostics);
@@ -70602,7 +70643,83 @@ fn canonicalize_json_value(value: JsonValue) -> Result<JsonValue> {
     }
 }
 
+fn validate_semantic_composition_contains(context: &SpecTargetContext, change: &SemanticChange) -> Result<()> {
+    let Some(contains) = change.composition_contains.as_ref().filter(|contains| !contains.add.is_empty()) else {
+        return Ok(());
+    };
+    let module = context.module.as_ref().ok_or_else(|| anyhow!("containment requires a module target"))?;
+    if get_str(&module.value, &["module", "kind"]) != Some("composite") {
+        bail!("containment additions require an existing composite module");
+    }
+    if change.composition_exports.as_ref().is_some_and(semantic_composition_exports_change_has_operations) {
+        bail!("apply containment first; synchronize composition_exports in a separate semantic change");
+    }
+    let parent_name = get_str(&module.value, &["module", "name"])
+        .ok_or_else(|| anyhow!("parent module.name is missing"))?;
+    let root = fs::canonicalize(rms_root_for(&module.path))?;
+    let parent_path = fs::canonicalize(&module.path)?;
+    if !parent_path.starts_with(&root) {
+        bail!("parent must resolve inside the RMS root");
+    }
+    let mut modules: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    let mut graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for path in discover_targets(&root, vec![], vec![], vec![], vec![], vec![], vec![])? {
+        let manifest = load_manifest(&path)?;
+        if get_str(&manifest.value, &["spec"]) != Some("rms/module/v0.1") { continue; }
+        let name = get_str(&manifest.value, &["module", "name"])
+            .ok_or_else(|| anyhow!("discovered module has no module.name"))?;
+        modules.entry(name.into()).or_default().push(fs::canonicalize(&path)?);
+        for child in get_path(&manifest.value, &["composition", "contains"])
+            .and_then(YamlValue::as_sequence).into_iter().flatten()
+        {
+            if let Some(child_name) = get_str(child, &["name"]) {
+                graph.entry(name.into()).or_default().insert(child_name.into());
+            }
+        }
+    }
+    if modules.get(parent_name).map(Vec::as_slice) != Some(std::slice::from_ref(&parent_path)) {
+        bail!("parent identity `{parent_name}` must resolve uniquely to the target manifest");
+    }
+    let mut added = BTreeSet::new();
+    for child in &contains.add {
+        if child.visibility != "internal" {
+            bail!("containment addition `{}` must use visibility: internal", child.name);
+        }
+        if child.name == parent_name || !added.insert(child.name.clone()) {
+            bail!("self-containment or duplicate addition `{}` is forbidden", child.name);
+        }
+        let relative = Path::new(&child.path);
+        if child.path.trim().is_empty() || relative.is_absolute() {
+            bail!("child `{}` requires a nonempty parent-relative manifest path", child.name);
+        }
+        let child_path = fs::canonicalize(parent_path.parent().unwrap().join(relative))
+            .with_context(|| format!("child `{}` path `{}` does not resolve", child.name, child.path))?;
+        if !child_path.starts_with(&root) || !child_path.is_file() {
+            bail!("child `{}` must resolve to a manifest inside the RMS root", child.name);
+        }
+        if modules.get(&child.name).map(Vec::as_slice) != Some(std::slice::from_ref(&child_path)) {
+            bail!("child `{}` identity/path must resolve to exactly one discovered module", child.name);
+        }
+        if let Some((owner, _)) = graph.iter().find(|(_, children)| children.contains(&child.name)) {
+            bail!("child `{}` is already contained by `{owner}`; additive containment never reparents", child.name);
+        }
+        graph.entry(parent_name.into()).or_default().insert(child.name.clone());
+    }
+    let mut cycles = Vec::new();
+    compose_containment_cycles(&graph, &mut cycles);
+    if let Some(cycle) = cycles.first() {
+        bail!("{}", cycle.message);
+    }
+    Ok(())
+}
+
 fn apply_semantic_change_to_module(value: &mut YamlValue, change: &SemanticChange) {
+    if let Some(contains) = &change.composition_contains {
+        let mut children = get_path(value, &["composition", "contains"])
+            .and_then(YamlValue::as_sequence).cloned().unwrap_or_default();
+        children.extend(contains.add.iter().map(|child| serde_yaml::to_value(child).expect("serializable containment edge")));
+        set_yaml_sequence_path(value, &["composition", "contains"], children);
+    }
     if let Some(summary) = change
         .intent
         .as_ref()
@@ -98041,6 +98158,116 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
 "#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn spec_apply_additive_containment_preserves_edges_and_rejects_invalid_topology() {
+        let root = unique_test_dir("additive-containment");
+        write_profile_manifest(&root.join("system.yaml"), "rms/system/v0.1", None);
+        let parent = root.join("modules/media/module.yaml");
+        write_composite_export_fixture(parent.parent().unwrap());
+        for name in ["media-domain", "media-boundary", "receiver"] {
+            write_profile_manifest(&root.join(format!("modules/{name}/module.yaml")), "rms/module/v0.1", Some(name));
+        }
+        initialize_test_git_repository(&root);
+        let source = r#"spec: rms/semantic-change/v0.1
+intent: {summary: Add the existing receiver as an internal child of media.}
+composition_contains:
+  add:
+    - {name: receiver, visibility: internal, path: ../receiver/module.yaml}
+"#;
+        let context = load_spec_target(&parent).unwrap();
+        let before = snapshot_test_tree(&root);
+        run_spec_apply(&parent, None, Some(source), None, true).unwrap();
+        assert_eq!(snapshot_test_tree(&root), before, "dry-run mutated the tree");
+        for bad in [
+            source.replace("name: receiver", "name: wrong-child"),
+            source.replace("visibility: internal", "visibility: public"),
+            source.replace("../receiver/module.yaml", "../media-domain/module.yaml"),
+            source.replace("../receiver/module.yaml", "../../../"),
+            source.replace("../receiver/module.yaml", &root.join("modules/receiver/module.yaml").display().to_string()),
+            source.replace("name: receiver", "name: media").replace("../receiver/module.yaml", "module.yaml"),
+            format!("{source}    - {{name: receiver, visibility: internal, path: ../receiver/module.yaml}}\n"),
+            format!("{source}composition_exports:\n  add: [{{group: capabilities, name: receive, from: receiver}}]\n"),
+        ] {
+            for dry_run in [true, false] {
+                assert!(run_spec_apply(&parent, None, Some(&bad), None, dry_run).is_err(), "{bad}");
+                assert_eq!(snapshot_test_tree(&root), before, "invalid apply mutated the tree");
+            }
+        }
+        let change = parse_semantic_change(None, Some(source), None).unwrap();
+        let leaf = load_spec_target(&root.join("modules/receiver/module.yaml")).unwrap();
+        assert!(validate_semantic_composition_contains(&leaf, &change).is_err());
+        assert!(parse_semantic_change(None, Some("spec: rms/semantic-change/v0.1\ncomposition_contains: {set: []}\n"), None).is_err());
+
+        let receiver_path = root.join("modules/receiver/module.yaml");
+        let receiver_bytes = fs::read(&receiver_path).unwrap();
+        let mut receiver = load_manifest(&receiver_path).unwrap();
+        set_yaml_string_path(&mut receiver.value, &["module", "kind"], "composite");
+        set_yaml_sequence_path(&mut receiver.value, &["composition", "contains"], vec![serde_yaml::from_str(
+            "{name: media, visibility: internal, path: ../media/module.yaml}").unwrap()]);
+        write_yaml_manifest(&receiver).unwrap();
+        assert!(validate_semantic_composition_contains(&context, &change).unwrap_err().to_string().contains("cycle"));
+        fs::write(&receiver_path, &receiver_bytes).unwrap();
+        let mut other = load_manifest(&parent).unwrap();
+        other.path = root.join("modules/other/module.yaml");
+        set_yaml_string_path(&mut other.value, &["module", "name"], "other");
+        set_yaml_sequence_path(&mut other.value, &["composition", "contains"], vec![serde_yaml::from_str(
+            "{name: receiver, visibility: internal, path: ../receiver/module.yaml}").unwrap()]);
+        fs::create_dir_all(other.path.parent().unwrap()).unwrap();
+        write_yaml_manifest(&other).unwrap();
+        assert!(validate_semantic_composition_contains(&context, &change).unwrap_err().to_string().contains("already contained"));
+        fs::remove_dir_all(other.path.parent().unwrap()).unwrap();
+        write_profile_manifest(&root.join("modules/duplicate/module.yaml"), "rms/module/v0.1", Some("receiver"));
+        assert!(validate_semantic_composition_contains(&context, &change).unwrap_err().to_string().contains("exactly one"));
+        fs::remove_dir_all(root.join("modules/duplicate")).unwrap();
+
+        let task = "Add existing receiver to the media composite as an internal child. Preserve exports.";
+        let intent = r#"spec: rms/intent-model/v0.1
+operation: semantic-change
+change_scope: existing-module
+subjects: [media]
+facts:
+  domain_decisions: {disposition: absent, basis: inferred, rationale: No runtime decision change.}
+  lifecycle: {disposition: absent, basis: inferred, rationale: No lifecycle change.}
+  effects: {disposition: absent, basis: inferred, rationale: No IO change.}
+  runnable_surface: {disposition: absent, basis: inferred, rationale: No new surface.}
+  reuse: {disposition: required, basis: explicit, source_quote: internal child}
+responsibilities:
+  - {id: internal-composition, kind: boundary, summary: Declare internal composition.}
+surface_kinds: []
+binding_preferences: []
+open_questions: []
+"#;
+        let report = build_next_report_with_intent(&root, Some(&parent), task,
+            RawIntentInput { yaml: Some(intent.into()), ..Default::default() }, None).unwrap();
+        assert_eq!(report.result, NextResult::Ready, "{report:#?}");
+        validate_spec_change_route_receipt(&root, Path::new(&report.receipt_path), &parent,
+            None, Some(source), None).unwrap();
+        assert!(validate_spec_change_route_receipt(&root, Path::new(&report.receipt_path), &receiver_path,
+            None, Some(source), None).is_err());
+        let original = load_manifest(&parent).unwrap();
+        run_spec_apply(&parent, None, Some(source), None, false).unwrap();
+        let applied = load_manifest(&parent).unwrap();
+        let children = get_path(&applied.value, &["composition", "contains"]).unwrap().as_sequence().unwrap();
+        let old_children = get_path(&original.value, &["composition", "contains"]).unwrap().as_sequence().unwrap();
+        assert_eq!(&children[..old_children.len()], old_children.as_slice());
+        assert_eq!(children.len(), old_children.len() + 1);
+        assert_eq!(get_path(&applied.value, &["composition", "exports"]), get_path(&original.value, &["composition", "exports"]));
+        assert_eq!(fs::read(&receiver_path).unwrap(), receiver_bytes);
+        let sealed = get_str(&applied.value, &["x-rms", "semantic_revision", "digest"]).unwrap();
+        assert_eq!(sealed, format!("sha256:{}", semantic_revision_digest(Some(&applied), None).unwrap()));
+        let mut reflection = Vec::new();
+        append_semantic_change_module_reflection_checks(&applied.value, parent.parent().unwrap(),
+            Path::new("change.yaml"), &change, true, &mut reflection);
+        assert!(reflection.is_empty(), "{reflection:#?}");
+        append_semantic_change_module_reflection_checks(&original.value, parent.parent().unwrap(),
+            Path::new("change.yaml"), &change, true, &mut reflection);
+        assert!(reflection.iter().any(|check| check.id == "semantic.applied-change-not-reflected"));
+        let after = snapshot_test_tree(&root);
+        assert!(run_spec_apply(&parent, None, Some(source), None, false).is_err());
+        assert_eq!(snapshot_test_tree(&root), after);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
