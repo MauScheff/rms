@@ -27664,6 +27664,14 @@ thread_local! {
 }
 
 fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::EffectAnalysis> {
+    build_effect_analysis_with_contract_sync(manifest, &BTreeSet::new())
+}
+
+// Read-only routing preflight only. Ordinary proof always requires equal contracts.
+fn build_effect_analysis_with_contract_sync(
+    manifest: &LoadedManifest,
+    synchronized_bindings: &BTreeSet<String>,
+) -> Result<effect_analysis::EffectAnalysis> {
     #[cfg(test)]
     AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| {
         if let Some(paths) = paths.borrow_mut().as_mut() {
@@ -27725,7 +27733,7 @@ fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::E
             }
         }
     }
-    append_verified_dependency_sources(manifest, &binding, extensions, &mut sources);
+    append_verified_dependency_sources(manifest, &binding, extensions, synchronized_bindings, &mut sources);
     if binding == "rust" {
         append_nested_owning_crate_aliases(manifest, &mut sources);
         append_pinned_rust_external_api(manifest, &mut sources);
@@ -27789,6 +27797,7 @@ fn append_verified_dependency_sources(
     implementation: &LoadedManifest,
     binding: &str,
     extensions: &[&str],
+    synchronized_bindings: &BTreeSet<String>,
     sources: &mut BTreeMap<String, String>,
 ) {
     let base = implementation
@@ -27862,7 +27871,8 @@ fn append_verified_dependency_sources(
             if !is_safe_relative_artifact_path(contract)
                 || !is_safe_relative_artifact_path(provider_contract)
                 || !fs::read(base.join(contract)).ok().zip(fs::read(provider_base.join(provider_contract)).ok())
-                    .is_some_and(|(consumer, provider)| consumer == provider)
+                    .is_some_and(|(consumer, provider)| consumer == provider
+                        || synchronized_bindings.contains(&dependency.id))
             {
                 continue;
             }
@@ -42918,7 +42928,7 @@ fn build_next_report_with_optional_program(
         exact_owner_scoped_proof_support_role_change_ready(task, intent.as_ref(), &owner);
     let owner_scoped_existing_semantic_change =
         owner_scoped_existing_semantic_change_ready(intent.as_ref(), &owner);
-    let symbol_repairs = if owner_scoped_existing_semantic_change {
+    let proven_effect_repairs = if owner_scoped_existing_semantic_change {
         owner
             .selected_module()
             .and_then(|selected| {
@@ -42929,7 +42939,11 @@ fn build_next_report_with_optional_program(
                 )
                 .ok()
             })
-            .map(|manifest| proven_symbol_qualification_repairs(task, &manifest))
+            .map(|manifest| {
+                let mut repairs = proven_symbol_qualification_repairs(task, &manifest);
+                repairs.extend(proven_required_contract_sync_repairs(task, &manifest));
+                repairs
+            })
             .unwrap_or_default()
     } else {
         BTreeSet::new()
@@ -42940,6 +42954,9 @@ fn build_next_report_with_optional_program(
     } else {
         owner.warnings.clone()
     };
+    if !proven_effect_repairs.is_empty() {
+        warnings.push("A read-only preflight proves that the exact requested canonical repair resolves the named effect-analysis finding without changing source, purity, or authority rows. Apply the receipt-guarded repair and rerun normal proof; this route is not verification of the current candidate.".to_string());
+    }
     if explicit_outside_coverage
         && intent
             .as_ref()
@@ -42992,7 +43009,7 @@ fn build_next_report_with_optional_program(
             .filter(|diagnostic| {
                 diagnostic.severity == Severity::Error
                     && !(diagnostic.check == "effects.transitive-purity"
-                        && symbol_repairs
+                        && proven_effect_repairs
                             .contains(&(diagnostic.path.clone(), diagnostic.message.clone())))
                     && !(external_rust_crate_declaration
                         && requested_external_crate_declaration_diagnostic(task, diagnostic, &owner))
@@ -43987,6 +44004,48 @@ fn owner_scoped_existing_semantic_change_ready(
         ]
         .iter()
         .all(|fact| fact.disposition != IntentDisposition::Unknown)
+}
+
+fn proven_required_contract_sync_repairs(
+    task: &str,
+    manifest: &LoadedManifest,
+) -> BTreeSet<(String, String)> {
+    let mut repairs = BTreeSet::new();
+    if !task_mentions_token(task, "required")
+        || !["synchronize", "synchronization", "sync"].iter().any(|word| task_mentions_token(task, word))
+    {
+        return repairs;
+    }
+    // Preserve identifier boundaries: `other-cap` must not name `cap`.
+    let identifiers = task.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
+        .collect::<BTreeSet<_>>();
+    let synchronized_bindings = typed_yaml_sequence::<DependencyBehaviorBinding>(
+        &manifest.value, &["architecture", "dependency_behavior_bindings"],
+    ).into_iter().filter(|binding| {
+        binding.resolution == "module"
+            && identifiers.contains(binding.capability.as_str())
+            && identifiers.contains(binding.id.as_str())
+            && binding.provider_module.as_deref().is_some_and(|name| identifiers.contains(name))
+    }).map(|binding| binding.id).collect::<BTreeSet<_>>();
+    if synchronized_bindings.is_empty() {
+        return repairs;
+    }
+    let (Ok(before), Ok(after)) = (
+        build_effect_analysis(manifest),
+        build_effect_analysis_with_contract_sync(manifest, &synchronized_bindings),
+    ) else { return repairs; };
+    for failed in before.functions.iter().filter(|function| {
+        function.verdict == effect_analysis::FunctionVerdict::Fail && !function.unresolved_calls.is_empty()
+    }) {
+        if after.functions.iter().any(|function| {
+            function.id == failed.id && function.verdict == effect_analysis::FunctionVerdict::Pass
+        }) {
+            repairs.insert((manifest.path.display().to_string(), format!(
+                "semantic function `{}` failed effect analysis: {}", failed.id, failed.reasons.join("; ")
+            )));
+        }
+    }
+    repairs
 }
 
 fn proven_symbol_qualification_repairs(
@@ -115833,6 +115892,25 @@ semantic_functions:
         manifest.value = original;
         write_test_file(&consumer.join("contracts/cap.yaml"), "different contract\n");
         assert!(!check(&manifest).functions[0].unresolved_calls.is_empty());
+        let sync_task = "Synchronize the required cap contract through cap-provider with the declared provider module.";
+        let repairs = proven_required_contract_sync_repairs(sync_task, &manifest);
+        assert_eq!(repairs.len(), 1, "{repairs:#?}");
+        assert!(!check(&manifest).functions[0].unresolved_calls.is_empty(),
+            "preflight must not change ordinary proof or the contract files");
+        assert_eq!(fs::read_to_string(consumer.join("contracts/cap.yaml")).unwrap(), "different contract\n");
+        for task in ["Implement cap through cap-provider with provider.",
+            "Synchronize the required other-cap contract through cap-provider with provider.",
+            "Synchronize the required cap contract through another-binding with provider."] {
+            assert!(proven_required_contract_sync_repairs(task, &manifest).is_empty(), "{task}");
+        }
+        let effectful = manifest.value.clone();
+        set_yaml_value_path(&mut manifest.value, &["semantic_functions"], serde_yaml::from_str("[{id: caller, symbol: 'src/lib.rs#call', purity: pure, authorities: []}]").unwrap());
+        assert!(proven_required_contract_sync_repairs(sync_task, &manifest).is_empty());
+        manifest.value = effectful;
+        write_test_file(&provider.join("src/port.rs"), "pub trait Adapter { fn execute(&mut self); } pub fn execute(a: &mut impl Adapter) { a.execute(); std::fs::read_to_string(\"file\"); }");
+        assert!(proven_required_contract_sync_repairs(sync_task, &manifest).is_empty(),
+            "synchronization must not excuse undeclared provider authority");
+        write_test_file(&provider.join("src/port.rs"), "pub trait Adapter { fn execute(&mut self); } pub fn execute(a: &mut impl Adapter) { a.execute(); }");
         write_test_file(&consumer.join("contracts/cap.yaml"), "spec: rms/contract/v0.3\nname: cap\n");
         write_test_file(&consumer.join("Cargo.toml"), "[dependencies]\nprovider={path='../wrong'}\n");
         assert!(!check(&manifest).functions[0].unresolved_calls.is_empty());
