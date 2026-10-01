@@ -1916,6 +1916,17 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                     .join("::");
                 if self.dynamic_symbols.contains(symbol_name(&callable)) {
                     self.calls.insert("<dynamic-call>".to_string());
+                } else if callable == "char::is_control" && position == 0
+                    && matches!(node.method.to_string().as_str(), "any" | "all")
+                    && node.args.len() == 1 && node.turbofish.is_none()
+                    && matches!(&inferred_receiver, Some(RustValueType::Iterator(element))
+                        if **element == RustValueType::Character)
+                    && path.qself.is_none() && path.path.leading_colon.is_none()
+                    && path.path.segments.iter().all(|part| matches!(part.arguments, syn::PathArguments::None))
+                    && self.type_index.unshadowed_external_root("char") {
+                    // Close only the standard primitive predicate on characters.
+                    // Same-name imports, custom receivers and open callbacks stay checked.
+                    self.calls.insert("<rust-character-predicate>".into());
                 } else {
                     self.calls.insert(if self.standard_str && callable == "str::to_ascii_uppercase" {
                         "<rust-str-ascii-uppercase>".to_string()
@@ -5827,6 +5838,31 @@ fn decide() {
         let result = report("rust", "src/lib.rs", &source, expectation("run", "pure", &[]));
         assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
         assert!(result.functions[0].transitive_authorities.contains(&"filesystem".into()), "{result:#?}");
+    }
+
+    #[test]
+    fn rust_named_character_predicate_requires_primitive_identity() {
+        for source in [
+            "fn run(value: String) -> bool { value.chars().any(char::is_control) }",
+            "fn run(value: &str) -> bool { value.chars().all(char::is_control) }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+            assert!(result.functions[0].transitive_authorities.is_empty());
+            assert!(result.functions[0].unresolved_calls.is_empty());
+        }
+        for source in [
+            "mod char { pub fn is_control(_: std::primitive::char) -> bool { std::fs::read(\"x\"); true } } fn run(value: &str) -> bool { value.chars().any(char::is_control) }",
+            "struct Custom; impl Custom { fn is_control(_: char) -> bool { std::fs::read(\"x\"); true } } use Custom as char; fn run(value: &str) -> bool { value.chars().any(char::is_control) }",
+            "fn run(value: &str) -> bool { use custom as char; value.chars().any(char::is_control) }",
+            "fn run<char>(value: &str) -> bool { value.chars().any(char::is_control) }",
+            "fn run(value: &str, predicate: impl FnMut(char) -> bool) -> bool { value.chars().any(predicate) }",
+            "fn is_control(_: char) -> bool { std::fs::read(\"x\"); true } fn run(value: &str) -> bool { value.chars().any(is_control) }",
+            "fn run(value: &str) -> bool { value.bytes().any(char::is_control) }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+        }
     }
 
     #[test]
