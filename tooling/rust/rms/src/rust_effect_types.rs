@@ -91,6 +91,7 @@ impl RustValueType {
 
     pub(super) fn callback_inputs(&self, method: &str, argument: usize) -> Option<Vec<Self>> {
         match (self, method, argument) {
+            (Self::Sequence(element), "retain", 0) => Some(vec![(**element).clone()]),
             (Self::External(receiver), method, argument) => receiver.callbacks(method, argument),
             (Self::ResultKnown(ok, _), "and_then" | "map", 0) => Some(vec![(**ok).clone()]),
             (Self::ResultKnown(_, error), "map_err", 0) => Some(vec![(**error).clone()]),
@@ -99,7 +100,7 @@ impl RustValueType {
             (Self::Optional(element), "map_or_else", 1) => Some(vec![(**element).clone()]),
             (Self::Iterator(element), "fold", 1) => Some(vec![Self::Unknown, (**element).clone()]),
             (Self::Iterator(element), "flat_map", 0) => Some(vec![(**element).clone()]),
-            (_, "map" | "filter" | "filter_map" | "any" | "all" | "find" | "and_then" | "is_some_and" | "max_by_key" | "min_by_key", 0) => {
+            (_, "map" | "filter" | "filter_map" | "find_map" | "any" | "all" | "find" | "and_then" | "is_some_and" | "max_by_key" | "min_by_key", 0) => {
                 self.element().map(|element| vec![element.clone()])
             }
             _ => None,
@@ -271,6 +272,25 @@ impl RustTypeIndex {
         let mut signatures = BTreeMap::<String, Vec<(String, Type)>>::new();
         for (path, file) in &files {
             for item in &file.items {
+                let derived = match item {
+                    Item::Struct(item) => Some((&item.ident, &item.attrs, &item.generics)),
+                    Item::Enum(item) => Some((&item.ident, &item.attrs, &item.generics)),
+                    _ => None,
+                };
+                if let Some((name, attrs, generics)) = derived {
+                    let mut clone = false;
+                    for attr in attrs.iter().filter(|attr| attr.path().is_ident("derive")) {
+                        let _ = attr.parse_nested_meta(|meta| { clone |= meta.path.is_ident("Clone"); Ok(()) });
+                    }
+                    if clone && generics.params.is_empty()
+                        && !attrs.iter().any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr"))
+                        && index.for_path(path).unshadowed_external_root("Clone") {
+                        // This is a return-type fact, not a purity exemption.
+                        // Competing inherent clone signatures remain ambiguous.
+                        signatures.entry(format!("{path}#{name}::clone")).or_default()
+                            .push(((*path).clone(), syn::parse_str("Self").unwrap()));
+                    }
+                }
                 if let Item::Struct(item) = item {
                     if index.unique_types.contains(&format!("{path}#{}", item.ident)) && item.generics.params.is_empty()
                         && !item.attrs.iter().any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")) {

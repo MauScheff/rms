@@ -1014,6 +1014,7 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
+    if call == "<rust-sequence-retain>" { return true; }
     if call == "<rust-character-predicate>" { return true; }
     if call == "<rust-io-error-kind>" { return true; }
     if call == "<rust-byte-ascii-hexdigit>" { return true; }
@@ -1844,6 +1845,11 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         } else if matches!(inferred_receiver, Some(RustValueType::Sequence(_)))
             && node.method == "last_mut" && node.args.is_empty() {
             "<rust-sequence-last-mut>".to_string()
+        } else if matches!(inferred_receiver, Some(RustValueType::Sequence(_)))
+            && node.method == "retain" && node.args.len() == 1 && node.turbofish.is_none() {
+            // Identify the standard operation, not an unrelated same-leaf helper.
+            // Its predicate is still traversed with the proven element type.
+            "<rust-sequence-retain>".to_string()
         } else if matches!(inferred_receiver, Some(RustValueType::Iterator(_)))
             && node.method == "max_by_key" && node.args.len() == 1
             && matches!(&node.args[0], Expr::Closure(closure) if closure.inputs.len() == 1) {
@@ -1880,6 +1886,10 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             for (position, argument) in node.args.iter().enumerate() {
                 let bounded_new_callback = matches!((node.method.to_string().as_str(), position),
                     ("map_or_else", 0 | 1) | ("flat_map", 0) | ("fold", 1))
+                    || (node.method == "find_map" && position == 0
+                        && matches!(inferred_receiver, Some(RustValueType::Iterator(_))))
+                    || (node.method == "retain" && position == 0
+                        && matches!(inferred_receiver, Some(RustValueType::Sequence(_))))
                     || (node.method == "and_then" && position == 0
                         && matches!(inferred_receiver, Some(RustValueType::ResultOk(_) | RustValueType::ResultKnown(_, _))))
                     || inferred_receiver.as_ref().is_some_and(|receiver|
@@ -5748,6 +5758,41 @@ fn decide() {
             expectation("src/index.js#decide", "pure", &[]),
         );
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+    }
+
+    #[test]
+    fn rust_retain_preserves_element_identity_and_callback_authority() {
+        let value = "struct Receipt; impl Receipt { fn evidence(&self) -> bool { true } } ";
+        for body in [
+            "fn run(values: &mut Vec<Receipt>) { values.retain(|r| r.evidence()); }",
+            "fn keep(r: &Receipt) -> bool { r.evidence() } fn run(values: &mut Vec<Receipt>) { values.retain(keep); }",
+            "fn retain() { std::fs::read(\"x\"); } fn run(values: &mut Vec<Receipt>) { values.retain(|r| r.evidence()); }",
+            "fn run(values: &Vec<Receipt>) -> Option<bool> { values.iter().find_map(|r| Some(r.evidence())) }",
+        ] {
+            let result = report("rust", "src/lib.rs", &format!("{value}{body}"), expectation("run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+            assert!(result.functions[0].transitive_authorities.is_empty());
+        }
+        for (body, authority) in [
+            ("fn run(values: &mut Vec<Receipt>) { values.retain(|r| { std::fs::read(\"x\"); r.evidence() }); }", "filesystem"),
+            ("fn keep(r: &Receipt) -> bool { std::fs::read(\"x\"); r.evidence() } fn run(values: &mut Vec<Receipt>) { values.retain(keep); }", "filesystem"),
+            ("fn run(values: &mut Vec<Receipt>, keep: impl FnMut(&Receipt) -> bool) { values.retain(keep); }", "dynamic-dispatch"),
+            ("fn run(values: &mut Vec<Receipt>, keep: impl Fn(&Receipt) -> bool) { values.retain(|r| keep(r)); }", "dynamic-dispatch"),
+            ("fn run(values: &Vec<Receipt>, keep: impl FnMut(&Receipt) -> Option<bool>) { values.iter().find_map(keep); }", "dynamic-dispatch"),
+            ("fn run(values: &Vec<Receipt>) { values.iter().find_map(|r| { std::fs::read(\"x\"); Some(r.evidence()) }); }", "filesystem"),
+            ("struct Custom; impl Custom { fn retain(&mut self, f: impl Fn(&Receipt) -> bool) { std::fs::read(\"x\"); } } fn run(values: &mut Custom) { values.retain(|r| r.evidence()); }", "filesystem"),
+        ] {
+            let result = report("rust", "src/lib.rs", &format!("{value}{body}"), expectation("run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+            assert!(result.functions[0].transitive_authorities.contains(&authority.into()), "{result:#?}");
+        }
+        let source = "#[derive(Clone)] struct Receipt; impl Receipt { fn evidence(&self) -> bool { true } } #[derive(Clone)] struct Context { receipts: Vec<Receipt> } fn run(context: &Context) { let mut c = context.clone(); c.receipts.retain(|r| r.evidence()); }";
+        let result = report("rust", "src/lib.rs", source, expectation("run", "pure", &[]));
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        let source = source.replace("fn run(context:", "impl Context { fn clone(&self) -> Context { std::fs::read(\"x\"); Context { receipts: vec![] } } } fn run(context:");
+        let result = report("rust", "src/lib.rs", &source, expectation("run", "pure", &[]));
+        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+        assert!(result.functions[0].transitive_authorities.contains(&"filesystem".into()), "{result:#?}");
     }
 
     #[test]
