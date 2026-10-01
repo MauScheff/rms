@@ -27847,9 +27847,8 @@ fn append_verified_dependency_sources(
         let Some(provider_contract) = dependency.provider_contract.as_deref() else {
             continue;
         };
-        let Some(provider) = find_named_provider_module(root, &consumer, provider_name) else {
-            continue;
-        };
+        let providers = find_named_provider_modules_strict(root, &consumer, provider_name);
+        let [provider] = providers.as_slice() else { continue; };
         let provider_base = provider.path.parent().unwrap_or_else(|| Path::new("."));
         let Ok(provider_implementation) = load_manifest(&provider_base.join("implementation.yaml"))
         else {
@@ -27883,7 +27882,7 @@ fn append_verified_dependency_sources(
         if !matches!(purity, Some("pure" | "effectful" | "boundary")) {
             continue;
         }
-        if purity != Some("pure") {
+        if purity != Some("pure") || binding == "rust" {
             // Effectful dependencies are inspected, never added to the pure-call
             // allowlist. Require one exact provider and byte-identical contracts.
             if find_named_provider_modules_strict(root, &consumer, provider_name).len() != 1 {
@@ -27908,6 +27907,7 @@ fn append_verified_dependency_sources(
         // Record only native Cargo path dependencies that resolve to this exact
         // verified provider checkout. Package-name similarity is not identity.
         if binding == "rust" {
+            let mut verified_crate = false;
             if let (Ok(consumer_cargo), Ok(provider_cargo)) = (
                 fs::read_to_string(base.join("Cargo.toml")),
                 fs::read_to_string(provider_base.join("Cargo.toml")),
@@ -27956,12 +27956,14 @@ fn append_verified_dependency_sources(
                                         ),
                                         format!("dependencies/{provider_name}"),
                                     );
+                                    verified_crate = true;
                                 }
                             }
                         }
                     }
                 }
             }
+            if !verified_crate { continue; }
         }
         for entry in WalkDir::new(&source_root)
             .follow_links(false)
@@ -28061,6 +28063,11 @@ fn semantic_revision_is_current_and_sealed(
 }
 
 fn trusted_pure_dependency_calls(implementation: &LoadedManifest) -> BTreeSet<String> {
+    // Rust dependencies must resolve through verified source and Cargo identity.
+    // A declaration alone cannot excuse an unresolved or mismatched native call.
+    if get_str(&implementation.value, &["binding"]) == Some("rust") {
+        return BTreeSet::new();
+    }
     let base = implementation
         .path
         .parent()
@@ -116131,6 +116138,50 @@ properties:
         assert!(repair.contains("`temporal` is exactly `{scope, expression}`"));
         assert!(repair.contains("never contains `kind`, `command`, `runner`, `generator`, `seed`, `state`, or `schedule`"));
         assert!(repair.contains("`observations: []`, `assumptions: []`, and `temporal: null`"));
+    }
+
+    #[test]
+    fn nested_dependency_source_preserves_exact_provider_identity() {
+        let root = unique_test_dir("nested-dependency-source");
+        let provider = root.join("backend/domain/modules/provider");
+        let consumer = root.join("modules/consumer");
+        write_test_file(&root.join("system.yaml"), "spec: rms/system/v0.1\n");
+        for (path, name) in [(&provider, "provider"), (&consumer, "consumer")] {
+            write_test_file(&path.join("module.yaml"), &next_module_source(name, "Exact dependency identity."));
+            write_test_file(&path.join("contracts/cap.yaml"), "spec: rms/contract/v0.3\nname: cap\n");
+        }
+        let cargo = "[dependencies]\nprovider={path='../../backend/domain/modules/provider'}\n";
+        write_test_file(&provider.join("Cargo.toml"), "[package]\nname='provider'\nversion='0.1.0'\n");
+        write_test_file(&consumer.join("Cargo.toml"), cargo);
+        write_test_file(&provider.join("src/lib.rs"), "mod value; pub use crate::value::*;");
+        write_test_file(&provider.join("src/value.rs"), "pub struct Scope; impl Scope { pub fn epoch(&self) -> u64 { 1 } } pub fn evaluate(s: &Scope) -> u64 { s.epoch() }");
+        write_test_file(&consumer.join("src/lib.rs"), "pub fn call(s: &provider::Scope) -> u64 { provider::evaluate(s) + s.epoch() } struct Local; impl Local { fn epoch(&self) -> u64 { std::fs::read(\"x\"); 0 } }");
+        write_test_file(&provider.join("implementation.yaml"), "spec: rms/implementation/v0.2\nmodule: provider\nbinding: rust\nsource: {root: src}\narchitecture:\n  public_behavior_bindings:\n  - {id: public, public_kind: capability, public_name: cap, contract: contracts/cap.yaml, semantic_function: evaluate}\nsemantic_functions:\n- {id: evaluate, symbol: 'src/value.rs#evaluate', purity: pure}\n");
+        write_test_file(&consumer.join("implementation.yaml"), "spec: rms/implementation/v0.2\nmodule: consumer\nbinding: rust\nsource: {root: src}\narchitecture:\n  dependency_behavior_bindings:\n  - {id: provider, capability: cap, contract: contracts/cap.yaml, consumer: 'src/lib.rs#call', resolution: module, provider_module: provider, provider_contract: contracts/cap.yaml}\nsemantic_functions:\n- {id: call, symbol: 'src/lib.rs#call', purity: pure}\n");
+        let mut provider_manifest = load_manifest(&provider.join("implementation.yaml")).unwrap();
+        write_test_file(&provider.join("seal.yaml"), "test: exact-provider\n");
+        seal_implementation_semantics(&mut provider_manifest, &provider.join("seal.yaml"), SemanticRevisionAuthority::SpecApply).unwrap();
+        let manifest = load_manifest(&consumer.join("implementation.yaml")).unwrap();
+        let check = || build_effect_analysis(&manifest).unwrap();
+        let result = check();
+        assert_eq!(result.result, effect_analysis::AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].resolved_callees.contains(&"Scope::epoch".into()));
+        assert!(!result.functions[0].resolved_callees.contains(&"Local::epoch".into()));
+        for (path, replacement) in [
+            (consumer.join("Cargo.toml"), "[dependencies]\nprovider={path='../wrong'}\n"),
+            (consumer.join("contracts/cap.yaml"), "different contract\n"),
+            (provider.join("seal.yaml"), "tampered: true\n"),
+            (provider.join("implementation.yaml"), "spec: rms/implementation/v0.2\nmodule: provider\nbinding: rust\nsource: {root: src}\n"),
+        ] {
+            let original = fs::read_to_string(&path).unwrap();
+            write_test_file(&path, replacement);
+            assert_eq!(check().result, effect_analysis::AnalysisResult::Fail, "{}", path.display());
+            write_test_file(&path, &original);
+        }
+        // A conventional-path duplicate must not override the nested identity.
+        write_test_file(&root.join("modules/provider/module.yaml"), &next_module_source("provider", "Duplicate identity."));
+        assert_eq!(check().result, effect_analysis::AnalysisResult::Fail);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

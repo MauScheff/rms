@@ -716,6 +716,15 @@ fn resolve_local_call(index: usize, call: &str, nodes: &[FunctionNode]) -> Vec<u
         })
         .map(|(candidate, _)| candidate)
         .collect::<Vec<_>>();
+    if nodes[index].binding == "rust" && call.split_once("::")
+        .is_some_and(|(owner, _)| owner.chars().next().is_some_and(char::is_uppercase)) {
+        // A named receiver is not interchangeable with another type (or a
+        // free function) merely because their method leaves match.
+        let exact = direct.iter().copied().filter(|candidate|
+            nodes[*candidate].qualified_name == symbol_qualified_name(call))
+            .collect::<Vec<_>>();
+        return if exact.len() == 1 { exact } else { Vec::new() };
+    }
     if direct.len() == 1 {
         return direct;
     }
@@ -4866,6 +4875,19 @@ fn decide() {
         ] {
             let source = format!("{helper} fn pure_callback() {{}} fn effect_callback() {{ std::fs::read_to_string(\"x\").ok(); }} fn decide() {{ invoke(pure_callback); }}");
             assert_eq!(report("rust", "src/lib.rs", &source, expectation("decide", "pure", &[])).result, AnalysisResult::Fail, "{helper}");
+        }
+    }
+
+    #[test]
+    fn rust_qualified_receiver_never_resolves_an_unrelated_leaf() {
+        for source in [
+            "struct Local; impl Local { fn epoch(&self) -> u64 { 1 } } fn run(s: &MissingScope) -> u64 { s.epoch() }",
+            "fn epoch() -> u64 { 1 } fn run(s: &MissingScope) -> u64 { s.epoch() }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+            assert!(!result.functions[0].resolved_callees.contains(&"Local::epoch".into()));
+            assert!(!result.functions[0].resolved_callees.contains(&"epoch".into()));
         }
     }
 
