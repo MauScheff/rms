@@ -2397,6 +2397,15 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             calls.authorities.insert("unsafe".to_string());
         }
         calls.visit_block(&node.block);
+        if let Some(RustValueType::Named(owner)) = &self.inherent_self {
+            // Self names this exact source-owned inherent impl, never a
+            // same-leaf helper or a same-named type in another source file.
+            let resolve_self = |call: &String| call.strip_prefix("Self::")
+                .map(|method| format!("{owner}::{method}"))
+                .unwrap_or_else(|| call.clone());
+            calls.calls = calls.calls.iter().map(resolve_self).collect();
+            calls.unsafe_calls = calls.unsafe_calls.iter().map(resolve_self).collect();
+        }
         let name = node.sig.ident.to_string();
         self.nodes.push(FunctionNode {
             binding: "rust".to_string(),
@@ -4886,6 +4895,31 @@ fn decide() {
             let source = format!("{helper} fn pure_callback() {{}} fn effect_callback() {{ std::fs::read_to_string(\"x\").ok(); }} fn decide() {{ invoke(pure_callback); }}");
             assert_eq!(report("rust", "src/lib.rs", &source, expectation("decide", "pure", &[])).result, AnalysisResult::Fail, "{helper}");
         }
+    }
+
+    #[test]
+    fn rust_self_calls_keep_enclosing_source_and_impl_identity() {
+        let sources = BTreeMap::from([
+            ("src/lib.rs".into(), "struct Owner; impl Owner { fn run() { Self::validated(); } fn validated() {} } struct Other; impl Other { fn validated() { std::fs::read(\"x\"); } }".into()),
+            ("src/other.rs".into(), "struct Owner; impl Owner { fn validated() { std::fs::read(\"x\"); } }".into()),
+        ]);
+        let check = |sources| analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "test".into(), tool_digest: "test".into(), sources,
+            semantic_functions: vec![expectation("src/lib.rs#Owner::run", "pure", &[])],
+            authority_facades: Vec::new(), trusted_external_calls: BTreeSet::new(),
+        });
+        let result = check(sources.clone());
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].direct_calls.contains(&"src/lib.rs#Owner::validated".into()));
+        let mut missing = sources.clone();
+        missing.get_mut("src/lib.rs").unwrap().replace_range(..,
+            "struct Owner; impl Owner { fn run() { Self::validated(); } } struct Other; impl Other { fn validated() {} }");
+        assert_eq!(check(missing).result, AnalysisResult::Fail);
+        let mut effectful = sources;
+        *effectful.get_mut("src/lib.rs").unwrap() = "struct Owner; impl Owner { fn run() { Self::validated(); } fn validated() { std::fs::read(\"x\"); } }".into();
+        let result = check(effectful);
+        assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+        assert!(result.functions[0].transitive_authorities.contains(&"filesystem".into()));
     }
 
     #[test]
