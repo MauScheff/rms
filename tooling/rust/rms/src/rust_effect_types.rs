@@ -6,6 +6,7 @@ use syn::{Expr, FnArg, GenericArgument, Item, Pat, PathArguments, ReturnType, Si
 pub(super) enum RustValueType {
     Unknown,
     Text,
+    Character,
     Byte,
     Integer,
     Usize,
@@ -1119,6 +1120,8 @@ impl RustTypeIndex {
                         "len" if call.args.is_empty() && call.turbofish.is_none() => Some(RustValueType::Usize),
                         "bytes" if call.args.is_empty() && call.turbofish.is_none() =>
                             Some(RustValueType::Iterator(Box::new(RustValueType::Byte))),
+                        "chars" if call.args.is_empty() && call.turbofish.is_none() =>
+                            Some(RustValueType::Iterator(Box::new(RustValueType::Character))),
                         "split_inclusive" | "split" | "lines" | "split_whitespace" =>
                             Some(RustValueType::Iterator(Box::new(RustValueType::Text))),
                         "as_str" | "to_owned" | "to_string" | "clone" | "trim" | "trim_end_matches" => Some(RustValueType::Text),

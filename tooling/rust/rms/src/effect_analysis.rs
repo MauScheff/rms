@@ -1005,6 +1005,7 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
+    if call == "<rust-character-predicate>" { return true; }
     if call == "<rust-io-error-kind>" { return true; }
     if call == "<rust-byte-ascii-hexdigit>" { return true; }
     if call == "<rust-text-ascii-equality>" { return true; }
@@ -1811,6 +1812,12 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         });
         let call = if let Some(marker) = external_marker {
             marker.to_string()
+        } else if inferred_receiver == Some(RustValueType::Character)
+            && matches!(node.method.to_string().as_str(), "is_control" | "is_whitespace")
+            && node.args.is_empty() && node.turbofish.is_none() {
+            // Only a proven standard character receiver closes this call.
+            // The enclosing iterator callback is still analyzed in full.
+            "<rust-character-predicate>".to_string()
         } else if inferred_receiver == Some(RustValueType::Byte)
             && node.method == "is_ascii_hexdigit" && node.args.is_empty() && node.turbofish.is_none() {
             "<rust-byte-ascii-hexdigit>".to_string()
@@ -5719,6 +5726,26 @@ fn decide() {
             expectation("src/index.js#decide", "pure", &[]),
         );
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+    }
+
+    #[test]
+    fn rust_character_predicates_preserve_purity_and_callback_authority() {
+        let source = "fn valid_id(value: &str) -> bool { !value.is_empty() && value.len() <= 256 && !value.chars().any(|c| c.is_whitespace() || c.is_control()) } fn decide(value: &str) -> bool { valid_id(value) }";
+        let result = report("rust", "src/lib.rs", source, expectation("decide", "pure", &[]));
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].transitive_authorities.is_empty());
+        assert!(result.functions[0].unresolved_calls.is_empty());
+
+        for source in [
+            "struct Custom; impl Custom { fn is_control(&self) -> bool { std::fs::read(\"x\").is_ok() } } fn decide(value: &Custom) -> bool { value.is_control() }",
+            "struct Custom; impl Custom { fn chars(&self) -> Vec<Custom> { vec![] } fn is_control(&self) -> bool { std::fs::read(\"x\").is_ok() } } fn decide(value: &Custom) -> bool { value.chars().iter().any(|c| c.is_control()) }",
+            "fn decide(value: &str) -> bool { value.chars().any(|c| { std::fs::read(\"x\"); c.is_control() }) }",
+            "fn decide(value: &str, callback: impl Fn(char) -> bool) -> bool { value.chars().any(|c| callback(c) || c.is_control()) }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+            assert!(!result.functions[0].transitive_authorities.is_empty(), "{result:#?}");
+        }
     }
 
     #[test]
