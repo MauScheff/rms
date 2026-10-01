@@ -27657,7 +27657,19 @@ fn append_pinned_rust_external_api(manifest: &LoadedManifest, sources: &mut BTre
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static AUDIT_ANALYZED_IMPLEMENTATIONS: std::cell::RefCell<Option<Vec<PathBuf>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 fn build_effect_analysis(manifest: &LoadedManifest) -> Result<effect_analysis::EffectAnalysis> {
+    #[cfg(test)]
+    AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| {
+        if let Some(paths) = paths.borrow_mut().as_mut() {
+            paths.push(manifest.path.clone());
+        }
+    });
     let binding = get_str(&manifest.value, &["binding"])
         .unwrap_or_default()
         .to_string();
@@ -40804,7 +40816,8 @@ fn build_affected_check_report(
         });
     }
 
-    let shared_audit = build_audit_report_with_scope(root, true, false)?;
+    let audit_roots = selected_audit_roots(root, &selection)?;
+    let shared_audit = build_audit_report_for_closures(root, true, false, Some(&audit_roots))?;
     let verification_cache = CapturedVerificationCache::new(proof_cache);
     let mut reports = Vec::new();
     for closure in &selection.closures {
@@ -40983,6 +40996,28 @@ fn normalize_baseline_finding(
         .unwrap_or_else(|| finding.to_string())
 }
 
+fn selected_audit_roots(root: &Path, selection: &CheckSelectionReceipt) -> Result<Vec<PathBuf>> {
+    let modules = discover_module_index(root)?;
+    let mut roots = BTreeSet::new();
+    for selected in &selection.closures {
+        let path = root.join(&selected.path);
+        if !path.is_file() {
+            continue;
+        }
+        let manifest = load_manifest(&path)?;
+        let name = get_str(&manifest.value, &["module", "name"])
+            .ok_or_else(|| anyhow!("scoped module is missing module.name"))?;
+        // Resolve dependencies in this snapshot: baseline and candidate may differ.
+        let (closure, _) = module_dependency_closure(name, &modules);
+        for name in closure {
+            if let Some(parent) = modules.get(&name).and_then(|module| module.path.parent()) {
+                roots.insert(parent.to_path_buf());
+            }
+        }
+    }
+    Ok(roots.into_iter().collect())
+}
+
 fn build_baseline_closure_reports(
     root: &Path,
     selection: &CheckSelectionReceipt,
@@ -41001,7 +41036,9 @@ fn build_baseline_closure_reports(
     ));
     hunt::prepare_isolated_checkout(root, &worktree, baseline)?;
     let result = (|| {
-        let shared_audit = build_audit_report_with_scope(&worktree, true, false)?;
+        let audit_roots = selected_audit_roots(&worktree, selection)?;
+        let shared_audit =
+            build_audit_report_for_closures(&worktree, true, false, Some(&audit_roots))?;
         let verification_cache = CapturedVerificationCache::new(None);
         let mut reports = Vec::new();
         for closure in &selection.closures {
@@ -41922,8 +41959,9 @@ fn build_module_scoped_check_report_with_audit(
         let execute_scoped_proofs = mode == CheckMode::Committed && shared_audit.is_none();
         let audit = match (mode, shared_audit) {
             (_, Some(audit)) => audit.clone(),
-            (CheckMode::Committed, None) => build_audit_report_with_scope(root, true, false)?,
-            (CheckMode::Changes, None) => build_audit_report_with_scope(root, true, false)?,
+            (CheckMode::Committed | CheckMode::Changes, None) => {
+                build_audit_report_for_closures(root, true, false, Some(&closure_roots))?
+            }
             _ => unreachable!("only changes and committed modes build a scoped audit"),
         };
         let mut audit = restrict_audit_to_module_closure(root, audit, &closure_roots);
@@ -51002,6 +51040,15 @@ fn build_audit_report_with_scope(
     strict: bool,
     include_examples: bool,
 ) -> Result<AuditReport> {
+    build_audit_report_for_closures(root, strict, include_examples, None)
+}
+
+fn build_audit_report_for_closures(
+    root: &Path,
+    strict: bool,
+    include_examples: bool,
+    closure_roots: Option<&[PathBuf]>,
+) -> Result<AuditReport> {
     let root = normalize_empty_path(root.to_path_buf());
     let mut checks = Vec::new();
     let mut verification_targets = BTreeSet::new();
@@ -51010,7 +51057,7 @@ fn build_audit_report_with_scope(
     append_source_revision_audit_checks(&root, strict, source_revision.as_deref(), &mut checks);
     append_worktree_audit_checks(&root, strict, include_examples, &mut checks);
     append_semantic_drift_audit_checks(&root, strict, include_examples, &mut checks);
-    append_validation_audit_checks(&root, strict, include_examples, &mut checks)?;
+    append_validation_audit_checks(&root, strict, include_examples, closure_roots, &mut checks)?;
     append_composition_audit_checks(&root, strict, &mut checks);
     append_module_audit_checks(
         &root,
@@ -51023,6 +51070,7 @@ fn build_audit_report_with_scope(
         &root,
         strict,
         include_examples,
+        closure_roots,
         &mut checks,
         &mut verification_targets,
     )?;
@@ -52300,9 +52348,13 @@ fn append_validation_audit_checks(
     root: &Path,
     strict: bool,
     include_examples: bool,
+    closure_roots: Option<&[PathBuf]>,
     checks: &mut Vec<AuditCheck>,
 ) -> Result<()> {
     for implementation in discover_implementation_manifests(root, include_examples)? {
+        if !audit_closure_contains(&implementation.path, closure_roots) {
+            continue;
+        }
         if get_str(&implementation.value, &["spec"]) == Some(IMPLEMENTATION_V1_SPEC) {
             checks.push(audit_check(
                 "implementation.v0.2-required",
@@ -52313,11 +52365,32 @@ fn append_validation_audit_checks(
             ));
         }
     }
-    let diagnostics =
+    let diagnostics = if let Some(roots) = closure_roots {
+        clear_swift_function_index_cache();
+        let mut diagnostics = Vec::new();
+        for path in discover_targets(root, vec![], vec![], vec![], vec![], vec![], vec![])? {
+            if !audit_closure_contains(&path, Some(roots)) {
+                continue;
+            }
+            match load_manifest(&path) {
+                Ok(manifest) => validate_loaded_manifest(&manifest, &mut diagnostics),
+                Err(error) => diagnostics.push(Diagnostic {
+                    severity: Severity::Error,
+                    check: "manifest.parse".to_string(),
+                    path: path.display().to_string(),
+                    message: error.to_string(),
+                }),
+            }
+        }
+        // Cross-module graph obligations still use the complete declared topology.
+        diagnostics.extend(semantic_graph::semantic_system_graph_diagnostics(root)?);
+        diagnostics
+    } else {
         collect_validation_diagnostics(root, vec![], vec![], vec![], vec![], vec![], vec![])?
-            .into_iter()
-            .filter(|diagnostic| audit_path_str_in_scope(root, &diagnostic.path, include_examples))
-            .collect::<Vec<_>>();
+    }
+    .into_iter()
+    .filter(|diagnostic| audit_path_str_in_scope(root, &diagnostic.path, include_examples))
+    .collect::<Vec<_>>();
     if diagnostics.is_empty() {
         checks.push(audit_check(
             "validate.root",
@@ -52460,15 +52533,23 @@ fn append_module_audit_checks(
     }
 }
 
+fn audit_closure_contains(path: &Path, closure_roots: Option<&[PathBuf]>) -> bool {
+    closure_roots.map_or(true, |roots| roots.iter().any(|root| path.starts_with(root)))
+}
+
 fn append_implementation_audit_checks(
     root: &Path,
     strict: bool,
     include_examples: bool,
+    closure_roots: Option<&[PathBuf]>,
     checks: &mut Vec<AuditCheck>,
     verification_targets: &mut BTreeSet<String>,
 ) -> Result<()> {
     let mut implementation_paths = Vec::new();
     for target in discover_targets(root, vec![], vec![], vec![], vec![], vec![], vec![])? {
+        if !audit_closure_contains(&target, closure_roots) {
+            continue;
+        }
         let Ok(manifest) = load_manifest(&target) else {
             continue;
         };
@@ -118316,6 +118397,71 @@ architecture:
         }));
         assert_eq!(selection.native_handoffs.len(), 1);
         assert_eq!(selection.native_handoffs[0].local_proof, ["native-test"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn affected_audit_analyzes_only_selected_candidate_and_baseline_closures() {
+        let root = unique_test_dir("affected-audit-analysis-scope");
+        for name in ["selected", "skipped"] {
+            let base = root.join("modules").join(name);
+            fs::create_dir_all(base.join("src")).unwrap();
+            fs::write(base.join("module.yaml"), next_module_source(name, "Own fixture proof.")).unwrap();
+            fs::write(base.join("implementation.yaml"), format!(
+                "spec: rms/implementation/v0.2\nmodule: {name}\nbinding: rust\nsource:\n  root: src\ncommands:\n  verify: 'true'\narchitecture: {{}}\n"
+            )).unwrap();
+            fs::write(base.join("src/lib.rs"), "pub fn value() -> u8 { 1 }\n").unwrap();
+        }
+        initialize_test_git(&root);
+        fs::write(root.join("modules/selected/private-note.txt"), "candidate\n").unwrap();
+        AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| *paths.borrow_mut() = Some(Vec::new()));
+        let report = build_affected_check_report(&root, CheckMode::Changes, None).unwrap();
+        let analyzed = AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| paths.borrow_mut().take().unwrap());
+        assert!(!analyzed.is_empty());
+        assert!(analyzed.iter().all(|path| path.ends_with("modules/selected/implementation.yaml")), "{analyzed:#?}");
+        assert!(analyzed.iter().any(|path| path.starts_with(&root)), "candidate was not analyzed");
+        assert!(analyzed.iter().any(|path| !path.starts_with(&root)), "baseline was not analyzed");
+        assert!(!report.details["unchanged_baseline_debt"].as_array().unwrap().is_empty());
+
+        let selection = build_check_selection(&root, CheckMode::Changes).unwrap();
+        let roots = selected_audit_roots(&root, &selection).unwrap();
+        let scoped = build_audit_report_for_closures(&root, true, false, Some(&roots)).unwrap();
+        AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| *paths.borrow_mut() = Some(Vec::new()));
+        let full = build_audit_report_with_scope(&root, true, false).unwrap();
+        let analyzed = AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| paths.borrow_mut().take().unwrap());
+        for name in ["selected", "skipped"] {
+            assert!(analyzed.iter().any(|path| path.ends_with(format!("modules/{name}/implementation.yaml"))));
+        }
+        let scoped = restrict_audit_to_module_closure(&root, scoped, &roots);
+        let full = restrict_audit_to_module_closure(&root, full, &roots);
+        assert_eq!(serde_json::to_value(&scoped).unwrap(), serde_json::to_value(&full).unwrap(),
+            "early filtering must retain every selected finding");
+        assert!(scoped.checks.iter().any(|check| check.result == "fail"));
+
+        AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| *paths.borrow_mut() = Some(Vec::new()));
+        build_audit_report_for_closures(&root, true, false, Some(&[])).unwrap();
+        let analyzed = AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| paths.borrow_mut().take().unwrap());
+        assert!(analyzed.is_empty(), "an empty closure must not become a full scan");
+
+        // A candidate-only dependency must not expand the baseline analyzer scope.
+        let implementation = root.join("modules/selected/implementation.yaml");
+        let source = fs::read_to_string(&implementation).unwrap().replace("architecture: {}",
+            "architecture:\n  dependency_behavior_bindings:\n    - id: selected-provider\n      capability: fixture\n      consumer: selected\n      resolution: module\n      provider_module: skipped");
+        fs::write(&implementation, source).unwrap();
+        let selection = build_check_selection(&root, CheckMode::Changes).unwrap();
+        let roots = selected_audit_roots(&root, &selection).unwrap();
+        assert!(roots.iter().any(|path| path.ends_with("modules/skipped")));
+        AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| *paths.borrow_mut() = Some(Vec::new()));
+        build_audit_report_for_closures(&root, true, false, Some(&roots)).unwrap();
+        let analyzed = AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| paths.borrow_mut().take().unwrap());
+        assert!(analyzed.iter().any(|path| path.ends_with("modules/skipped/implementation.yaml")),
+            "selected dependencies must retain source and effect analysis");
+        AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| *paths.borrow_mut() = Some(Vec::new()));
+        build_baseline_closure_reports(&root, &selection, CheckMode::Changes).unwrap();
+        let analyzed = AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| paths.borrow_mut().take().unwrap());
+        assert!(!analyzed.is_empty());
+        assert!(analyzed.iter().all(|path| path.ends_with("modules/selected/implementation.yaml")),
+            "baseline must resolve its own dependencies: {analyzed:#?}");
         fs::remove_dir_all(&root).unwrap();
     }
 
