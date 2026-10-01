@@ -45759,7 +45759,13 @@ fn task_explicitly_excludes_module_owner(task: &str, module: &ModuleIndexEntry) 
 
 fn task_explicitly_classifies_native_outside_coverage(task: &str) -> bool {
     let normalized_task = semantic_id_segment(task);
-    let outside_rms = normalized_task.contains("outside-rms-coverage");
+    let outside_rms = [
+        "outside-rms-coverage",
+        "outside-existing-rms-coverage",
+        "outside-current-rms-coverage",
+    ]
+    .iter()
+    .any(|phrase| normalized_task.contains(phrase));
     let native_scope = ["native", "backend", "project-native", "agent-native"]
         .iter()
         .any(|term| task_mentions_token(&normalized_task, term));
@@ -101240,7 +101246,7 @@ open_questions: [Must reports persist, and must other tooling consume the harnes
             None,
             outside_task,
             RawIntentInput {
-                yaml: Some(provider_new_owner_intent),
+                yaml: Some(provider_new_owner_intent.clone()),
                 ..RawIntentInput::default()
             },
             None,
@@ -101256,6 +101262,30 @@ open_questions: [Must reports persist, and must other tooling consume the harnes
             warning.contains("provider inferred `change_scope: new-module`")
                 && warning.contains("issued no canonical authority")
         }));
+        for coverage in ["outside existing RMS coverage", "outside current RMS coverage"] {
+            let task = format!(
+                "Correct native credential precision from seconds to milliseconds. This work is explicitly {coverage}. Preserve existing owner decisions and effects. No new runnable surface is introduced."
+            );
+            let report = build_next_report_with_intent(
+                &root,
+                None,
+                &task,
+                RawIntentInput {
+                    yaml: Some(provider_new_owner_intent.clone()),
+                    ..RawIntentInput::default()
+                },
+                None,
+            ).unwrap();
+            assert_eq!(report.result, NextResult::NoRmsChange, "{coverage}: {report:#?}");
+            assert_eq!(report.owner.status(), OwnerStatus::None);
+            assert!(report.owner.candidates.is_empty());
+            let receipt: RouteReceipt =
+                serde_json::from_slice(&fs::read(&report.receipt_path).unwrap()).unwrap();
+            assert!(receipt.payload.allowed_action_families.is_empty());
+            assert!(!task_explicitly_classifies_native_outside_coverage(&format!(
+                "Adopt native code {coverage} into a new RMS module."
+            )));
+        }
         assert!(!task_explicitly_classifies_native_outside_coverage(
             "Adopt this native code that is outside RMS coverage into a new RMS module."
         ));
