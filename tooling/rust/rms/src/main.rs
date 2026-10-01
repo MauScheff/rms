@@ -1286,6 +1286,10 @@ enum Commands {
         /// Directory where module artifacts should be created.
         path: PathBuf,
 
+        /// Validate the scaffold and list intended writes without changing the project.
+        #[arg(long, conflicts_with_all = ["ai", "provider", "record"])]
+        dry_run: bool,
+
         /// Stable module name.
         #[arg(long)]
         name: String,
@@ -10741,6 +10745,7 @@ fn run_main() -> Result<()> {
         } => run_init_with_adopt(&path, &name, &purpose, &version, &context, adopt),
         Commands::AddModule {
             path,
+            dry_run,
             name,
             purpose,
             kind,
@@ -10773,6 +10778,7 @@ fn run_main() -> Result<()> {
             )?;
             let request = AddModuleRequest {
                 path,
+                dry_run,
                 name,
                 purpose,
                 kind,
@@ -78005,6 +78011,7 @@ fn ensure_init_git_worktree(path: &Path) -> Result<bool> {
 #[derive(Clone)]
 struct AddModuleRequest {
     path: PathBuf,
+    dry_run: bool,
     name: String,
     purpose: String,
     kind: String,
@@ -78116,6 +78123,70 @@ fn add_capability_tree_scaffold_action(request: &AddCapabilityTreeRequest) -> Ar
 }
 
 fn run_add_module(request: AddModuleRequest, options: &PromptRunOptions) -> Result<()> {
+    if request.dry_run && (options.record || options.provider != Provider::None) {
+        bail!("add-module --dry-run cannot execute a provider or write planning records");
+    }
+    let paths = module_scaffold_paths(&request)?;
+    if request.dry_run {
+        println!("RMS add-module dry-run: valid; no project files were written");
+        for (relative, directory) in paths {
+            println!("{} {}", if directory { "mkdir" } else { "create" }, request.path.join(relative).display());
+        }
+        println!("Apply with the same command and receipt, without --dry-run.");
+        return Ok(());
+    }
+    if options.record || options.provider != Provider::None {
+        let shape = request.shape.unwrap_or_else(|| ScaffoldShape::inferred(&request.kind, &request.profiles));
+        let mut canonical = request.clone();
+        canonical.kind = normalized_kind_for_shape(&request.kind, shape);
+        canonical.profiles = normalized_profiles_for_shape(&request.profiles, shape);
+        write_scaffold_plan_record(&canonical, shape, options)?;
+    }
+    write_module_scaffold(&request)?;
+    println!("added RMS module at {}", request.path.display());
+    Ok(())
+}
+
+// Preview and apply preflight use the same deterministic scaffold writers.
+// Staging stays outside the project and is removed on success or failure.
+fn module_scaffold_paths(request: &AddModuleRequest) -> Result<Vec<(PathBuf, bool)>> {
+    validate_scaffold_binding(request.binding.as_deref())?;
+    let staging = std::env::temp_dir().join(format!("rms-module-preview-{}-{}",
+        std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()));
+    fs::create_dir(&staging)?;
+    let result = (|| {
+        let mut staged = request.clone();
+        staged.path = staging.clone();
+        write_module_scaffold(&staged)?;
+        let mut paths = Vec::new();
+        for entry in WalkDir::new(&staging).follow_links(false) {
+            let entry = entry?;
+            let relative = entry.path().strip_prefix(&staging)?.to_path_buf();
+            let destination = request.path.join(&relative);
+            let directory = entry.file_type().is_dir();
+            match fs::symlink_metadata(&destination) {
+                Ok(metadata) if directory && metadata.is_dir() => (),
+                Ok(_) => bail!("refusing to overwrite existing path `{}`", destination.display()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error).with_context(|| format!("failed to inspect `{}`", destination.display())),
+            }
+            for parent in destination.ancestors().skip(1) {
+                if parent.exists() && !parent.is_dir() {
+                    bail!("scaffold parent `{}` is not a directory", parent.display());
+                }
+            }
+            paths.push((relative, directory));
+        }
+        paths.sort();
+        Ok(paths)
+    })();
+    let cleanup = fs::remove_dir_all(&staging);
+    let paths = result?;
+    cleanup.with_context(|| format!("failed to remove preview staging `{}`", staging.display()))?;
+    Ok(paths)
+}
+
+fn write_module_scaffold(request: &AddModuleRequest) -> Result<()> {
     let path = &request.path;
     fs::create_dir_all(path)
         .with_context(|| format!("failed to create module directory `{}`", path.display()))?;
@@ -78126,10 +78197,6 @@ fn run_add_module(request: AddModuleRequest, options: &PromptRunOptions) -> Resu
     let mut canonical_request = request.clone();
     canonical_request.kind = normalized_kind_for_shape(&request.kind, shape);
     canonical_request.profiles = normalized_profiles_for_shape(&request.profiles, shape);
-
-    if options.record || options.provider != Provider::None {
-        write_scaffold_plan_record(&canonical_request, shape, options)?;
-    }
 
     write_new_file(
         &path.join("module.yaml"),
@@ -78172,7 +78239,6 @@ fn run_add_module(request: AddModuleRequest, options: &PromptRunOptions) -> Resu
         adapter.scaffold(path, &model)?;
     }
 
-    println!("added RMS module at {}", path.display());
     Ok(())
 }
 
@@ -124037,6 +124103,31 @@ properties:
         }
     }
 
+    #[test]
+    fn add_module_preview_and_apply_reject_collisions_before_any_write() {
+        let root = unique_test_dir("module-preview-collision");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "existing source\n").unwrap();
+        let before = snapshot_test_tree(&root);
+        let mut request = add_module_request(&root, "preview", "Own preview decisions.",
+            "module", &[], Some(ScaffoldShape::Workflow), Some("rust"));
+        for dry_run in [true, false] {
+            request.dry_run = dry_run;
+            let error = run_add_module(request.clone(), &no_provider_options()).unwrap_err();
+            assert!(error.to_string().contains("refusing to overwrite"), "{error:#}");
+            assert_eq!(snapshot_test_tree(&root), before);
+            assert!(!root.join("module.yaml").exists());
+        }
+        request.path = root.join("new-owner");
+        request.binding = Some("unsupported-binding".into());
+        for dry_run in [true, false] {
+            request.dry_run = dry_run;
+            assert!(run_add_module(request.clone(), &no_provider_options()).is_err());
+            assert!(!request.path.exists());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn add_module_request(
         root: &Path,
         name: &str,
@@ -124048,6 +124139,7 @@ properties:
     ) -> AddModuleRequest {
         AddModuleRequest {
             path: root.to_path_buf(),
+            dry_run: false,
             name: name.to_string(),
             purpose: purpose.to_string(),
             kind: kind.to_string(),
