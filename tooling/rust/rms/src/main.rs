@@ -27822,15 +27822,16 @@ fn append_verified_dependency_sources(
     synchronized_bindings: &BTreeSet<String>,
     sources: &mut BTreeMap<String, String>,
 ) {
-    let base = implementation
-        .path
+    // Anchor discovery before walking ancestors. A relative target can reach
+    // an empty ancestor that reads system.yaml but cannot be walked as a root.
+    let Ok(implementation_path) = std::path::absolute(&implementation.path) else { return; };
+    let base = implementation_path
         .parent()
         .unwrap_or_else(|| Path::new("."));
     let Ok(consumer) = load_manifest(&base.join("module.yaml")) else {
         return;
     };
-    let root = implementation
-        .path
+    let root = implementation_path
         .ancestors()
         .find(|directory| directory.join("system.yaml").is_file())
         .unwrap_or(base);
@@ -116167,6 +116168,27 @@ properties:
         assert_eq!(result.result, effect_analysis::AnalysisResult::Pass, "{result:#?}");
         assert!(result.functions[0].resolved_callees.contains(&"Scope::epoch".into()));
         assert!(!result.functions[0].resolved_callees.contains(&"Local::epoch".into()));
+        // Run from the consumer's real project root. Merely making the fixture
+        // path relative to this test crate misses the empty-ancestor root case.
+        let binary = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap()
+            .join(format!("rms{}", std::env::consts::EXE_SUFFIX));
+        let mut baseline = None;
+        for (cwd, target) in [
+            (&root, consumer.join("implementation.yaml")),
+            (&root, PathBuf::from("modules/consumer/implementation.yaml")),
+            (&root, PathBuf::from("./modules/consumer/implementation.yaml")),
+            (&consumer, PathBuf::from("implementation.yaml")),
+        ] {
+            let output = Command::new(&binary).current_dir(cwd)
+                .arg("structure").arg(target).arg("--json").output().unwrap();
+            let report: JsonValue = serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&output.stderr)));
+            assert_eq!(report["effect_analysis"]["result"], "pass", "{report}");
+            let proof = json!({"functions": report["effect_analysis"]["functions"],
+                "source_digest": report["effect_analysis"]["source_digest"]});
+            if let Some(expected) = &baseline { assert_eq!(&proof, expected); }
+            else { baseline = Some(proof); }
+        }
         for (path, replacement) in [
             (consumer.join("Cargo.toml"), "[dependencies]\nprovider={path='../wrong'}\n"),
             (consumer.join("contracts/cap.yaml"), "different contract\n"),
