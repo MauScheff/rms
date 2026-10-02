@@ -2902,6 +2902,7 @@ struct SwiftStandardNames {
     checked_continuation: bool,
     string_split: bool,
     foundation_values: bool,
+    compact_map: bool,
 }
 
 fn extract_tree_sitter_functions(
@@ -2971,6 +2972,7 @@ fn extract_tree_sitter_functions(
                     node,
                     source,
                     &swift_collection_names,
+                    swift_global_names.compact_map,
                     &mut calls,
                     true,
                 );
@@ -3546,6 +3548,7 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
         }
     }
     SwiftStandardNames {
+        compact_map: !declared_methods.contains("compactMap"),
         foundation_values: !["UUID", "String", "Dictionary", "Foundation", "Swift", "lowercased", "uuidString", "trimmingCharacters"]
             .iter().any(|name| shadowed.contains(*name))
             && !declared_methods.contains("data"),
@@ -3975,6 +3978,7 @@ fn collect_call_nodes(
     node: Node<'_>,
     source: &str,
     swift_collection_names: &BTreeSet<String>,
+    swift_compact_map: bool,
     calls: &mut BTreeSet<String>,
     root: bool,
 ) {
@@ -3998,6 +4002,10 @@ fn collect_call_nodes(
             // Tree-sitter represents Swift's `defer` control-flow statement as
             // a call. The statement body is still traversed below, so only the
             // keyword itself is excluded from the call graph.
+        } else if binding == "swift" && swift_compact_map
+            && swift_call_is_typed_inline_compact_map(node, source, swift_collection_names) {
+            // Only the standard operation is closed. Recursion below still
+            // inspects every call and authority in the inline callback.
         } else if binding == "swift" && swift_call_is_immediate_closure(callee, source) {
             // The closure body is traversed below. Its calls and authorities
             // remain visible, so invoking this statically present closure does
@@ -4038,7 +4046,7 @@ fn collect_call_nodes(
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_call_nodes(binding, child, source, swift_collection_names, calls, false);
+        collect_call_nodes(binding, child, source, swift_collection_names, swift_compact_map, calls, false);
     }
 }
 
@@ -4050,6 +4058,38 @@ fn swift_call_is_boolean_negation(node: Node<'_>, callee: Option<Node<'_>>, sour
             .utf8_text(source.as_bytes())
             .ok()
             .is_some_and(|text| text.trim_start().starts_with("!("))
+}
+
+fn swift_call_is_typed_inline_compact_map(
+    node: Node<'_>, source: &str, standard: &BTreeSet<String>,
+) -> bool {
+    let Ok(text) = node.utf8_text(source.as_bytes()) else { return false; };
+    let compact = text.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let Some((receiver, arguments)) = compact.split_once(".compactMap") else { return false; };
+    if !is_simple_identifier(receiver) || !standard.contains(receiver)
+        || !(arguments.starts_with('{') && arguments.ends_with('}')
+            || arguments.starts_with("({") && arguments.ends_with("})")) { return false; }
+    let Some(function) = nearest_function_ancestor(node) else { return false; };
+    let mut declarations = Vec::new();
+    for kind in ["property_declaration", "parameter", "lambda_parameter"] {
+        collect_nodes_of_kind(function, kind, &mut declarations);
+    }
+    let declarations = declarations.into_iter().filter(|declaration|
+        declaration.child_by_field_name("name")
+            .and_then(|name| first_simple_identifier(name, source)).as_deref() == Some(receiver))
+        .collect::<Vec<_>>();
+    let [declaration] = declarations.as_slice() else { return false; };
+    // Require a direct array/dictionary annotation, not Custom<[T]>, an
+    // inferred property chain, or a same-name global collection.
+    let Some(ty) = declaration.utf8_text(source.as_bytes()).ok()
+        .and_then(|text| text.split_once(':').map(|(_, ty)| ty)) else { return false; };
+    let ty = ty.split('=').next().unwrap_or("").trim();
+    if !ty.starts_with('[') || !ty.ends_with(']') { return false; }
+    let mut loops = Vec::new();
+    collect_nodes_of_kind(function, "for_statement", &mut loops);
+    !loops.into_iter().any(|loop_node| loop_node.utf8_text(source.as_bytes()).ok()
+        .is_some_and(|text| text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .take_while(|token| *token != "in").any(|token| token == receiver)))
 }
 
 fn swift_call_is_standard_literal_collection_operation(
@@ -6434,6 +6474,29 @@ fn decide() {
             result.functions[0].transitive_authorities,
             vec!["dynamic-dispatch"]
         );
+    }
+
+    #[test]
+    fn swift_typed_compact_map_checks_the_entire_inline_callback() {
+        for source in [
+            "func decide(_ references: [String?]) -> [[UInt8]] { let ids: [[UInt8]] = references.compactMap { $0 }.map { Array($0.utf8) }; for i in ids.indices { for j in ids.indices where j < i { if ids[i] == ids[j] { return [] } } }; return ids }",
+            "func decide() -> [String] { var references: [String?] = []; return references.compactMap({ $0 }) }",
+        ] {
+            let result = report("swift", "Sources/App.swift", source, expectation("decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for source in [
+            "func decide(_ references: Custom) { references.compactMap { $0 } }",
+            "func decide(_ references: Custom<[String?]>) { references.compactMap { $0 } }",
+            "func decide(_ references: [String?], callback: (String?) -> String?) { references.compactMap(callback) }",
+            "func decide(_ references: [String?], callback: (String?) -> String?) { references.compactMap { callback($0) } }",
+            "func decide(_ references: [String?]) { references.compactMap { value in print(value); return value } }",
+            "let references: [String?] = []; func decide(_ references: Custom) { references.compactMap { $0 } }",
+            "extension Array { func compactMap(_ f: (Element) -> Element?) -> [Element] { print(\"effect\"); return [] } } func decide(_ references: [String?]) { references.compactMap { $0 } }",
+        ] {
+            let result = report("swift", "Sources/App.swift", source, expectation("decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+        }
     }
 
     #[test]
