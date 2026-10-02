@@ -58745,6 +58745,9 @@ fn run_spec_plan(
             }
             println!("run record: {}", run_dir.display());
             println!("response: {}", response.display());
+            if parse_spec_plan_assessment(&fs::read_to_string(&response)?).is_ok() {
+                println!("advisory assessment: no canonical change proposed; no mutation or source-adoption authority; native realization and proof remain unverified");
+            }
         }
     }
 
@@ -59081,6 +59084,35 @@ fn semantic_plan_item_identity(value: &YamlValue) -> Option<String> {
     None
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SemanticPlanAssessment {
+    spec: String,
+    module: String,
+    outcome: SemanticPlanAssessmentOutcome,
+    rationale: String,
+}
+
+#[derive(Debug, Deserialize)]
+enum SemanticPlanAssessmentOutcome {
+    #[serde(rename = "no-canonical-change")]
+    NoCanonicalChange,
+}
+
+// This advisory is deliberately not a SemanticChange and cannot be applied.
+fn parse_spec_plan_assessment(response: &str) -> Result<SemanticPlanAssessment> {
+    let assessment: SemanticPlanAssessment = serde_yaml::from_str(response)?;
+    if assessment.spec != "rms/semantic-plan-assessment/v0.1"
+        || assessment.module.trim().is_empty()
+        || assessment.rationale.trim().is_empty()
+    {
+        bail!("assessment requires spec rms/semantic-plan-assessment/v0.1, an exact target module path, and a nonempty rationale");
+    }
+    match assessment.outcome {
+        SemanticPlanAssessmentOutcome::NoCanonicalChange => Ok(assessment),
+    }
+}
+
 fn prepare_spec_plan_provider_response(
     context: &SpecTargetContext,
     task: &str,
@@ -59092,9 +59124,39 @@ fn prepare_spec_plan_provider_response(
     let (quoted_response, freeform_normalizations) =
         normalize_spec_plan_freeform_yaml(&structural_response);
     normalizations.extend(freeform_normalizations);
+    let structured = serde_yaml::from_str::<YamlValue>(&quoted_response).ok();
+    if structured.as_ref().and_then(|value| get_str(value, &["spec"]))
+        .is_some_and(|spec| spec.starts_with("rms/semantic-plan-assessment/"))
+    {
+        let mut diagnostics = Vec::new();
+        match parse_spec_plan_assessment(&quoted_response) {
+            Ok(assessment) => {
+                if assessment.module != context.target.display().to_string() {
+                    diagnostics.push(error_diagnostic(
+                        "semantic-plan.response-invalid", &context.target,
+                        "advisory assessment must name the exact bounded target path",
+                    ));
+                }
+                if semantic_plan_task_requires_canonical_change(task) {
+                    diagnostics.push(error_diagnostic(
+                        "semantic-plan.canonical-change-required", &context.target,
+                        "the task requests canonical proof or manifest changes; an advisory assessment cannot replace the required semantic-change object",
+                    ));
+                }
+            }
+            Err(error) => diagnostics.push(error_diagnostic(
+                "semantic-plan.response-invalid", &context.target,
+                format!("invalid advisory assessment: {error}"),
+            )),
+        }
+        return PreparedSpecPlanProviderResponse {
+            response: quoted_response, diagnostics, normalizations,
+        };
+    }
     let lower = quoted_response.to_ascii_lowercase();
     if !lower.contains("rms/semantic-change/v0.1")
         && lower.contains("current semantics are sufficient")
+        && !structured.as_ref().is_some_and(YamlValue::is_mapping)
     {
         let diagnostics = validate_spec_plan_no_change_response(context, task, &quoted_response);
         return PreparedSpecPlanProviderResponse {
@@ -61104,7 +61166,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     let mut out = String::new();
     writeln!(out, "# RMS Semantic Change Plan Prompt")?;
     writeln!(out)?;
-    writeln!(out, "Prompt: rms.spec-plan@v7")?;
+    writeln!(out, "Prompt: rms.spec-plan@v8")?;
     writeln!(
         out,
         "Mode: advisory; output is not semantic authority until `rms spec apply` succeeds"
@@ -61528,7 +61590,9 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Use the bounded canonical context in this prompt and RMS diagnostics as the complete planning context. Do not infer undeclared facts from sibling modules, prior runs, source files, or generated examples.")?;
     writeln!(out)?;
     writeln!(out, "## Required Output")?;
-    writeln!(out, "Return only YAML or JSON matching this language-neutral schema whenever canonical declarations change, including proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, or `implementation.yaml`, even when runtime behavior is unchanged. Only when the task requires exclusively source-role body edits and all canonical declarations are already sufficient may you say that current semantics are sufficient; then name exact paths already declared under `architecture.roles`. Canonical manifests are never role files and must never be recommended for direct editing.")?;
+    writeln!(out, "Return only YAML or JSON. When canonical declarations change, use the semantic-change schema below, including for proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, or `implementation.yaml`, even when runtime behavior is unchanged. Canonical manifests are never role files and must never be recommended for direct editing.")?;
+    writeln!(out, "When the existing canonical obligations already suffice, return the following advisory assessment instead. This includes native realization outside declared source roles; do not adopt source paths or invent a no-op mutation. Use exactly these four fields. Name the existing obligations and explain why they suffice in `rationale`. Copy the exact target path. This assessment grants no mutation or source-adoption authority, does not change the route, and is not implementation or proof certification. Native realization and proof remain unverified. Never pass this assessment to `rms spec apply`. A task that explicitly requires canonical proof or manifest changes still requires a semantic-change object.")?;
+    writeln!(out, "```yaml\nspec: rms/semantic-plan-assessment/v0.1\nmodule: {}\noutcome: no-canonical-change\nrationale: <existing obligations and why no canonical change is needed>\n```", yaml_quote(&context.target.display().to_string()))?;
     writeln!(out)?;
     writeln!(out, "```yaml")?;
     writeln!(out, "spec: rms/semantic-change/v0.1")?;
@@ -113739,7 +113803,7 @@ compatibility: {policy: backward-compatible-within-major}
         assert!(prompt.contains("there is no `semantic_profile` field"));
         assert!(prompt.contains("preserve its wrapper, version, evaluation strategy"));
         assert!(prompt.contains("semantics:\n        behavior:"));
-        assert!(prompt.contains("Prompt: rms.spec-plan@v7"));
+        assert!(prompt.contains("Prompt: rms.spec-plan@v8"));
         assert!(prompt.contains("A behavior `cases` item is not a clause"));
         assert!(prompt.contains("never contains `evaluation`"));
         assert!(prompt.contains("observability: full"));
@@ -116740,6 +116804,102 @@ public_behavior_bindings:
         assert!(repair.contains("{kind: invocation-record, command: trace}"));
         assert!(repair.contains("`command` names an existing implementation `commands` key"));
         assert!(repair.contains("Original bounded schema context:"));
+    }
+
+    #[test]
+    fn semantic_plan_typed_no_change_is_advisory_and_closed() {
+        let root = prompt_fixture("semantic-plan-typed-no-change");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let task = "Assess whether the existing external agreement and replay obligations suffice for native realization. Do not invent a no-op mutation.";
+        let assessment = json!({
+            "spec": "rms/semantic-plan-assessment/v0.1",
+            "module": context.target.display().to_string(),
+            "outcome": "no-canonical-change",
+            "rationale": "The existing contract already requires exact replay rejection. Native realization and proof remain unverified. Preserve module.yaml and implementation.yaml."
+        });
+        let response = assessment.to_string();
+        let prepared = prepare_spec_plan_provider_response(&context, task, &response);
+        assert!(prepared.diagnostics.is_empty(), "{:?}", prepared.diagnostics);
+        assert!(parse_semantic_change(Some(&response), None, None).is_err());
+        let before = snapshot_test_tree(&root);
+        assert!(run_spec_apply(&context.target, Some(&response), None, None, false).is_err());
+        assert_eq!(snapshot_test_tree(&root), before);
+
+        for (field, value) in [
+            ("spec", json!("rms/semantic-plan-assessment/v9")),
+            ("module", json!("another/module.yaml")),
+            ("outcome", json!("apply")),
+            ("rationale", json!("  ")),
+            ("roles", json!({"set": []})),
+            ("proof_verified", json!(true)),
+        ] {
+            let mut invalid = assessment.clone();
+            invalid[field] = value;
+            assert!(prepare_spec_plan_provider_response(&context, task, &invalid.to_string())
+                .diagnostics.iter().any(|item| item.severity == Severity::Error), "{field}");
+        }
+        for field in ["spec", "module", "outcome", "rationale"] {
+            let mut invalid = assessment.clone();
+            invalid.as_object_mut().unwrap().remove(field);
+            assert!(prepare_spec_plan_provider_response(&context, task, &invalid.to_string())
+                .diagnostics.iter().any(|item| item.severity == Severity::Error), "missing {field}");
+        }
+        assert!(prepare_spec_plan_provider_response(
+            &context, "Correct canonical proof bindings and property realizations.", &response,
+        ).diagnostics.iter().any(|item| item.check == "semantic-plan.canonical-change-required"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn semantic_plan_provider_accepts_typed_no_change_without_retry_or_mutation() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = prompt_fixture("semantic-plan-no-change-provider");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let authority = context.module.as_ref().unwrap();
+        let task = "Assess existing obligations for native realization; no canonical change if sufficient.";
+        let prompt = render_spec_plan_prompt(&context, &root, task).unwrap();
+        assert!(prompt.contains("rms/semantic-plan-assessment/v0.1"));
+        assert!(prompt.contains("no mutation or source-adoption authority"));
+        let response = json!({
+            "spec": "rms/semantic-plan-assessment/v0.1",
+            "module": context.target.display().to_string(),
+            "outcome": "no-canonical-change",
+            "rationale": "Existing obligations suffice. Native realization and proof remain unverified."
+        }).to_string();
+        let run_dir = root.join("provider-run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let program = root.join("fake-codex.sh");
+        write_test_file(&program, &format!(r#"#!/bin/sh
+set -eu
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output-last-message) output="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '%s\n' '{}' > "$output"
+"#, response));
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let before = fs::read(&context.target).unwrap();
+        let mut options = no_provider_options();
+        options.provider = Provider::Codex;
+        options.provider_timeout_seconds = 5;
+        execute_spec_plan_provider_with_program(
+            &program, &root, &context, authority, task, &prompt, &run_dir, &options,
+        ).unwrap();
+        assert_eq!(fs::read(&context.target).unwrap(), before);
+        assert!(!root.join("implementation.yaml").exists());
+        assert!(!run_dir.join("attempt-2-response.md").exists());
+        assert!(!run_dir.join("prompt-repair.md").exists());
+        let status: JsonValue = serde_json::from_str(&fs::read_to_string(run_dir.join("provider.json")).unwrap()).unwrap();
+        assert_eq!(status["attempts"], 1);
+        assert_eq!(status["result"], "valid");
+        let published: JsonValue = serde_yaml::from_str(&fs::read_to_string(run_dir.join("response.md")).unwrap()).unwrap();
+        assert_eq!(published["outcome"], "no-canonical-change");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
