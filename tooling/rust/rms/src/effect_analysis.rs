@@ -5026,10 +5026,12 @@ fn decide() {
 
     #[test]
     fn rust_local_enum_alias_constructors_preserve_purity_without_blessing_calls() {
-        let definitions = "enum State { Pending(u8) } impl State { fn Make() { std::env::var(\"X\"); } }";
+        let definitions = "enum State { Pending(u8) } #[derive(Clone)] enum Code { Invalid } enum Collision { State } impl State { fn Make() { std::env::var(\"X\"); } }";
         for body in [
             "use State as S; S::Pending(1);",
             "use State as S; { S::Pending(1); }",
+            "use State as S; use Code::*; S::Pending(1);",
+            "use Code::*; use State as S; { S::Pending(1); }",
         ] {
             let source = format!("{definitions} fn run() {{ {body} }}");
             let result = report("rust", "src/lib.rs", &source, expectation("run", "pure", &[]));
@@ -5046,6 +5048,11 @@ fn decide() {
             ("", "use State as S; S::Pending();"),
             ("", "use State as S; S::Pending({ std::env::var(\"X\"); 1 });"),
             ("", "use State as S; S::Pending(unknown());"),
+            ("", "use State as S; use unknown::*; S::Pending(1);"),
+            ("", "use State as S; use Collision::*; S::Pending(1);"),
+            ("", "use State as S; #[cfg(feature=\"maybe\")] use Code::*; S::Pending(1);"),
+            ("", "use State as S; use Code::*; S::Make();"),
+            ("", "use State as S; use Code::*; S::Pending({ std::fs::read(\"x\"); 1 });"),
         ] {
             let source = format!("{definitions} fn run{signature}() {{ {body} }}");
             assert_eq!(report("rust", "src/lib.rs", &source, expectation("run", "pure", &[])).result, AnalysisResult::Fail, "{source}");

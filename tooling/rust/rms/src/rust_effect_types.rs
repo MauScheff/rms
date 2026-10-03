@@ -447,10 +447,13 @@ impl RustTypeIndex {
         let local = syn::File { shebang: None, attrs: vec![], items: block.stmts.iter().filter_map(|statement|
             if let syn::Stmt::Item(item) = statement { Some(item.clone()) } else { None }).collect() };
         let unique = super::rust_unique_unconditional_imports(&local);
+        let enum_glob_names = self.local_enum_glob_names(&local, &result.generic_names);
         for (alias, target) in super::rust_import_aliases(&local) {
             let root = target.split("::").next().unwrap_or("");
             if !unique.contains(&alias) || self.generic_names.contains(&alias)
-                || result.generic_names.contains(root) || result.generic_names.contains("*")
+                || result.generic_names.contains(root)
+                || (result.generic_names.contains("*")
+                    && !enum_glob_names.as_ref().is_some_and(|names| !names.contains(root)))
                 || local.items.iter().any(|item| match item {
                     Item::Struct(item) => item.ident == alias,
                     Item::Enum(item) => item.ident == alias,
@@ -465,6 +468,51 @@ impl RustTypeIndex {
             }
         }
         result
+    }
+
+    // A known enum glob imports only its variants. It cannot hide a different
+    // type behind an explicit alias; unknown/conditional globs remain open.
+    fn local_enum_glob_names(&self, local: &syn::File, shadows: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+        fn glob_paths(tree: &syn::UseTree, prefix: Vec<String>, paths: &mut Vec<String>) {
+            match tree {
+                syn::UseTree::Path(item) => {
+                    let mut prefix = prefix;
+                    prefix.push(item.ident.to_string());
+                    glob_paths(&item.tree, prefix, paths);
+                }
+                syn::UseTree::Group(group) => {
+                    for item in &group.items { glob_paths(item, prefix.clone(), paths); }
+                }
+                syn::UseTree::Glob(_) => paths.push(prefix.join("::")),
+                _ => {}
+            }
+        }
+        if self.generic_names.contains("*") { return None; }
+        let mut names = BTreeSet::new();
+        let mut roots = BTreeSet::new();
+        for item in &local.items {
+            let Item::Use(item) = item else { continue; };
+            let mut paths = Vec::new();
+            glob_paths(&item.tree, Vec::new(), &mut paths);
+            if !paths.is_empty() && !item.attrs.is_empty() { return None; }
+            for path in paths {
+                let root = path.split("::").next()?;
+                roots.insert(root.to_string());
+                if shadows.contains(root) || self.generic_names.contains(root) { return None; }
+                let owner = self.resolve_named_type(&path)?;
+                let (path, name) = owner.split_once('#')?;
+                let file = syn::parse_file(self.sources.get(path)?).ok()?;
+                let declaration = file.items.iter().find_map(|item| match item {
+                    Item::Enum(item) if item.ident == name => Some(item),
+                    _ => None,
+                })?;
+                if declaration.attrs.iter().any(|attr| !attr.path().is_ident("derive") && !attr.path().is_ident("doc"))
+                    || declaration.variants.iter().any(|variant| !variant.attrs.is_empty()) { return None; }
+                names.extend(declaration.variants.iter().map(|variant| variant.ident.to_string()));
+            }
+        }
+        if !names.is_disjoint(&roots) { return None; }
+        Some(names)
     }
 
     pub(super) fn local_enum_constructor(&self, path: &syn::ExprPath, arity: usize) -> bool {
