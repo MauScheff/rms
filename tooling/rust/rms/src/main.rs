@@ -3616,6 +3616,8 @@ struct SemanticProofDelegation {
 struct SemanticPropertyEvidenceRef {
     kind: String,
     path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preserve_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -61166,7 +61168,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     let mut out = String::new();
     writeln!(out, "# RMS Semantic Change Plan Prompt")?;
     writeln!(out)?;
-    writeln!(out, "Prompt: rms.spec-plan@v8")?;
+    writeln!(out, "Prompt: rms.spec-plan@v9")?;
     writeln!(
         out,
         "Mode: advisory; output is not semantic authority until `rms spec apply` succeeds"
@@ -61590,6 +61592,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "Use the bounded canonical context in this prompt and RMS diagnostics as the complete planning context. Do not infer undeclared facts from sibling modules, prior runs, source files, or generated examples.")?;
     writeln!(out)?;
     writeln!(out, "## Required Output")?;
+    writeln!(out, "For `properties.set` metadata corrections that must retain concrete evidence, `evidence` also accepts optional `preserve_sha256`: the exact lowercase SHA-256 of the existing file bytes. The caller must supply the inspected digest; never invent it. This preserves the existing property identity, evidence path, and bytes. Only `realizations` and `input_space.generator`, `input_space.description`, and `input_space.bounds` may differ; all other property fields must remain unchanged. The pin is invalid for `properties.add`, a missing file, or a stale digest. Omit the field for ordinary evidence generation. The pin is recorded only in the change request, not the canonical property. Preserved historical evidence is not current proof; rerun the corrected realization and required gates.")?;
     writeln!(out, "Return only YAML or JSON. When canonical declarations change, use the semantic-change schema below, including for proof bindings, property realizations, public behavior observation sources, evidence obligations, `module.yaml`, or `implementation.yaml`, even when runtime behavior is unchanged. Canonical manifests are never role files and must never be recommended for direct editing.")?;
     writeln!(out, "When the existing canonical obligations already suffice, return the following advisory assessment instead. This includes native realization outside declared source roles; do not adopt source paths or invent a no-op mutation. Use exactly these four fields. Name the existing obligations and explain why they suffice in `rationale`. Copy the exact target path. This assessment grants no mutation or source-adoption authority, does not change the route, and is not implementation or proof certification. Native realization and proof remain unverified. Never pass this assessment to `rms spec apply`. A task that explicitly requires canonical proof or manifest changes still requires a semantic-change object.")?;
     writeln!(out, "```yaml\nspec: rms/semantic-plan-assessment/v0.1\nmodule: {}\noutcome: no-canonical-change\nrationale: <existing obligations and why no canonical change is needed>\n```", yaml_quote(&context.target.display().to_string()))?;
@@ -69800,6 +69803,43 @@ fn property_evidence_write_disposition(
     };
     let base = module.path.parent().unwrap_or_else(|| Path::new("."));
     let path = base.join(&evidence.path);
+    if let Some(digest) = &evidence.preserve_sha256 {
+        if !replacing || !is_safe_relative_artifact_path(&evidence.path) || !path.is_file() {
+            return Ok(PropertyEvidenceWriteDisposition::Unsafe);
+        }
+        let existing = fs::read(&path)?;
+        if digest != &sha256_bytes(&existing) {
+            return Ok(PropertyEvidenceWriteDisposition::Unsafe);
+        }
+        let matches = ["properties", "fuzz_targets"]
+            .into_iter()
+            .filter_map(|section| get_path(&module.value, &[section]))
+            .filter_map(YamlValue::as_sequence)
+            .flatten()
+            .filter(|item| get_str(item, &["id"]) == Some(property.id.as_str()))
+            .collect::<Vec<_>>();
+        let [old_property] = matches.as_slice() else {
+            return Ok(PropertyEvidenceWriteDisposition::Unsafe);
+        };
+        // An explicit pin permits only proof-description/binding corrections.
+        // It preserves historical bytes; it does not establish current proof.
+        let mut old = (**old_property).clone();
+        let mut new = semantic_property_yaml(property);
+        for path in [
+            &["realizations"][..],
+            &["input_space", "generator"][..],
+            &["input_space", "description"][..],
+            &["input_space", "bounds"][..],
+        ] {
+            remove_yaml_path(&mut old, path);
+            remove_yaml_path(&mut new, path);
+        }
+        return Ok(if old == new {
+            PropertyEvidenceWriteDisposition::Unchanged
+        } else {
+            PropertyEvidenceWriteDisposition::Unsafe
+        });
+    }
     if !path.exists() {
         return Ok(PropertyEvidenceWriteDisposition::Write);
     }
@@ -69951,7 +69991,7 @@ fn validate_spec_candidate_property_evidence_writes(
                     "semantic.property-evidence-overwrite-unsafe",
                     &context.target,
                     format!(
-                        "property `{}` evidence `{path}` contains concrete or edited content; `properties.set` may refresh only the unchanged RMS-generated obligation for the same property and path",
+                        "property `{}` evidence `{path}` cannot be overwritten or its preservation precondition failed; for a same-property metadata correction use evidence.preserve_sha256 with the exact existing file digest and preserve all fields except realizations and input_space generator/description/bounds; preservation is not proof certification",
                         property.id
                     ),
                 ));
@@ -88469,6 +88509,7 @@ fn validate_integration_package_rebind(root: &Path, context: &SpecTargetContext,
             expected.evidence = Some(SemanticPropertyEvidenceRef {
                 kind: if semantic_property_is_fuzz(&expected) { "fuzz" } else { "property" }.into(),
                 path: path.into(),
+                preserve_sha256: None,
             });
         }
         for realization in &mut expected.realizations {
@@ -97298,6 +97339,7 @@ implementation_commands:
                 serde_yaml::to_value(SemanticPropertyEvidenceRef {
                     kind: "property".to_string(),
                     path,
+                    preserve_sha256: None,
                 })
                 .unwrap(),
             );
@@ -97314,6 +97356,7 @@ implementation_commands:
         property.evidence = Some(SemanticPropertyEvidenceRef {
             kind: "property".to_string(),
             path: "verification/properties/receiver_readiness_integration.md".to_string(),
+            preserve_sha256: None,
         });
         property.counterexamples = Some(SemanticPropertyCounterexamplesRef {
             path: "verification/fuzz/counterexamples/receiver-readiness-integration".to_string(),
@@ -97426,6 +97469,7 @@ implementation_commands:
                 serde_yaml::to_value(SemanticPropertyEvidenceRef {
                     kind: "property".to_string(),
                     path,
+                    preserve_sha256: None,
                 })
                 .unwrap(),
             );
@@ -97956,6 +98000,38 @@ temporal: null
             diagnostic.check != "semantic.property-evidence-overwrite-unsafe"
         }));
         assert_eq!(fs::read_to_string(&absolute_evidence).unwrap(), concrete);
+
+        let mut pinned = serde_json::to_value(&replacement).unwrap();
+        pinned["input_space"]["description"] = json!("Seeded generated schedules, not coverage-guided execution.");
+        pinned["input_space"]["bounds"] = json!("2048 schedules of 1 through 16 inputs by default.");
+        pinned["evidence"]["preserve_sha256"] = json!(sha256_bytes(concrete.as_bytes()));
+        let pinned_property: SemanticPropertyChange = serde_json::from_value(pinned.clone()).unwrap();
+        assert_eq!(
+            property_evidence_write_disposition(module, &change, &pinned_property, true).unwrap(),
+            PropertyEvidenceWriteDisposition::Unchanged
+        );
+        let mut pinned_change = change.clone();
+        pinned_change.properties.as_mut().unwrap().replace = vec![pinned_property.clone()];
+        let mut diagnostics = Vec::new();
+        validate_spec_candidate_property_evidence_writes(&context, &pinned_change, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        write_semantic_contracts_and_evidence(module, Some(module), &pinned_change).unwrap();
+        assert_eq!(fs::read_to_string(&absolute_evidence).unwrap(), concrete);
+        assert!(get_path(&semantic_property_yaml(&pinned_property), &["evidence", "preserve_sha256"]).is_none());
+        assert_eq!(property_evidence_write_disposition(module, &change, &pinned_property, false).unwrap(), PropertyEvidenceWriteDisposition::Unsafe);
+        for pointer in ["/oracle", "/proves", "/id", "/evidence/path", "/evidence/preserve_sha256", "/input_space/strategy"] {
+            let mut invalid = pinned.clone();
+            *invalid.pointer_mut(pointer).unwrap() = if pointer == "/oracle" { json!(["Different promise"]) } else { json!("different") };
+            let invalid: SemanticPropertyChange = serde_json::from_value(invalid).unwrap();
+            assert_eq!(property_evidence_write_disposition(module, &change, &invalid, true).unwrap(), PropertyEvidenceWriteDisposition::Unsafe, "{pointer}");
+        }
+        // A concurrent edit invalidates the explicit preservation precondition.
+        fs::write(&absolute_evidence, "new evidence bytes").unwrap();
+        assert!(write_semantic_contracts_and_evidence(module, Some(module), &pinned_change).is_err());
+        assert_eq!(fs::read_to_string(&absolute_evidence).unwrap(), "new evidence bytes");
+        fs::remove_file(&absolute_evidence).unwrap();
+        assert_eq!(property_evidence_write_disposition(module, &change, &pinned_property, true).unwrap(), PropertyEvidenceWriteDisposition::Unsafe);
+        fs::write(&absolute_evidence, concrete).unwrap();
 
         let mut semantic_replacement = replacement;
         semantic_replacement.oracle = vec!["A different semantic promise.".to_string()];
@@ -113803,7 +113879,8 @@ compatibility: {policy: backward-compatible-within-major}
         assert!(prompt.contains("there is no `semantic_profile` field"));
         assert!(prompt.contains("preserve its wrapper, version, evaluation strategy"));
         assert!(prompt.contains("semantics:\n        behavior:"));
-        assert!(prompt.contains("Prompt: rms.spec-plan@v8"));
+        assert!(prompt.contains("Prompt: rms.spec-plan@v9"));
+        assert!(prompt.contains("preserve_sha256"));
         assert!(prompt.contains("A behavior `cases` item is not a clause"));
         assert!(prompt.contains("never contains `evaluation`"));
         assert!(prompt.contains("observability: full"));
