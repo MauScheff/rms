@@ -1,5 +1,6 @@
 //! Bounded source-declared receiver types. Unknown and ambiguous types stay unknown.
 use std::collections::{BTreeMap, BTreeSet};
+use std::{cell::RefCell, rc::Rc};
 use syn::{Expr, FnArg, GenericArgument, Item, Pat, PathArguments, ReturnType, Signature, Type};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,6 +113,79 @@ impl RustValueType {
 mod external_crate_summary_tests {
     use super::*;
 
+    #[test]
+    fn named_type_memo_preserves_resolution_and_snapshot_scope() {
+        let cases = [
+            ("struct T;", "T", Some("src/lib.rs#T")),
+            ("use crate::a::T;", "T", Some("src/a.rs#T")),
+            ("use crate::a::T; use crate::b::T;", "T", None),
+            ("#[cfg(any())] use crate::a::T;", "T", None),
+            ("struct T; use crate::a::T;", "T", None),
+            ("use crate::a::*; use crate::b::*;", "T", None),
+            ("use crate::missing::*;", "T", None),
+            ("use B as A; use A as B;", "A", None),
+            ("fn malformed(", "T", None),
+            ("", "crate::missing::T", None),
+            ("struct T; struct T;", "T", None),
+            ("mod a { pub struct T; }", "a::T", None),
+        ];
+        for (source, reference, expected) in cases {
+            let sources = BTreeMap::from([
+                ("src/lib.rs".into(), source.into()),
+                ("src/a.rs".into(), "pub struct T;".into()),
+                ("src/b.rs".into(), "pub struct T;".into()),
+            ]);
+            let index = RustTypeIndex::from_sources(&sources).for_path("src/lib.rs");
+            let expected = expected.map(str::to_string);
+            assert_eq!(index.resolve_named_type_uncached(reference), expected, "{source}");
+            index.named_type_memo.borrow_mut().clear();
+            for _ in 0..3 {
+                assert_eq!(index.resolve_named_type(reference), expected, "{source}");
+                assert_eq!(index.named_type_memo.borrow().len(), 1);
+            }
+            let clone = index.with_local_type_shadows(&syn::parse_str("{ struct T; }").unwrap());
+            assert!(Rc::ptr_eq(&index.named_type_memo, &clone.named_type_memo));
+            assert_eq!(clone.resolve_named_type(reference), clone.resolve_named_type_uncached(reference));
+            for path in ["src/a.rs", "src/b.rs", "missing.rs"] {
+                let scope = index.for_path(path);
+                assert_eq!(scope.resolve_named_type("T"), scope.resolve_named_type_uncached("T"));
+            }
+        }
+        let mut source = "struct T; use T as A0;".to_string();
+        for n in 1..10 { source.push_str(&format!("use A{} as A{n};", n - 1)); }
+        let sources = BTreeMap::from([("src/lib.rs".into(), source)]);
+        let index = RustTypeIndex::from_sources(&sources).for_path("src/lib.rs");
+        for n in 0..10 {
+            let name = format!("A{n}");
+            let expected = (n < 8).then(|| "src/lib.rs#T".to_string());
+            assert_eq!(index.resolve_named_type_uncached(&name), expected);
+            assert_eq!(index.resolve_named_type(&name), expected);
+            assert_eq!(index.clone().resolve_named_type(&name), expected);
+        }
+        for source in ["struct T;", "", "fn malformed(", "enum T { Value }"] {
+            let fresh = RustTypeIndex::from_sources(&BTreeMap::from([("src/lib.rs".into(), source.into())])).for_path("src/lib.rs");
+            assert!(!Rc::ptr_eq(&index.named_type_memo, &fresh.named_type_memo));
+            assert_eq!(fresh.resolve_named_type("T"), fresh.resolve_named_type_uncached("T"));
+        }
+    }
+
+    #[test]
+    fn named_type_memo_reuses_positive_and_negative_queries() {
+        let mut source = "struct T;".to_string();
+        for n in 0..100 { source.push_str(&format!("fn unrelated_{n}() {{ let value = 1; }}")); }
+        let index = RustTypeIndex::from_sources(&BTreeMap::from([("src/lib.rs".into(), source)])).for_path("src/lib.rs");
+        let before = std::time::Instant::now();
+        let expected = (0..200).map(|n| index.resolve_named_type_uncached(if n % 2 == 0 { "T" } else { "Missing" })).collect::<Vec<_>>();
+        let uncached = before.elapsed();
+        index.named_type_memo.borrow_mut().clear();
+        let before = std::time::Instant::now();
+        let actual = (0..200).map(|n| index.clone().resolve_named_type(if n % 2 == 0 { "T" } else { "Missing" })).collect::<Vec<_>>();
+        let cached = before.elapsed();
+        assert_eq!(actual, expected);
+        assert_eq!(index.named_type_memo.borrow().len(), 2);
+        eprintln!("named-type repeated-query measurement: uncached={uncached:?}, cached={cached:?}; 200 queries, 2 memo entries");
+    }
+
     // The pre-optimization predicate is the equivalence oracle. Do not use
     // the cached summary here: malformed files and recursive scope matter.
     fn reparsed_available(sources: &BTreeMap<String, String>, root: &str) -> bool {
@@ -188,6 +262,7 @@ pub(super) struct RustTypeIndex {
     sources: BTreeMap<String, String>,
     has_unparsed_rust_sources: bool,
     rebound_external_crates: BTreeSet<String>,
+    named_type_memo: Rc<RefCell<BTreeMap<(String, String), Option<String>>>>,
     path: String,
 }
 
@@ -350,6 +425,7 @@ impl RustTypeIndex {
             sources: sources.clone(),
             has_unparsed_rust_sources,
             rebound_external_crates: rebound.0,
+            named_type_memo: Rc::default(),
             path: String::new(),
         };
         let mut signatures = BTreeMap::<String, Vec<(String, Type)>>::new();
@@ -876,6 +952,19 @@ impl RustTypeIndex {
     }
 
     fn resolve_named_type(&self, reference: &str) -> Option<String> {
+        // Only the completed depth-zero answer is shared across scope clones.
+        // Sources and unique_types are immutable within this index snapshot;
+        // local/generic shadow checks remain at their existing call sites.
+        let key = (self.path.clone(), reference.to_string());
+        if let Some(result) = self.named_type_memo.borrow().get(&key) {
+            return result.clone();
+        }
+        let result = self.resolve_named_type_uncached(reference);
+        self.named_type_memo.borrow_mut().insert(key, result.clone());
+        result
+    }
+
+    fn resolve_named_type_uncached(&self, reference: &str) -> Option<String> {
         fn imported_count(tree: &syn::UseTree, name: &str) -> usize {
             match tree {
                 syn::UseTree::Name(item) => usize::from(item.ident == name),
