@@ -108,6 +108,70 @@ impl RustValueType {
     }
 }
 
+#[cfg(test)]
+mod external_crate_summary_tests {
+    use super::*;
+
+    // The pre-optimization predicate is the equivalence oracle. Do not use
+    // the cached summary here: malformed files and recursive scope matter.
+    fn reparsed_available(sources: &BTreeMap<String, String>, root: &str) -> bool {
+        use syn::visit::{self, Visit};
+        struct Rebound<'a> { root: &'a str, found: bool }
+        impl<'ast> Visit<'ast> for Rebound<'_> {
+            fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+                let binding = item.rename.as_ref().map(|(_, name)| name).unwrap_or(&item.ident);
+                self.found |= binding == self.root && item.ident != self.root;
+                visit::visit_item_extern_crate(self, item);
+            }
+        }
+        let mut rebound = Rebound { root, found: false };
+        for (path, source) in sources {
+            if !path.ends_with(".rs") { continue; }
+            let Ok(file) = syn::parse_file(source) else { return false; };
+            rebound.visit_file(&file);
+        }
+        !rebound.found
+    }
+
+    #[test]
+    fn external_crate_summary_preserves_recursive_closure_rejection() {
+        let cases = [
+            "", "extern crate std;", "extern crate std as std;",
+            "extern crate other as std;", "extern crate other as uuid;",
+            "extern crate other as custom;", "extern crate other as r#custom;",
+            "#[cfg(any())] extern crate other as std;",
+            "mod nested { extern crate other as uuid; }",
+            "fn local() { extern crate other as custom; }",
+            "extern crate std as other; extern crate other as uuid;",
+            "fn malformed(",
+        ];
+        for first in cases {
+            for second in cases {
+                let sources = BTreeMap::from([
+                    ("src/lib.rs".into(), first.into()),
+                    ("dependency/src/lib.rs".into(), second.into()),
+                    ("metadata.yaml".into(), "not Rust {".into()),
+                ]);
+                let index = RustTypeIndex::from_sources(&sources);
+                for root in ["std", "uuid", "custom", "r#custom", "other", "missing"] {
+                    let expected = reparsed_available(&sources, root);
+                    assert_eq!(index.standard_external_crate_available(root), expected, "{root}: {sources:?}");
+                    assert_eq!(index.for_path("dependency/src/lib.rs").standard_external_crate_available(root), expected);
+                    assert_eq!(index.with_local_type_shadows(&syn::parse_str("{}").unwrap()).standard_external_crate_available(root), expected);
+                }
+            }
+        }
+        let empty = RustTypeIndex::from_sources(&BTreeMap::new());
+        assert!(empty.standard_external_crate_available("std"));
+        assert!(RustTypeIndex::default().standard_external_crate_available("std"));
+        let malformed = BTreeMap::from([("other.rs".into(), "fn broken(".into())]);
+        assert!(!RustTypeIndex::from_sources(&malformed).standard_external_crate_available("std"));
+        // A fresh analysis must derive new facts, not retain a process-global cache.
+        let repaired = BTreeMap::from([("other.rs".into(), "fn repaired() {}".into())]);
+        assert!(RustTypeIndex::from_sources(&repaired).standard_external_crate_available("std"));
+    }
+}
+
 #[derive(Clone, Default)]
 pub(super) struct RustTypeIndex {
     unique_types: BTreeSet<String>,
@@ -122,6 +186,8 @@ pub(super) struct RustTypeIndex {
     local_enum_aliases: BTreeMap<String, String>,
     self_type: Option<String>,
     sources: BTreeMap<String, String>,
+    has_unparsed_rust_sources: bool,
+    rebound_external_crates: BTreeSet<String>,
     path: String,
 }
 
@@ -236,6 +302,21 @@ impl RustTypeIndex {
             .filter(|(path, _)| path.ends_with(".rs"))
             .filter_map(|(path, source)| syn::parse_file(source).ok().map(|file| (path, file)))
             .collect::<Vec<_>>();
+        // Preserve the whole-closure, recursive extern-alias check, but derive
+        // its immutable facts once rather than parsing every source per call.
+        use syn::visit::{self, Visit};
+        #[derive(Default)]
+        struct Rebound(BTreeSet<String>);
+        impl<'ast> Visit<'ast> for Rebound {
+            fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+                let binding = item.rename.as_ref().map(|(_, name)| name).unwrap_or(&item.ident);
+                if binding != &item.ident { self.0.insert(binding.to_string()); }
+                visit::visit_item_extern_crate(self, item);
+            }
+        }
+        let mut rebound = Rebound::default();
+        for (_, file) in &files { rebound.visit_file(file); }
+        let has_unparsed_rust_sources = files.len() != sources.keys().filter(|path| path.ends_with(".rs")).count();
         let mut counts = BTreeMap::<String, usize>::new();
         for (path, file) in &files {
             for item in &file.items {
@@ -267,6 +348,8 @@ impl RustTypeIndex {
             local_enum_aliases: BTreeMap::new(),
             self_type: None,
             sources: sources.clone(),
+            has_unparsed_rust_sources,
+            rebound_external_crates: rebound.0,
             path: String::new(),
         };
         let mut signatures = BTreeMap::<String, Vec<(String, Type)>>::new();
@@ -690,24 +773,7 @@ impl RustTypeIndex {
     }
 
     pub(super) fn standard_external_crate_available(&self, root: &str) -> bool {
-        use syn::visit::{self, Visit};
-        struct Rebound<'a> { root: &'a str, found: bool }
-        impl<'ast> Visit<'ast> for Rebound<'_> {
-            fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
-                let binding = item.rename.as_ref().map(|(_, name)| name).unwrap_or(&item.ident);
-                self.found |= binding == self.root && item.ident != self.root;
-                visit::visit_item_extern_crate(self, item);
-            }
-        }
-        let mut rebound = Rebound { root, found: false };
-        // A crate-root extern alias also affects calls in another source file.
-        // Refuse ambiguous roots across the available Rust source closure.
-        for (path, source) in &self.sources {
-            if !path.ends_with(".rs") { continue; }
-            let Ok(file) = syn::parse_file(source) else { return false; };
-            rebound.visit_file(&file);
-        }
-        !rebound.found
+        !self.has_unparsed_rust_sources && !self.rebound_external_crates.contains(root)
     }
 
     pub(super) fn unshadowed_external_root(&self, root: &str) -> bool {
