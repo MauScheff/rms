@@ -60804,7 +60804,7 @@ fn render_spec_plan_repair_prompt(
                     && diagnostic.message.contains("implementation_commands")
         })
         .then_some(
-            "\n\nImplementation command repair rule: `implementation_commands.set` replaces existing stable command keys, `add` creates a stable key used by an integration-test realization, runnable surface smoke command, or probe in the same change, and `remove` deletes exact obsolete keys. Values are complete non-empty shell command strings. Every omitted command and every unrelated declaration is preserved. An integration-test realization `command` is only the stable key; never put a shell command in that field. Its added binding must select the exact package and test through `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION` (or exact literals). Put build, verify, probe, trace, property, fuzz, format, or other proof-command maintenance here; never put executable bindings under `machine.commands`, which declares semantic machine input variants. Preserve each requested key and invocation exactly. Example: `implementation_commands: {add: {app_integration: \"just test-package \\\"$RMS_INTEGRATION_PACKAGE\\\" \\\"$RMS_INTEGRATION_TEST_SELECTION\\\"\"}, set: {}, remove: []}` with an integration-test realization whose `command` is `app_integration`.",
+            "\n\nImplementation command repair rule: `implementation_commands.set` replaces existing stable command keys, `add` creates a stable key used by an integration-test realization, trace producer, public behavior observation source, runnable surface smoke command, or probe in the same change, and `remove` deletes exact obsolete keys. Values are complete non-empty shell command strings. Every omitted command and every unrelated declaration is preserved. An integration-test realization `command` is only the stable key; never put a shell command in that field. Its added binding must select the exact package and test through `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION` (or exact literals). Put build, verify, probe, trace, property, fuzz, format, or other proof-command maintenance here; never put executable bindings under `machine.commands`, which declares semantic machine input variants. Preserve each requested key and invocation exactly. Example: `implementation_commands: {add: {app_integration: \"just test-package \\\"$RMS_INTEGRATION_PACKAGE\\\" \\\"$RMS_INTEGRATION_TEST_SELECTION\\\"\"}, set: {}, remove: []}` with an integration-test realization whose `command` is `app_integration`.",
         )
         .unwrap_or_default();
     let collection_preservation_repair = diagnostics
@@ -61935,7 +61935,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     writeln!(out, "    exhaustive: true")?;
     writeln!(out, "```")?;
     writeln!(out)?;
-    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `implementation_commands.set` replaces named existing stable command keys. `implementation_commands.add` creates a stable key only when an integration-test realization, runnable surface smoke command, or probe in the same change references it. `implementation_commands.remove` deletes exact obsolete keys, including invalid legacy keys created by older RMS versions. All set/add values are complete non-empty shell commands. Omitted keys and unrelated declarations are preserved. A realization `command` is always a stable key, never shell text. Integration command bindings must select the declared package and exact test through `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION` or exact literals. Never put executable command strings under `machine.commands`, which declares semantic input variants. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. On a composition-only parent, `.add[]` also synchronizes an already-declared identical edge: RMS materializes the contained-child provider contract byte-for-byte. Never reproduce that exported contract under `contracts.add[]` or `contracts.set[]`; declare contract evidence separately. Non-composite provided-contract changes still change their contract and public surface atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2|v0.3` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
+    writeln!(out, "Item shapes and cardinalities are exact. Laws, contracts, artifacts, transformations, authorities, semantic functions, behavior bindings, trace producers, and evidence use the closed shapes rendered above. `implementation_commands.set` replaces named existing stable command keys. `implementation_commands.add` creates a stable key only when an integration-test realization, trace producer, public behavior observation source, runnable surface smoke command, or probe in the same change references it. `implementation_commands.remove` deletes exact obsolete keys, including invalid legacy keys created by older RMS versions. All set/add values are complete non-empty shell commands. Omitted keys and unrelated declarations are preserved. A realization `command` is always a stable key, never shell text. Integration command bindings must select the declared package and exact test through `RMS_INTEGRATION_PACKAGE` and `RMS_INTEGRATION_TEST_SELECTION` or exact literals. Never put executable command strings under `machine.commands`, which declares semantic input variants. `declaration` may replace module purpose, exact owned concepts/data/decisions, exact module effects, and the structured `boundary` declaration; remove obsolete `boundary` or `x-scaffold` sections; and record a concrete `no_untrusted_boundary_justification` when every input is already a validated upstream type. `declaration.boundary` and `remove_boundary: true` are mutually exclusive. Effect entries use scalar `name`, scalar `kind`, optional scalar `capability`, and optional structured `semantics`. On a composite target, leave `composition_exports` null or omit it to preserve every existing export. A non-null `composition_exports.set` is a complete replacement, so explicit `set: []` intentionally deletes every export. Use `.add[]` for additions and exact `.remove[]` keys for selective deletion; set/add items use scalar `group: commands|queries|events|capabilities`, `name`, `from`, and optional `contract`, while remove items use exact scalar `group` and `name`. On a composition-only parent, `.add[]` also synchronizes an already-declared identical edge: RMS materializes the contained-child provider contract byte-for-byte. Never reproduce that exported contract under `contracts.add[]` or `contracts.set[]`; declare contract evidence separately. Non-composite provided-contract changes still change their contract and public surface atomically. `properties.add[]` and `properties.set[]` use scalar `id`, `proves`, and `kind`; structured `input_space` and `operation`; string-list `preconditions` and non-empty `oracle`; property/fuzz evidence and counterexample paths; exact realizations; and optional canonical `explorations`. Every exploration uses exactly one scalar `assembly` safe relative path to an existing canonical `rms/probe-assembly/v0.1|v0.2|v0.3` file, `goal: satisfy|violate`, and positive `bounds.max_steps|max_schedules|max_states`. Never put an inline object under `assembly`; `rms spec apply` does not synthesize an assembly from planner prose. Executable temporal properties additionally declare non-empty typed `observations`, optional `assumptions` with kind `environment|search-preference`, and `temporal: {{scope, expression}}`. Expressions are closed `always|eventually|precedence|exclusion|at_most_once|bounded_response` variants over closed predicates. Quantity comparisons and bounded-response metrics use the RMS v1 unit catalog. Descriptive `pattern`, `trigger`, `condition`, and `bound` fields are invalid.")?;
     writeln!(out, "The exact property exploration shape is:")?;
     writeln!(out, "```yaml")?;
     writeln!(out, "explorations:")?;
@@ -64458,6 +64458,14 @@ fn validate_implementation_commands(
         .filter_map(|surface| surface.smoke_command.as_deref())
         .collect::<BTreeSet<_>>();
     let probe_command = change.probe.as_ref().map(|probe| probe.command.as_str());
+    let trace_commands = change.trace_producers.as_ref().into_iter()
+        .flat_map(|traces| traces.replace.iter().flatten().chain(&traces.add))
+        .map(|producer| producer.command.as_str()).collect::<BTreeSet<_>>();
+    let observation_commands = change.public_behavior_bindings.as_ref().into_iter()
+        .flat_map(|bindings| bindings.replace.iter().flatten().chain(&bindings.add))
+        .filter_map(|binding| binding.observation_source.as_ref())
+        .filter(|source| matches!(source.kind.as_str(), "transition-record" | "invocation-record"))
+        .map(|source| source.command.as_str()).collect::<BTreeSet<_>>();
     let integration_commands = change
         .properties
         .as_ref()
@@ -64533,6 +64541,8 @@ fn validate_implementation_commands(
             ));
         }
         if !integration_commands.contains(name.as_str())
+            && !trace_commands.contains(name.as_str())
+            && !observation_commands.contains(name.as_str())
             && !surface_smoke_commands.contains(name.as_str())
             && probe_command != Some(name.as_str())
         {
@@ -64540,7 +64550,7 @@ fn validate_implementation_commands(
                 "semantic.implementation-command-add-unowned",
                 &implementation.path,
                 format!(
-                    "new implementation command `{name}` must be referenced by an integration-test realization, runnable surface smoke command, or probe declared in the same change"
+                    "new implementation command `{name}` must be referenced by an integration-test realization, trace producer, public behavior observation source, runnable surface smoke command, or probe declared in the same change"
                 ),
             ));
         }
@@ -97251,6 +97261,39 @@ implementation_commands:
         .map(|path| fs::read_to_string(root.join("modules/play-game-domain").join(path)).unwrap())
         .expect("semantic change record");
         assert!(record.contains("implementation_commands:"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn implementation_command_add_accepts_exact_trace_and_observation_owners() {
+        let root = route_capability_fixture("trace-command-owner");
+        let context = load_spec_target(&root.join("modules/play-game-domain/implementation.yaml")).unwrap();
+        let producer = serde_json::json!({"id":"invocation-trace", "profile":"smoke", "bundle":"verification/traces/invocation.yaml", "command":"invocation_trace", "runner":"tests/trace.rs#produce"});
+        let binding = serde_json::json!({"id":"public", "public_kind":"capability", "public_name":"observe", "contract":"contracts/observe.yaml", "semantic_function":"observe", "observation_source":{"kind":"invocation-record", "command":"invocation_trace"}});
+        let check = |owners: JsonValue, key: &str| {
+            let mut value = serde_json::json!({"spec":"rms/semantic-change/v0.1", "implementation_commands":{"add":{key:"run-exact-trace"}}});
+            value.as_object_mut().unwrap().extend(owners.as_object().unwrap().clone());
+            let change: SemanticChange = serde_json::from_value(value).unwrap();
+            let mut diagnostics = Vec::new();
+            validate_implementation_commands(&context, &change, &mut diagnostics);
+            diagnostics
+        };
+        for operation in ["add", "set"] {
+            for owners in [
+                serde_json::json!({"trace_producers":{operation:[producer.clone()]}}),
+                serde_json::json!({"public_behavior_bindings":{operation:[binding.clone()]}}),
+                serde_json::json!({"trace_producers":{operation:[producer.clone()]}, "public_behavior_bindings":{operation:[binding.clone()]}}),
+            ] {
+                assert!(check(owners.clone(), "invocation_trace").is_empty(), "{owners}");
+                assert!(check(owners, "unused").iter().any(|d| d.check == "semantic.implementation-command-add-unowned"));
+            }
+        }
+        for owners in [serde_json::json!({}), serde_json::json!({"trace_producers":{"remove":["invocation_trace"]}, "public_behavior_bindings":{"remove":["invocation_trace"]}})] {
+            assert!(check(owners, "invocation_trace").iter().any(|d| d.check == "semantic.implementation-command-add-unowned"));
+        }
+        let mut invalid = binding.clone();
+        invalid["observation_source"]["kind"] = serde_json::json!("unknown");
+        assert!(check(serde_json::json!({"public_behavior_bindings":{"add":[invalid]}}), "invocation_trace").iter().any(|d| d.check == "semantic.implementation-command-add-unowned"));
         fs::remove_dir_all(&root).unwrap();
     }
 
