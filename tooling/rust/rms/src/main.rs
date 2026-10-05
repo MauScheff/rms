@@ -21861,7 +21861,7 @@ fn rust_trace_proof(base: &Path, runner_path: &str, runner_symbol: &str, target:
         .and_then(TomlValue::as_str).map(|name| name.replace('-', "_"));
     let library = base.join(cargo.as_ref().and_then(|cargo| cargo.get("lib"))
         .and_then(|lib| lib.get("path")).and_then(TomlValue::as_str).unwrap_or("src/lib.rs"));
-    let index = rust_proof_calls::Index::new(&sources, library.clone(), crate_name).for_test_proof();
+    let index = rust_proof_calls::Index::new(&sources, library.clone(), crate_name).for_test_proof(&base.join(runner_path));
     let target = target.and_then(|target| {
         if let Some((path, symbol)) = binding_reference_parts(target) {
             let resolved = index.resolve(&base.join(path), &[symbol.to_string()])?;
@@ -100941,7 +100941,7 @@ fn produce_transition_trace() {
         }).collect();
         let production = rust_proof_calls::Index::new(&sources, root.join("src/lib.rs"), Some("proof_owner".into()));
         assert!(production.resolve(&root.join("src/lib.rs"), &["trace".into(), "produce".into()]).is_none());
-        assert!(production.for_test_proof().resolve(&root.join("src/lib.rs"), &["trace".into(), "produce".into()]).is_some());
+        assert!(production.for_test_proof(&root.join("tests/trace.rs")).resolve(&root.join("src/lib.rs"), &["trace".into(), "produce".into()]).is_some());
         let mut implementation = LoadedManifest { path: root.join("implementation.yaml"), value: serde_yaml::from_str("binding: rust\narchitecture:\n  roles:\n    transition_record: [src/transition.rs]\n").unwrap() };
         assert!(trace_producer_calls_transition_record(&root, &implementation, "tests/trace.rs#produce", "transition_record"));
         implementation.value = serde_yaml::from_str("binding: rust\narchitecture:\n  roles:\n    transition_record: [src/transition.rs, src/other.rs]\n").unwrap();
@@ -101002,6 +101002,9 @@ fn produce() {
     emit(&records);
 }"#;
         let runner = root.join("tests/trace_producer.rs");
+        // Independent integration crates may compile the same helper source.
+        // Their attachments must not make this producer's parent ambiguous.
+        fs::write(root.join("tests/another_test.rs"), "#[path = \"machine_probe.rs\"] mod shared;").unwrap();
         let check = || rust_trace_proof(&root, "tests/trace_producer.rs", "produce", Some("src/transition.rs#transition_record"));
         fs::write(&runner, source).unwrap();
         assert_eq!(check(), (true, true), "root: {}", root.display());

@@ -39,14 +39,24 @@ impl Index {
 
     /// Only trace proofs run in the explicit test configuration. Production
     /// call inspection retains its existing conditional-declaration policy.
-    pub(crate) fn for_test_proof(mut self) -> Self {
+    pub(crate) fn for_test_proof(mut self, runner: &Path) -> Self {
         self.test_parents = Some(BTreeMap::new());
         let mut parents = BTreeMap::<PathBuf, Vec<PathBuf>>::new();
-        for (path, file) in &self.files {
-            for item in &file.items {
-                if let Item::Mod(module) = item {
-                    if let Some(target) = self.module_target(path, module) {
-                        parents.entry(target).or_default().push(path.clone());
+        let mut visited = BTreeSet::new();
+        // A helper can be compiled by several independent integration crates.
+        // Only attachments reachable from this library and selected test root
+        // participate in this proof; duplicate active attachments still fail.
+        for root in [self.library.clone(), runner.to_path_buf()] {
+            let mut pending = vec![root];
+            while let Some(path) = pending.pop() {
+                if !visited.insert(path.clone()) { continue; }
+                let Some(file) = self.files.get(&path) else { continue; };
+                for item in &file.items {
+                    if let Item::Mod(module) = item {
+                        if let Some(target) = self.module_target(&path, module) {
+                            parents.entry(target.clone()).or_default().push(path.clone());
+                            pending.push(target);
+                        }
                     }
                 }
             }
