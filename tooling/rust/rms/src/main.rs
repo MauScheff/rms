@@ -21658,6 +21658,15 @@ fn trace_producer_calls_transition_record(
 ) -> bool {
     if get_str(&implementation.value, &["binding"]) == Some("rust") {
         let Some((path, symbol)) = binding_reference_parts(runner) else { return false; };
+        if !target.contains(['#', ':']) {
+            let owners = get_path(&implementation.value, &["architecture", "roles", "transition_record"])
+                .and_then(YamlValue::as_sequence).into_iter().flatten()
+                .filter_map(YamlValue::as_str).collect::<Vec<_>>();
+            if !owners.is_empty() {
+                let [owner] = owners.as_slice() else { return false; };
+                return rust_trace_proof(base, path, symbol, Some(&format!("{owner}#{target}"))).0;
+            }
+        }
         return rust_trace_proof(base, path, symbol, Some(target)).0;
     }
     binding_function_references_symbol(base, implementation, runner, target)
@@ -21852,7 +21861,7 @@ fn rust_trace_proof(base: &Path, runner_path: &str, runner_symbol: &str, target:
         .and_then(TomlValue::as_str).map(|name| name.replace('-', "_"));
     let library = base.join(cargo.as_ref().and_then(|cargo| cargo.get("lib"))
         .and_then(|lib| lib.get("path")).and_then(TomlValue::as_str).unwrap_or("src/lib.rs"));
-    let index = rust_proof_calls::Index::new(&sources, library.clone(), crate_name);
+    let index = rust_proof_calls::Index::new(&sources, library.clone(), crate_name).for_test_proof();
     let target = target.and_then(|target| {
         if let Some((path, symbol)) = binding_reference_parts(target) {
             let resolved = index.resolve(&base.join(path), &[symbol.to_string()])?;
@@ -100911,6 +100920,55 @@ fn produce_transition_trace() {
                     .message
                     .contains("serializes returned records: false")
         }));
+    }
+
+    #[test]
+    fn rust_trace_proof_tracks_declared_library_test_modules() {
+        let root = unique_test_dir("trace-library-test-modules");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname='proof-owner'\nversion='0.1.0'\nautotests=false\n").unwrap();
+        let library = "mod transition; #[cfg(test)] #[path=\"../tests/trace.rs\"] mod trace; #[cfg(test)] #[path=\"../tests/probe.rs\"] mod probe;";
+        fs::write(root.join("src/lib.rs"), library).unwrap();
+        fs::write(root.join("src/transition.rs"), "pub fn transition_record() -> Record { todo!() }").unwrap();
+        fs::write(root.join("tests/probe.rs"), "pub fn record_json(record: &Record) -> Value { serde_json::json!({\"state_before\":record.state_before,\"state_after\":record.state_after,\"output\":record.output,\"source\":record.source}) }").unwrap();
+        let producer = "use crate::transition::transition_record; #[test] fn produce() { let records = vec![transition_record()]; let rows = records.iter().map(crate::probe::record_json).collect::<Vec<_>>(); std::fs::write(\"trace\",serde_json::to_vec(&rows).unwrap()); }";
+        fs::write(root.join("tests/trace.rs"), producer).unwrap();
+        let check = || rust_trace_proof(&root, "tests/trace.rs", "produce", Some("src/transition.rs#transition_record"));
+        assert_eq!(check(), (true, true));
+        let sources = rust_source_files(&root).into_iter().map(|path| {
+            let source = fs::read_to_string(&path).unwrap(); (path, source)
+        }).collect();
+        let production = rust_proof_calls::Index::new(&sources, root.join("src/lib.rs"), Some("proof_owner".into()));
+        assert!(production.resolve(&root.join("src/lib.rs"), &["trace".into(), "produce".into()]).is_none());
+        assert!(production.for_test_proof().resolve(&root.join("src/lib.rs"), &["trace".into(), "produce".into()]).is_some());
+        let mut implementation = LoadedManifest { path: root.join("implementation.yaml"), value: serde_yaml::from_str("binding: rust\narchitecture:\n  roles:\n    transition_record: [src/transition.rs]\n").unwrap() };
+        assert!(trace_producer_calls_transition_record(&root, &implementation, "tests/trace.rs#produce", "transition_record"));
+        implementation.value = serde_yaml::from_str("binding: rust\narchitecture:\n  roles:\n    transition_record: [src/transition.rs, src/other.rs]\n").unwrap();
+        assert!(!trace_producer_calls_transition_record(&root, &implementation, "tests/trace.rs#produce", "transition_record"));
+        for invalid_library in [
+            "mod transition;", // Not attached to this library.
+            "mod transition; #[cfg(feature=\"optional\")] #[path=\"../tests/trace.rs\"] mod trace;",
+            "mod transition; #[cfg_attr(test, path=\"../tests/trace.rs\")] mod trace;",
+            "mod transition; #[path=\"../tests/trace.rs\"] mod first; #[path=\"../tests/trace.rs\"] mod second;",
+        ] {
+            fs::write(root.join("src/lib.rs"), invalid_library).unwrap();
+            assert!(!check().0, "{invalid_library}");
+        }
+        fs::write(root.join("src/lib.rs"), library).unwrap();
+        fs::write(root.join("tests/probe.rs"), "pub fn record_json(record: &Record) -> Value { serde_json::json!({}) }").unwrap();
+        assert_eq!(check(), (true, false));
+        fs::write(root.join("tests/trace.rs"), producer.replace("use crate::transition::transition_record;", "fn transition_record() -> Record { todo!() }")).unwrap();
+        assert!(!check().0);
+        fs::write(root.join("tests/trace.rs"), producer.replace("use crate::transition::transition_record;", "use super::*;")).unwrap();
+        fs::write(root.join("src/lib.rs"), "mod transition;").unwrap();
+        fs::write(root.join("src/transition.rs"), "pub fn transition_record() -> Record { todo!() } #[cfg(test)] #[path=\"../tests/trace.rs\"] mod trace;").unwrap();
+        assert!(check().0);
+        fs::write(root.join("src/transition.rs"), "pub fn transition_record() -> Record { todo!() }").unwrap();
+        fs::write(root.join("src/lib.rs"), "mod transition; mod wrong;").unwrap();
+        fs::write(root.join("src/wrong.rs"), "fn transition_record() -> Record { todo!() } #[cfg(test)] #[path=\"../tests/trace.rs\"] mod trace;").unwrap();
+        assert!(!check().0);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
