@@ -21826,6 +21826,10 @@ fn rust_trace_serialization_reachable(base: &Path, runner_path: &str, runner_sym
 }
 
 fn rust_trace_proof(base: &Path, runner_path: &str, runner_symbol: &str, target: Option<&str>) -> (bool, bool) {
+    // Source facts and #[path] resolution must use the same root identity.
+    // Otherwise an initial ./ survives discovery but disappears in resolution.
+    let Ok(base) = fs::canonicalize(base) else { return (false, false); };
+    let base = base.as_path();
     let mut functions = BTreeMap::<(PathBuf, String), RustTraceFunctionFacts>::new();
     let mut paths_by_name = BTreeMap::<String, Vec<PathBuf>>::new();
     let mut sources = BTreeMap::new();
@@ -100868,7 +100872,10 @@ fn produce_transition_trace() {
 
     #[test]
     fn rust_trace_proof_resolves_exact_facade_and_path_aliased_serializer() {
-        let root = unique_test_dir("trace-proof-exact-rust-identity");
+        let unique = unique_test_dir("trace-proof-exact-rust-identity");
+        let relative = PathBuf::from(unique.file_name().unwrap());
+        // Do not change process cwd: native tests run concurrently.
+        for root in [std::env::current_dir().unwrap().join(&relative), relative.clone(), Path::new(".").join(&relative)] {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join("tests")).unwrap();
         fs::write(root.join("Cargo.toml"), "[package]\nname = 'proof-owner'\nversion = '0.1.0'\n").unwrap();
@@ -100896,7 +100903,7 @@ fn produce() {
         let runner = root.join("tests/trace_producer.rs");
         let check = || rust_trace_proof(&root, "tests/trace_producer.rs", "produce", Some("src/transition.rs#transition_record"));
         fs::write(&runner, source).unwrap();
-        assert_eq!(check(), (true, true));
+        assert_eq!(check(), (true, true), "root: {}", root.display());
         fs::write(&runner, source.replace("proof_owner::transition_record()", "transition_record()")).unwrap();
         assert_eq!(check(), (true, true));
 
@@ -100934,6 +100941,7 @@ fn produce() {
         fs::write(&runner, source.replace("let record = proof_owner::transition_record();", "let proof_owner = fake; let record = proof_owner::transition_record();")).unwrap();
         assert!(!check().0);
         fs::remove_dir_all(&root).unwrap();
+        }
     }
 
     #[test]
