@@ -2638,8 +2638,13 @@ fn extract_rust_functions_with_types(
             .calls
             .iter()
             .map(|call| {
-                let resolved = resolve_call_alias(call, &aliases);
-                rust_exact_function_reference(path, &resolved, sources, 0).unwrap_or(resolved)
+                let local_module = call.split_once("::").is_some_and(|(root, _)|
+                    file.items.iter().any(|item| matches!(item, syn::Item::Mod(module) if module.ident == root && module.content.is_none())));
+                // A same-name function import is in the value namespace; it
+                // must not replace a declared module used as a path prefix.
+                let resolved = if local_module { call.clone() } else { resolve_call_alias(call, &aliases) };
+                rust_exact_function_reference(path, &resolved, sources, 0)
+                    .unwrap_or_else(|| if local_module { format!("{path}#{resolved}") } else { resolved })
             })
             .collect();
         node.rust_unsafe_calls = node
@@ -2712,6 +2717,34 @@ fn rust_exact_item_reference(
     }
     let parts = reference.split("::").collect::<Vec<_>>();
     if parts.len() > 1 {
+        let file = syn::parse_file(sources.get(path)?).ok()?;
+        let modules = file.items.iter().filter_map(|item| match item {
+            syn::Item::Mod(module) if module.ident == parts[0] => Some(module),
+            _ => None,
+        }).collect::<Vec<_>>();
+        if !modules.is_empty() {
+            let [module] = modules.as_slice() else { return None; };
+            if module.content.is_some() || module.attrs.iter().any(|attr| !attr.path().is_ident("doc")) { return None; }
+            if file.items.iter().any(|item| match item {
+                syn::Item::Struct(item) => item.ident == parts[0],
+                syn::Item::Enum(item) => item.ident == parts[0],
+                syn::Item::Type(item) => item.ident == parts[0],
+                _ => false,
+            }) { return None; }
+            if let Some(import) = rust_import_aliases(&file).get(parts[0]) {
+                // Only a proven function import can coexist in another namespace.
+                rust_exact_function_reference(path, import, sources, depth + 1)?;
+            }
+            let source_path = std::path::Path::new(path);
+            let parent = source_path.parent()?;
+            let directory = if matches!(source_path.file_name()?.to_str()?, "lib.rs" | "main.rs" | "mod.rs") {
+                parent.to_path_buf()
+            } else { parent.join(source_path.file_stem()?) };
+            let candidates = [directory.join(format!("{}.rs", parts[0])), directory.join(parts[0]).join("mod.rs")];
+            let existing = candidates.iter().filter(|candidate| candidate.to_str().is_some_and(|path| sources.contains_key(path))).collect::<Vec<_>>();
+            let [target] = existing.as_slice() else { return None; };
+            return rust_exact_item_reference(target.to_str()?, &parts[1..].join("::"), sources, depth + 1);
+        }
         let prefix = if parts[0] == "crate" {
             path.split_once("/src/")
                 .map(|(prefix, _)| prefix.to_string())
@@ -6638,6 +6671,42 @@ fn decide() {
                 .map(|node| node.qualified_name)
                 .collect::<Vec<_>>();
             assert!(dynamic.is_empty(), "{path} dynamic nodes: {dynamic:?}");
+        }
+    }
+
+    #[test]
+    fn rust_dependency_private_module_call_keeps_exact_owner() {
+        let check = |declaration: &str, body: &str, alternate: bool| {
+            let mut sources = BTreeMap::from([
+                ("src/lib.rs".into(), "fn run() { provider::entry(); }".into()),
+                ("src/transition.rs".into(), "pub fn transition() {}".into()),
+                ("dependencies/provider/src/lib.rs".into(), format!("{declaration} pub fn entry() {{ transition::transition(); }}")),
+                ("rms-metadata/rust-crate-alias/provider".into(), "dependencies/provider".into()),
+            ]);
+            if !body.is_empty() { sources.insert("dependencies/provider/src/transition.rs".into(), body.into()); }
+            if alternate { sources.insert("dependencies/provider/src/transition/mod.rs".into(), "pub fn transition() {}".into()); }
+            analyze(AnalysisInput { binding: "rust".into(), source_digest: "test".into(), tool_digest: "test".into(), sources,
+                semantic_functions: vec![expectation("src/lib.rs#run", "pure", &[])],
+                authority_facades: Vec::new(), trusted_external_calls: BTreeSet::new() })
+        };
+        for (body, alternate) in [("pub fn transition() {}", false), ("", true)] {
+            let result = check("mod transition;", body, alternate);
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        let result = check("mod transition; pub use crate::transition::transition;", "pub fn transition() {}", false);
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        for (declaration, body, alternate) in [
+            ("mod transition;", "", false),
+            ("#[cfg(feature=\"maybe\")] mod transition;", "pub fn transition() {}", false),
+            ("mod transition; mod transition;", "pub fn transition() {}", false),
+            ("mod transition; use unknown as transition;", "pub fn transition() {}", false),
+            ("mod transition;", "pub fn transition() {}", true),
+            ("mod transition;", "pub fn malformed(", false),
+            ("mod transition;", "pub fn transition() {} pub fn transition() {}", false),
+            ("mod transition;", "pub fn transition() { std::fs::read(\"x\"); }", false),
+        ] {
+            let result = check(declaration, body, alternate);
+            assert_eq!(result.result, AnalysisResult::Fail, "{declaration}: {result:#?}");
         }
     }
 
