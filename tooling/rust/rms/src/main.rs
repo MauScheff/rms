@@ -21725,7 +21725,14 @@ fn trace_producer_serializes_transition_records(
                 && function.contains("record.source")
                 && function.contains("JSONSerialization")
                 && function.contains(".write(")
-        }),
+        }) || {
+            let target = get_str(&implementation.value, &["architecture", "machine", "transition_record_function"]);
+            let index = swift_proof_calls::Index::new(&[(base.join(path), source.clone())]);
+            target.is_some_and(|target| swift_function_sources(&source).into_iter().any(|(name, function)| {
+                index.reaches(&base.join(path), runner_symbol, Some(&base.join(path)), &name)
+                    && swift_proof_calls::serializes_collected_records(function, target)
+            }))
+        },
         Some("js") | Some("javascript") => {
             js_function_source(&source, runner_symbol).is_some_and(|function| {
                 function.contains("transitionRecord")
@@ -100903,6 +100910,49 @@ architecture:
             lock.replace("dependencies=['git2']", "dependencies=[]"),
             format!("{lock}\n[[package]]\nname='git2'\nversion='0.19.0'"),
         ] { assert!(pinned_git2_identity(&parse(cargo), &parse(&changed)).is_none()); }
+    }
+
+    #[test]
+    fn swift_trace_serializer_follows_exact_helper_and_rejects_fabricated_records() {
+        let root = unique_test_dir("swift-trace-helper");
+        fs::create_dir_all(root.join("Tests")).unwrap();
+        write_test_file(&root.join("implementation.yaml"), "spec: rms/implementation/v0.2\nmodule: fixture\nbinding: swift\narchitecture:\n  machine: {transition_record_function: transitionRecord}\n");
+        let implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
+        let source = r#"
+class Proof {
+    func produce() throws { try capture(mode: 0) }
+    func capture(mode: Int) throws {
+        var records: [Record] = []
+        func step() {
+            let record = transitionRecord(machine, input)
+            records.append(record)
+        }
+        step()
+        let values: [[String: Any]] = records.enumerated().map { index, record in
+            ["state_before": record.stateBefore, "state_after": record.stateAfter,
+             "input": record.input, "output": record.output, "source": record.source]
+        }
+        let document: [String: Any] = ["records": values]
+        try JSONSerialization.data(withJSONObject: document).write(to: url)
+    }
+}
+"#;
+        for (candidate, expected) in [
+            (source.to_string(), true),
+            (source.replace("try capture(mode: 0)", "try other(mode: 0)"), false),
+            (source.replace("let record = transitionRecord(machine, input)", "let ignored = transitionRecord(machine, input)\n let record = fabricatedRecord()"), false),
+            (source.replace("records.append(record)", "records.append(fabricatedRecord())"), false),
+            (source.replace("records.append(record)", "records.append(record)\n records.append(fabricatedRecord())"), false),
+            (source.replace("[Record] = []", "[Record] = fabricatedRecords()"), false),
+            (source.replace("        step()", "        records = fabricatedRecords()"), false),
+            (source.replace("        step()", "        // No collector invocation."), false),
+            (source.replace("[\"records\": values]", "[\"records\": fabricatedRows()]"), false),
+            (source.replace("func produce() throws", "func produce(capture: (Int) -> Void) throws"), false),
+        ] {
+            write_test_file(&root.join("Tests/Proof.swift"), &candidate);
+            assert_eq!(trace_producer_serializes_transition_records(&root, &implementation, "Tests/Proof.swift#produce"), expected, "{candidate}");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
