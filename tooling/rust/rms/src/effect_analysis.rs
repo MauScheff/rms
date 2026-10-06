@@ -4140,6 +4140,18 @@ fn swift_call_is_standard_literal_collection_operation(
     if compact.starts_with('[') && compact.contains("].joined(") {
         return true;
     }
+    // Close only count-based prefix dispatch on a known collection. In
+    // particular, prefix(while:) still requires callback analysis. Recursion
+    // in collect_call_nodes retains every call inside the count expression.
+    if let Some((receiver, arguments)) = compact.split_once(".prefix(") {
+        return standard_collection_names.contains(receiver)
+            && arguments.strip_suffix(')').is_some_and(|count| {
+                !count.is_empty()
+                    && !count.contains(['{', '}'])
+                    && top_level_delimiter(count, ':').is_none()
+                    && top_level_delimiter(count, ',').is_none()
+            });
+    }
     let Some((receiver, arguments)) = compact.split_once(".allSatisfy(") else {
         return false;
     };
@@ -6574,6 +6586,22 @@ fn decide() {
             expectation("Sources/App.swift#decide", "pure", &[]),
         );
         assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+    }
+
+    #[test]
+    fn swift_collection_count_prefix_is_pure_and_unknown_dispatch_stays_closed() {
+        for (source, expected) in [
+            ("func decide(_ count: Int) { let indices: [UInt64] = [1, 2]; for index in indices.prefix(count) { _ = index } }", AnalysisResult::Pass),
+            ("func decide(indices: [UInt64], count: Int) { _ = indices.prefix(count) }", AnalysisResult::Pass),
+            ("func decide(indices: CustomCollection, count: Int) { _ = indices.prefix(count) }", AnalysisResult::Fail),
+            ("func decide(indices: [UInt64], callback: (UInt64) -> Bool) { _ = indices.prefix(while: callback) }", AnalysisResult::Fail),
+            ("func decide(indices: [UInt64], callback: () -> Int) { _ = indices.prefix(callback()) }", AnalysisResult::Fail),
+            ("func decide(indices: [UInt64]) { _ = indices.prefix(while: { FileManager.default.remove_file(\"x\"); return true }) }", AnalysisResult::Fail),
+            ("func decide(indices: [UInt64], other: CustomCollection) { _ = other.indices.prefix(1) }", AnalysisResult::Fail),
+        ] {
+            let result = report("swift", "Sources/App.swift", source, expectation("decide", "pure", &[]));
+            assert_eq!(result.result, expected, "{source}: {result:#?}");
+        }
     }
 
     #[test]
