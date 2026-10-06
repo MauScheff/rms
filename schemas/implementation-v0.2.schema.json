@@ -320,6 +320,23 @@
         "types": {
           "$ref": "#/$defs/machineTypes"
         },
+        "retained_structural_bindings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["compatibility", "prior_revision", "kind", "name", "source", "source_sha256"],
+            "properties": {
+              "compatibility": {"const": "preserve-public-shape"},
+              "prior_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "kind": {"enum": ["command_envelope", "event_envelope", "effect_envelope", "effect_result_envelope", "transition", "transition_record"]},
+              "name": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+              "source": {"type": "string", "minLength": 1},
+              "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            },
+            "additionalProperties": false
+          }
+        },
         "states": {
           "$ref": "#/$defs/identifierList"
         },

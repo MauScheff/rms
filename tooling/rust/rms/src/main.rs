@@ -40,6 +40,7 @@ mod probe;
 mod proof_certificate;
 mod property;
 mod retirement;
+mod retained_structural;
 mod rust_proof_calls;
 mod schema_generator;
 mod semantic_graph;
@@ -2256,6 +2257,7 @@ struct SemanticFunctionFinalStateReport {
 
 #[derive(Clone, Debug, Default, Serialize)]
 struct MachineFinalStateReport {
+    retained_structural_bindings: Vec<retained_structural::Binding>,
     execution_binding: Option<persistent_async::ExecutionBinding>,
     mode: Option<String>,
     transition_signature: Option<String>,
@@ -3844,6 +3846,8 @@ struct MachineChange {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MachineChangeMachine {
+    #[serde(default)]
+    retained_structural_bindings: Option<Vec<retained_structural::Binding>>,
     #[serde(default)]
     execution_binding: Option<persistent_async::ExecutionBinding>,
     mode: String,
@@ -34304,6 +34308,7 @@ fn validate_rust_typing(
     _base: &Path,
     source_root: &Path,
 ) {
+    retained_structural::validate(implementation, diagnostics);
     if !source_root.exists() {
         return;
     }
@@ -34517,7 +34522,12 @@ fn inspect_rust_struct_typing(
 
     let public_fields = public_struct_field_count(item_struct);
     if public_fields > 0 {
-        if !allowed_public_field_structs.contains(&struct_name) {
+        if let Some(permitted) = retained_structural::permits(implementation, &struct_name, path) {
+            if !permitted {
+                diagnostics.push(error("structure.retained-binding-provenance", &implementation.path,
+                    format!("retained record `{struct_name}` is not unchanged at its exact pinned source path")));
+            }
+        } else if !allowed_public_field_structs.contains(&struct_name) {
             diagnostics.push(error(
                 "implementation.rust.typing.public-fields",
                 &implementation.path,
@@ -43015,6 +43025,9 @@ fn build_next_report_with_optional_program(
         exact_owner_scoped_proof_support_role_change_ready(task, intent.as_ref(), &owner);
     let owner_scoped_existing_semantic_change =
         owner_scoped_existing_semantic_change_ready(intent.as_ref(), &owner);
+    let retained_repairs = if owner_scoped_existing_semantic_change {
+        retained_structural::route_repairs(task, &owner)
+    } else { BTreeMap::new() };
     let proven_effect_repairs = if owner_scoped_existing_semantic_change {
         owner
             .selected_module()
@@ -43043,6 +43056,9 @@ fn build_next_report_with_optional_program(
     };
     if !proven_effect_repairs.is_empty() {
         warnings.push("A read-only preflight proves that the exact requested canonical repair resolves the named effect-analysis finding without changing source, purity, or authority rows. Apply the receipt-guarded repair and rerun normal proof; this route is not verification of the current candidate.".to_string());
+    }
+    if !retained_repairs.is_empty() {
+        warnings.push(format!("Read-only provenance verifies explicitly requested retained structural compatibility for {}. Apply the reviewed retained_structural_bindings through machine apply; unchanged source pins and all final proof gates remain required.", retained_repairs.keys().cloned().collect::<Vec<_>>().join(", ")));
     }
     if explicit_outside_coverage
         && intent
@@ -43105,6 +43121,7 @@ fn build_next_report_with_optional_program(
                         && requested_external_crate_declaration_diagnostic(task, diagnostic, &owner))
                     && !(owner_scoped_existing_semantic_change
                         && selected_owner_missing_callable(diagnostic, &owner))
+                    && !retained_structural::repaired_diagnostic(diagnostic, &owner, &retained_repairs)
                     && if explicit_outside_coverage {
                         diagnostic.check.starts_with("intent.")
                     } else if matches!(owner.status(), OwnerStatus::Ambiguous | OwnerStatus::None) {
@@ -54868,6 +54885,7 @@ fn render_machine_plan_prompt(
             .unwrap_or_else(|| "null".to_string())
     )?;
     writeln!(out, "  transition_function: {}", report.machine.transition_function.as_deref().map(yaml_quote).unwrap_or_else(|| "null".to_string()))?;
+    writeln!(out, "  retained_structural_bindings: null")?;
     writeln!(out, "  types:")?;
     for (field, value) in [
         ("state", report.machine.types.state.as_deref()),
@@ -54972,6 +54990,7 @@ fn render_machine_plan_prompt(
     writeln!(out, "Legacy inspectable bindings missing rc.8 probe declarations are repaired in this same machine change: set `commands: {{ probe: <binding-native command> }}`, set `machine.initial_state` to one declared state, set `probe` with `protocol`, `command: probe`, `runner: path#symbol`, and `initial_state_function: path#symbol` for state-and-input machines, and add the exact runner path as `roles.add[].kind: probe_adapter`. Omit `commands` and `probe` only when those declarations already exist and are not changing.")?;
     writeln!(out, "Role items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`. A role with `kind: effect_executor` must include the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. Shared IO mechanics used by multiple executors use `kind: effect_support`; they cannot own state progression, transitions, drivers, or public/runnable behavior. Effectful stateful machines declare one `machine_driver` role, set `machine.driver_function` to its exact callable, and set `machine.transition_record_function` to the exact pure record constructor used by that driver. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; atomicity applies to that exact protocol. Machine apply binds each executor as an effectful `effect-executor` semantic function. Aggregate protocols use `atomicity: aggregate` plus `aggregate_justification` and evidence.")?;
     writeln!(out, "`machine.transition_function` selects the canonical transition by its exact callable identifier. Omission or null preserves the existing callable (or defaults to `transition` if absent). Selection binds a pure transition semantic function; it does not rename, rewrite, or remove old source APIs. Define the selected callable in a declared transition role and pass normal source, purity, signature, record-path, and proof checks. Run `rms machine apply ... --dry-run` first and do not edit source while `final_machine` still contains scaffold-generic variants instead of the intended product cases.")?;
+    writeln!(out, "For explicit Rust V1 public-shape compatibility, `machine.retained_structural_bindings` replaces the retained list. Each entry requires `compatibility: preserve-public-shape`, `prior_revision` (full 40-character ancestor commit), `kind` (command_envelope, event_envelope, effect_envelope, effect_result_envelope, transition, or transition_record), exact `name`, module-relative declared-role `source`, and `source_sha256` (64 hex characters). The prior binding must map and allow that exact structural type. The complete source file must remain byte-identical to that commit; RMS rejects changed source, unproven names, aliases, and arbitrary domain types. Omission/null preserves existing retention; no existing retention means ordinary replacement. An empty list removes retention. These are compatibility records, not purity or behavioral proof, and require the repository and pinned Git history for verification. Use a ready receipt whose exact task requests retained structural compatibility; source and final gates still apply.")?;
     writeln!(out)?;
     writeln!(out, "## Machine-Gate Checklist")?;
     for item in [
@@ -55035,6 +55054,7 @@ fn run_machine_apply_change(
         value: manifest.value.clone(),
     };
     apply_machine_change_to_manifest(&mut candidate.value, change);
+    retained_structural::validate(&candidate, &mut diagnostics);
     validate_against_embedded_schema(&candidate, &mut diagnostics);
     validate_caller_driven_binding(&candidate, &mut diagnostics);
     let writes = planned_machine_apply_writes(&manifest, change);
@@ -57196,6 +57216,7 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
         }
     }
     sync_machine_type_closed_variants(value, &previous_types, &types);
+    retained_structural::apply(value, &change.machine.retained_structural_bindings);
     sync_machine_structural_public_fields(value, &previous_types, &types, &names.source_provenance);
 
     set_yaml_sequence_path(
@@ -57353,6 +57374,7 @@ fn sync_machine_structural_public_fields(
     }
 
     let mut allowed = get_string_array(value, &["architecture", "allowed_public_field_structs"]);
+    final_types.extend(retained_structural::names(value));
     allowed.retain(|type_name| !previous.contains(type_name) || final_types.contains(type_name));
     for type_name in final_types {
         if !allowed.contains(&type_name) {
@@ -57513,6 +57535,8 @@ fn machine_final_state_report(
         })
         .collect::<Vec<_>>();
     MachineFinalStateReport {
+        retained_structural_bindings: change.machine.retained_structural_bindings.clone()
+            .unwrap_or_else(|| retained_structural::bindings(&manifest.value).unwrap_or_default()),
         execution_binding: change.machine.execution_binding.clone().or_else(|| {
             get_path(&manifest.value, &["architecture", "machine", "execution_binding"])
                 .and_then(|value| serde_yaml::from_value(value.clone()).ok())
@@ -57845,6 +57869,9 @@ fn print_machine_apply_report(report: &MachineApplyReport) {
 fn print_machine_final_state(final_machine: &MachineFinalStateReport) {
     println!("final_machine:");
     println!("  transition_function: {}", final_machine.transition_function.as_deref().unwrap_or("<not declared>"));
+    if !final_machine.retained_structural_bindings.is_empty() {
+        println!("  retained_structural_bindings: {}", serde_json::to_string(&final_machine.retained_structural_bindings).expect("serializable retained bindings"));
+    }
     if let Some(binding) = &final_machine.execution_binding {
         println!("  execution_binding: {}", serde_json::to_string(binding).unwrap_or_default());
     }
@@ -69635,6 +69662,7 @@ fn semantic_machine_change_to_machine_change(
         }),
         machine: MachineChangeMachine {
             mode,
+            retained_structural_bindings: None,
             execution_binding: machine.execution_binding.clone(),
             initial_state,
             justification: machine.justification.clone(),
@@ -88913,6 +88941,9 @@ fn validate_machine_change_route_receipt(
         serde_json::from_slice(&fs::read(run_dir.join("normalized-intent.json"))?)
             .context("route run normalized intent is not an rms/intent-model/v0.1 object")?;
     let manifest = load_manifest(target)?;
+    if let Some(items) = &change.machine.retained_structural_bindings {
+        retained_structural::check_intent(task, items)?;
+    }
     validate_machine_change_intent_anchors(&manifest, change, task, &intent)?;
     Ok(receipt)
 }
@@ -124857,7 +124888,7 @@ properties:
         fs::remove_dir_all(home).unwrap();
     }
 
-    fn unique_test_dir(label: &str) -> PathBuf {
+    pub(super) fn unique_test_dir(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -124865,7 +124896,7 @@ properties:
         std::env::temp_dir().join(format!("rms-{label}-{}-{nanos}", std::process::id()))
     }
 
-    fn initialize_test_git_repository(root: &Path) {
+    pub(super) fn initialize_test_git_repository(root: &Path) {
         fs::create_dir_all(root).unwrap();
         for args in [
             vec!["init"],
@@ -125049,7 +125080,7 @@ properties:
         );
     }
 
-    fn no_provider_options() -> PromptRunOptions {
+    pub(super) fn no_provider_options() -> PromptRunOptions {
         PromptRunOptions {
             provider: Provider::None,
             record: false,
@@ -125088,7 +125119,7 @@ properties:
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn add_module_request(
+    pub(super) fn add_module_request(
         root: &Path,
         name: &str,
         purpose: &str,
