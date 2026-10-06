@@ -43086,6 +43086,9 @@ fn build_next_report_with_optional_program(
         warnings.push("The exact existing module is eligible for a bounded canonical proof-support role addition. Unrelated validation debt remains visible and must still pass the candidate and committed gates.".to_string());
     } else if owner_scoped_existing_semantic_change {
         warnings.push("The selected existing module is eligible for an owner-scoped semantic change. Unrelated module validation debt remains visible and must still pass the candidate and committed gates.".to_string());
+        if validation.diagnostics.iter().any(|diagnostic| selected_owner_missing_callable(diagnostic, &owner)) {
+            warnings.push("Missing callable realization does not block this canonical amendment. Source validation still fails until the declared callables are implemented and all source and proof gates pass.".to_string());
+        }
     }
     let mut blockers = if machine_repair.is_some() || spec_repair.is_some() {
         Vec::new()
@@ -43100,6 +43103,8 @@ fn build_next_report_with_optional_program(
                             .contains(&(diagnostic.path.clone(), diagnostic.message.clone())))
                     && !(external_rust_crate_declaration
                         && requested_external_crate_declaration_diagnostic(task, diagnostic, &owner))
+                    && !(owner_scoped_existing_semantic_change
+                        && selected_owner_missing_callable(diagnostic, &owner))
                     && if explicit_outside_coverage {
                         diagnostic.check.starts_with("intent.")
                     } else if matches!(owner.status(), OwnerStatus::Ambiguous | OwnerStatus::None) {
@@ -44357,6 +44362,34 @@ fn unresolved_owner_route_hard_blocker(root: &Path, diagnostic: &Diagnostic) -> 
     diagnostic_path == root
         || diagnostic_path == root.join(WORKBENCH_CONFIG_PATH)
         || diagnostic_path.parent() == Some(root)
+}
+
+// Missing realization is not permission to claim purity, but must not force
+// source implementation before a correction to its canonical declaration.
+// Match the analyzer's complete zero-candidate finding, never its broad code:
+// ambiguous symbols, unresolved calls, and actual authority rows still block.
+fn selected_owner_missing_callable(diagnostic: &Diagnostic, owner: &OwnerResolution) -> bool {
+    let Some(selected) = owner.selected_module() else { return false; };
+    let Some(directory) = Path::new(&selected.path).parent() else { return false; };
+    if Path::new(&diagnostic.path) != directory.join("implementation.yaml") { return false; }
+    if diagnostic.check == "effects.transitive-purity" {
+        return diagnostic.message.strip_prefix("semantic function `")
+            .and_then(|message| message.split_once("` failed effect analysis: "))
+            .is_some_and(|(id, reason)| !id.is_empty() && !id.contains('`')
+                && reason == "semantic symbol resolved to 0 source functions; expected exactly one");
+    }
+    // Binding validators also report the same absence. Do not admit missing
+    // types, variants, fields, roles, or arbitrary structure findings.
+    let missing_symbol = |prefix: &str, suffix: &str| diagnostic.message.strip_prefix(prefix)
+        .and_then(|message| message.strip_suffix(suffix))
+        .is_some_and(|symbol| !symbol.is_empty() && !symbol.contains('`'));
+    match diagnostic.check.as_str() {
+        "implementation.rust.semantic-functions.symbol" => missing_symbol("semantic function symbol `", "` was not found in Rust source"),
+        "implementation.rust.typing.transition-function" => missing_symbol("declared `architecture.machine.transition_function` `", "` was not found in Rust source"),
+        "structure.declared-symbol-missing" => ["transition_function", "transition_record_function", "driver_function", "initial_state_function"].iter()
+            .any(|field| missing_symbol(&format!("declared architecture machine.{field} `"), "` was not found in Rust source")),
+        _ => false,
+    }
 }
 
 fn bounded_owner_scoped_semantic_route_hard_blocker(
@@ -100935,6 +100968,69 @@ architecture:
             lock.replace("dependencies=['git2']", "dependencies=[]"),
             format!("{lock}\n[[package]]\nname='git2'\nversion='0.19.0'"),
         ] { assert!(pinned_git2_identity(&parse(cargo), &parse(&changed)).is_none()); }
+    }
+
+    #[test]
+    fn next_semantic_amendment_allows_missing_realization_but_retains_validation() {
+        let root = unique_test_dir("next-unfinished-semantic-amendment");
+        run_add_module(add_module_request(&root, "versioned", "Keep V1 and select the V2 transition.", "library", &[], Some(ScaffoldShape::DomainEngine), Some("rust")), &no_provider_options()).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        let path = root.join("implementation.yaml");
+        let before = load_manifest(&path).unwrap();
+        let mode = get_str(&before.value, &["architecture", "machine", "mode"]).unwrap();
+        let change = parse_machine_change(None, Some(&format!("spec: rms/machine-change/v0.1\nmachine:\n  mode: {mode}\n  transition_function: transition_v2\n")), None).unwrap();
+        run_machine_apply_change(&path, &change, false).unwrap();
+        initialize_test_git_repository(&root);
+        let module = root.join("module.yaml");
+        let task = "Amend the versioned module contract before implementing the newly declared transition.";
+        let report = build_next_report(&root, Some(&module), task).unwrap();
+        assert_eq!(report.result, NextResult::Ready, "{:?}", report.blockers);
+        assert_eq!(report.task_classification.lane, TaskLane::Semantic);
+        assert!(report.validation.diagnostics.iter().any(|d| d.severity == Severity::Error && selected_owner_missing_callable(d, &report.owner)));
+        assert_eq!(report.validation.status, "fail");
+        let receipt = Path::new(&report.receipt_path);
+        assert!(validate_route_receipt(&root, receipt, "spec-apply", &path, None).is_ok());
+        assert!(validate_route_receipt(&root, receipt, "surface-apply", &path, None).is_err());
+        assert!(validate_route_receipt(&root, receipt, "spec-apply", &root.join("other/implementation.yaml"), None).is_err());
+        let owner = &report.owner;
+        for reason in ["semantic symbol resolved to 2 source functions; expected exactly one", "unresolved call: unknown", "inferred authority filesystem", "semantic symbol resolved to 0 source functions; expected exactly one; unresolved call"] {
+            let diagnostic = error("effects.transitive-purity", &path, format!("semantic function `transition-v2` failed effect analysis: {reason}"));
+            assert!(!selected_owner_missing_callable(&diagnostic, owner));
+            assert!(bounded_owner_scoped_semantic_route_hard_blocker(&root, &diagnostic, owner));
+        }
+        for check in ["schema.validate", "semantic.revision-drift", "semantic.function-authority-missing", "implementation.rust.typing.public-fields", "structure.declared-variant-not-represented"] {
+            let diagnostic = error(check, &path, "invalid canonical declaration");
+            assert!(!selected_owner_missing_callable(&diagnostic, owner));
+            assert!(bounded_owner_scoped_semantic_route_hard_blocker(&root, &diagnostic, owner));
+        }
+        let missing = report.validation.diagnostics.iter().find(|d| selected_owner_missing_callable(d, owner)).unwrap();
+        let mut other = missing.clone(); other.path = root.join("other/implementation.yaml").display().to_string();
+        assert!(!selected_owner_missing_callable(&other, owner));
+        let unresolved = OwnerResolution::unresolved(UnselectedOwnerStatus::Ambiguous, "ambiguous".into(), Vec::new(), Vec::new(), Vec::new());
+        assert!(!selected_owner_missing_callable(missing, &unresolved));
+        let missing_type = error("structure.declared-symbol-missing", &path, "declared architecture machine.types.state `MissingState` was not found in Rust source");
+        assert!(!selected_owner_missing_callable(&missing_type, owner));
+        let missing_transition = error("implementation.rust.typing.transition-function", &path, "declared `architecture.machine.transition_function` `transition_v2` was not found in Rust source");
+        assert!(selected_owner_missing_callable(&missing_transition, owner));
+        // Source verification remains fail-closed after routing.
+        let source_path = root.join(structure_role_paths(&before, "transition")[0].clone());
+        let original = fs::read_to_string(&source_path).unwrap();
+        fs::write(&source_path, format!("{original}\npub fn transition_v2() {{ std::fs::read(\"x\"); }}\n")).unwrap();
+        let impure = build_next_report(&root, Some(&module), task).unwrap();
+        assert_eq!(impure.result, NextResult::Blocked, "{:?}", impure.blockers);
+        fs::write(&source_path, format!("{original}\npub fn transition_v2() {{}}\npub fn transition_v2() {{}}\n")).unwrap();
+        let ambiguous = build_next_report(&root, Some(&module), task).unwrap();
+        assert_eq!(ambiguous.result, NextResult::Blocked, "{:?}", ambiguous.blockers);
+        fs::write(&source_path, original).unwrap();
+        let canonical = fs::read_to_string(&path).unwrap();
+        fs::write(&path, canonical.replace("spec: rms/implementation/v0.2", "spec: invalid")).unwrap();
+        let invalid = build_next_report(&root, Some(&module), task).unwrap();
+        assert_ne!(invalid.result, NextResult::Ready);
+        fs::write(&path, canonical).unwrap();
+        let commit = Command::new("git").args(["commit", "--allow-empty", "-m", "advance head"]).current_dir(&root).output().unwrap();
+        assert!(commit.status.success());
+        assert!(validate_route_receipt(&root, receipt, "spec-apply", &path, None).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
