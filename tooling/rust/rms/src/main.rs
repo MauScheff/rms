@@ -15061,7 +15061,7 @@ fn wait_child_with_timeout_observed(
         if let Some(status) = child.try_wait()? {
             if let Some(progress) = progress {
                 eprintln!(
-                    "proof [{}/{}] runner={} elapsed={} eta={} state=complete status={}",
+                    "proof [{}/{}] runner={} elapsed={} eta={} state=process-exited exit_code={}",
                     progress.current,
                     progress.total,
                     shell_arg(progress.runner),
@@ -17937,6 +17937,33 @@ fn execute_property_realizations_with_batch_and_cache(
                 runner: &realization.runner,
                 suite_started: realization_suite_started,
             };
+            // A successful native filter may select nothing (or another
+            // similarly named test). Resolve the declared Swift symbol before
+            // accepting either execution or cached evidence for this runner.
+            let runner_base = if integration_test { rms_root_for(&manifest.path) } else { execution_root.clone() };
+            if get_str(&manifest.value, &["binding"]) == Some("swift")
+                && !property_artifact_exists(&runner_base, &manifest, &realization.runner)
+            {
+                let message = format!("property `{}` runner `{}` does not resolve to a Swift source symbol", target.id, realization.runner);
+                diagnostics.push(error("property.runner-missing", implementation, &message));
+                eprintln!("proof [{}/{}] runner={} state=realization-result result=fail reason=runner-missing",
+                    progress.current, progress.total, shell_arg(progress.runner));
+                commands.push(PropertyRunCommandReport {
+                    kind: format!("{}:{}", target.kind, realization.strategy),
+                    property: target.id.clone(),
+                    command: command.clone(),
+                    runner: realization.runner.clone(),
+                    generator: realization.generator.clone(),
+                    status: "fail".to_string(),
+                    exit_code: None,
+                    elapsed_ms: 0,
+                    selected_tests: None,
+                    receipt: None,
+                    stdout: String::new(),
+                    stderr: message,
+                });
+                continue;
+            }
             let cache_key = verification::ProofCache::key(&[
                 "property-execution-evidence/v2",
                 realization.strategy.as_str(),
@@ -18132,6 +18159,9 @@ fn execute_property_realizations_with_batch_and_cache(
                 stdout: output.stdout,
                 stderr: output.stderr,
             };
+            eprintln!("proof [{}/{}] runner={} state=realization-result result={} selected_tests={}",
+                progress.current, progress.total, shell_arg(progress.runner), command_report.status,
+                selected_tests.map(|count| count.to_string()).unwrap_or_else(|| "unavailable".to_string()));
             if command_report.status == "pass" {
                 if let Some(cache) = proof_cache {
                     cache.store(&cache_key, &command_report)?;
@@ -102305,6 +102335,60 @@ architecture:
         assert_eq!(missing.commands[0].status, "fail");
         assert!(missing.diagnostics.iter().any(|diagnostic| diagnostic.check == "proof.test-count-unavailable"));
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn swift_property_realization_requires_existing_runner_and_nonzero_tests() {
+        let root = unique_test_dir("swift-property-selection");
+        fs::create_dir_all(root.join("Tests")).unwrap();
+        write_test_file(&root.join("system.yaml"), "spec: rms/system/v0.1\n");
+        write_test_file(&root.join("Tests/Proof.swift"), "func testPresent() { assert(true) }\n");
+        for (runner, count, integration, expected) in [
+            ("testMissing", 1, false, "fail"),
+            ("testPresent", 0, false, "fail"),
+            ("testPresent", 1, false, "pass"),
+            ("testPresent", 1, true, "pass"),
+        ] {
+            // Stub only the process boundary; exercise actual realization
+            // validation, test-count parsing, reporting, and cache selection.
+            let strategy = if integration { "integration-test" } else { "deterministic-corpus" };
+            let integration_fields = if integration {
+                ", owner_module: swift-proof, package: Proof, working_directory: Tests, test_selection: testPresent"
+            } else { "" };
+            let source = format!(r#"spec: rms/implementation/v0.1
+module: swift-proof
+binding: swift
+source: {{root: ., public_entrypoint: Tests/Proof.swift}}
+commands:
+  properties: >-
+    swift() {{ printf 'Executed {count} tests, with 0 failures\n'; }};
+    : "$RMS_INTEGRATION_PACKAGE" "$RMS_INTEGRATION_TEST_SELECTION";
+    swift test --filter "${{RMS_PROPERTY_RUNNER##*#}}"
+architecture:
+  reliability:
+    properties:
+      - id: exact-proof
+        proves: exact-law
+        input_space: one exact test
+        oracle: [the exact test passes]
+        realizations:
+          - {{profile: smoke, strategy: {strategy}, command: properties, runner: Tests/Proof.swift#{runner}{integration_fields}}}
+"#);
+            write_test_file(&root.join("implementation.yaml"), &source);
+            let report = execute_property_realizations(&root.join("implementation.yaml"), PropertyProfile::Smoke, false, 30).unwrap();
+            assert_eq!(report.commands.len(), 1);
+            assert_eq!(report.commands[0].status, expected, "{runner}, {count}: {report:#?}");
+            if runner == "testMissing" {
+                assert_eq!(report.commands[0].exit_code, None);
+                assert!(report.diagnostics.iter().any(|d| d.check == "property.runner-missing"));
+            } else {
+                assert_eq!(report.commands[0].selected_tests, Some(count));
+                if count == 0 {
+                    assert!(report.diagnostics.iter().any(|d| d.check == "proof.zero-tests-selected"));
+                }
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
