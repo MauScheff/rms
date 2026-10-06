@@ -2259,6 +2259,7 @@ struct MachineFinalStateReport {
     execution_binding: Option<persistent_async::ExecutionBinding>,
     mode: Option<String>,
     transition_signature: Option<String>,
+    transition_function: Option<String>,
     driver_function: Option<String>,
     transition_record_function: Option<String>,
     types: MachineTypeNames,
@@ -3785,6 +3786,8 @@ struct SemanticMachineChange {
     #[serde(default)]
     transition_signature: Option<String>,
     #[serde(default)]
+    transition_function: Option<String>,
+    #[serde(default)]
     driver_function: Option<String>,
     #[serde(default)]
     transition_record_function: Option<String>,
@@ -3850,6 +3853,8 @@ struct MachineChangeMachine {
     justification: Option<String>,
     #[serde(default)]
     transition_signature: Option<String>,
+    #[serde(default)]
+    transition_function: Option<String>,
     #[serde(default)]
     driver_function: Option<String>,
     #[serde(default)]
@@ -54829,6 +54834,7 @@ fn render_machine_plan_prompt(
             .map(yaml_quote)
             .unwrap_or_else(|| "null".to_string())
     )?;
+    writeln!(out, "  transition_function: {}", report.machine.transition_function.as_deref().map(yaml_quote).unwrap_or_else(|| "null".to_string()))?;
     writeln!(out, "  types:")?;
     for (field, value) in [
         ("state", report.machine.types.state.as_deref()),
@@ -54932,7 +54938,7 @@ fn render_machine_plan_prompt(
     writeln!(out, "Transition removal items use `from`, `on`, optional `to`, and optional `case`; they are structured objects, never scalar names. Effect-protocol removal items use `effect`. Resource-protocol items declare `resource`, `ownership`, closed `states`, `initial_state`, `terminal_states`, and acquire/use/release/transfer transitions; removal items use `resource`. Role removal items use `kind` and optional `path`.")?;
     writeln!(out, "Legacy inspectable bindings missing rc.8 probe declarations are repaired in this same machine change: set `commands: {{ probe: <binding-native command> }}`, set `machine.initial_state` to one declared state, set `probe` with `protocol`, `command: probe`, `runner: path#symbol`, and `initial_state_function: path#symbol` for state-and-input machines, and add the exact runner path as `roles.add[].kind: probe_adapter`. Omit `commands` and `probe` only when those declarations already exist and are not changing.")?;
     writeln!(out, "Role items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`. A role with `kind: effect_executor` must include the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. Shared IO mechanics used by multiple executors use `kind: effect_support`; they cannot own state progression, transitions, drivers, or public/runnable behavior. Effectful stateful machines declare one `machine_driver` role, set `machine.driver_function` to its exact callable, and set `machine.transition_record_function` to the exact pure record constructor used by that driver. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; atomicity applies to that exact protocol. Machine apply binds each executor as an effectful `effect-executor` semantic function. Aggregate protocols use `atomicity: aggregate` plus `aggregate_justification` and evidence.")?;
-    writeln!(out, "Run `rms machine apply ... --dry-run` first and do not edit source while `final_machine` still contains scaffold-generic variants instead of the intended product cases.")?;
+    writeln!(out, "`machine.transition_function` selects the canonical transition by its exact callable identifier. Omission or null preserves the existing callable (or defaults to `transition` if absent). Selection binds a pure transition semantic function; it does not rename, rewrite, or remove old source APIs. Define the selected callable in a declared transition role and pass normal source, purity, signature, record-path, and proof checks. Run `rms machine apply ... --dry-run` first and do not edit source while `final_machine` still contains scaffold-generic variants instead of the intended product cases.")?;
     writeln!(out)?;
     writeln!(out, "## Machine-Gate Checklist")?;
     for item in [
@@ -55068,6 +55074,10 @@ fn parse_machine_change(
 
 fn validate_machine_change(manifest: &LoadedManifest, change: &MachineChange) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
+    if change.machine.transition_function.as_deref().is_some_and(|name| !is_stable_identifier(name)) {
+        diagnostics.push(error("machine-change.transition-function", &manifest.path,
+            "machine.transition_function must be one nonblank callable identifier; declare its source in a transition role and verify it before completion"));
+    }
     if change.machine.execution_binding.is_some()
         && (get_str(&manifest.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC)
             || get_str(&manifest.value, &["binding"]) != Some("rust"))
@@ -57056,11 +57066,11 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
         &["architecture", "machine", "transition_signature"],
         transition_signature,
     );
-    set_yaml_string_if_missing_path(
-        value,
-        &["architecture", "machine", "transition_function"],
-        "transition",
-    );
+    if let Some(function) = change.machine.transition_function.as_deref() {
+        set_yaml_string_path(value, &["architecture", "machine", "transition_function"], function);
+    } else {
+        set_yaml_string_if_missing_path(value, &["architecture", "machine", "transition_function"], "transition");
+    }
     if let Some(driver_function) = change.machine.driver_function.as_deref() {
         set_yaml_string_path(
             value,
@@ -57355,6 +57365,10 @@ fn ensure_transition_semantic_function(value: &mut YamlValue) {
         set_yaml_string_path(&mut owner, &["symbol"], &transition_function);
         set_yaml_string_path(&mut owner, &["kind"], "transition");
         set_yaml_string_path(&mut owner, &["purity"], "pure");
+        if get_str(value, &["spec"]) == Some(IMPLEMENTATION_V2_SPEC) {
+            set_yaml_string_path(&mut owner, &["trust"], "internal");
+            set_yaml_sequence_path(&mut owner, &["authorities"], Vec::new());
+        }
         functions.push(owner);
     }
     set_yaml_sequence_path(value, &["semantic_functions"], functions);
@@ -57471,6 +57485,9 @@ fn machine_final_state_report(
                 .and_then(|value| serde_yaml::from_value(value.clone()).ok())
         }),
         mode: Some(change.machine.mode.clone()),
+        transition_function: Some(change.machine.transition_function.as_deref()
+            .or_else(|| get_str(&manifest.value, &["architecture", "machine", "transition_function"]))
+            .unwrap_or("transition").to_string()),
         transition_signature: Some(change.machine.transition_signature.clone().unwrap_or_else(
             || {
                 if is_stateful_machine_mode(&change.machine.mode) {
@@ -57794,6 +57811,7 @@ fn print_machine_apply_report(report: &MachineApplyReport) {
 
 fn print_machine_final_state(final_machine: &MachineFinalStateReport) {
     println!("final_machine:");
+    println!("  transition_function: {}", final_machine.transition_function.as_deref().unwrap_or("<not declared>"));
     if let Some(binding) = &final_machine.execution_binding {
         println!("  execution_binding: {}", serde_json::to_string(binding).unwrap_or_default());
     }
@@ -61761,6 +61779,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
             .unwrap_or_else(|| "null".to_string())
         )?;
         writeln!(out, "  transition_signature: {signature}")?;
+        writeln!(out, "  transition_function: {}", get_str(&implementation.value, &["architecture", "machine", "transition_function"]).map(yaml_quote).unwrap_or_else(|| "null".to_string()))?;
         let driver_function = get_str(
             &implementation.value,
             &["architecture", "machine", "driver_function"],
@@ -65967,6 +65986,11 @@ fn semantic_machine_change_requests_change(
     }) {
         return true;
     }
+    if machine.transition_function.as_deref().is_some_and(|function| {
+        get_str(&implementation.value, &["architecture", "machine", "transition_function"]) != Some(function)
+    }) {
+        return true;
+    }
     if machine
         .transition_record_function
         .as_deref()
@@ -69582,6 +69606,7 @@ fn semantic_machine_change_to_machine_change(
             initial_state,
             justification: machine.justification.clone(),
             transition_signature: machine.transition_signature.clone(),
+            transition_function: machine.transition_function.clone(),
             driver_function: machine.driver_function.clone(),
             transition_record_function: machine.transition_record_function.clone(),
             types: None,
@@ -100910,6 +100935,62 @@ architecture:
             lock.replace("dependencies=['git2']", "dependencies=[]"),
             format!("{lock}\n[[package]]\nname='git2'\nversion='0.19.0'"),
         ] { assert!(pinned_git2_identity(&parse(cargo), &parse(&changed)).is_none()); }
+    }
+
+    #[test]
+    fn machine_transition_callable_change_preserves_v1_and_checks_source() {
+        let root = unique_test_dir("machine-transition-callable");
+        run_add_module(add_module_request(&root, "versioned", "Keep V1 and select the V2 transition.", "library", &[], Some(ScaffoldShape::DomainEngine), Some("rust")), &no_provider_options()).unwrap();
+        let path = root.join("implementation.yaml");
+        let before = load_manifest(&path).unwrap();
+        let mode = get_str(&before.value, &["architecture", "machine", "mode"]).unwrap();
+        let source_path = root.join(structure_role_paths(&before, "transition")[0].clone());
+        let source = format!("{}\npub fn transition_v2() {{}}\n", fs::read_to_string(&source_path).unwrap());
+        write_test_file(&source_path, &source);
+        let change_yaml = format!("spec: rms/machine-change/v0.1\nmachine:\n  mode: {mode}\n  transition_function: transition_v2\n");
+        let change = parse_machine_change(None, Some(&change_yaml), None).unwrap();
+        let untouched = fs::read(&path).unwrap();
+        run_machine_apply_change(&path, &change, true).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), untouched);
+        run_machine_apply_change(&path, &change, false).unwrap();
+        let applied = load_manifest(&path).unwrap();
+        assert_eq!(get_str(&applied.value, &["architecture", "machine", "transition_function"]), Some("transition_v2"));
+        assert_eq!(fs::read_to_string(&source_path).unwrap(), source);
+        for field in ["states", "commands", "transitions", "types", "transition_record_function"] {
+            assert_eq!(get_path(&before.value, &["architecture", "machine", field]), get_path(&applied.value, &["architecture", "machine", field]), "{field}");
+        }
+        let functions = existing_semantic_function_declarations_from_value(&applied.value);
+        assert!(functions.iter().any(|f| get_str(f, &["symbol"]) == Some("transition_v2") && get_str(f, &["kind"]) == Some("transition") && get_str(f, &["purity"]) == Some("pure")));
+        for old in existing_semantic_function_declarations_from_value(&before.value) {
+            assert!(functions.contains(&old), "old semantic owner changed");
+        }
+        let mut findings = Vec::new();
+        inspect_transition_role_ownership(&applied, &mut findings);
+        assert!(findings.is_empty());
+        let mut unknown = applied.clone();
+        set_yaml_string_path(&mut unknown.value, &["architecture", "machine", "transition_function"], "missing_transition");
+        inspect_transition_role_ownership(&unknown, &mut findings);
+        assert!(findings.iter().any(|d| d.check == "structure.transition-function-role-mismatch"));
+        for invalid in ["", "bad callable", "../transition", "transition()"] {
+            let mut value = serde_yaml::to_value(&change).unwrap();
+            set_yaml_string_path(&mut value, &["machine", "transition_function"], invalid);
+            let invalid = serde_yaml::from_value(value).unwrap();
+            assert!(validate_machine_change(&before, &invalid).iter().any(|d| d.check == "machine-change.transition-function"));
+        }
+        let omitted = parse_machine_change(None, Some(&format!("spec: rms/machine-change/v0.1\nmachine: {{mode: {mode}}}\n")), None).unwrap();
+        let mut preserved = applied.value.clone();
+        apply_machine_change_to_manifest(&mut preserved, &omitted);
+        assert_eq!(get_str(&preserved, &["architecture", "machine", "transition_function"]), Some("transition_v2"));
+        remove_yaml_path(&mut preserved, &["architecture", "machine", "transition_function"]);
+        apply_machine_change_to_manifest(&mut preserved, &omitted);
+        assert_eq!(get_str(&preserved, &["architecture", "machine", "transition_function"]), Some("transition"));
+        let semantic: SemanticChange = serde_yaml::from_str("spec: rms/semantic-change/v0.1\nmachine: {transition_function: transition_v2}\n").unwrap();
+        let projected = semantic_machine_change_to_machine_change(&semantic, Some(&before)).unwrap();
+        let mut semantic_value = before.value.clone();
+        apply_machine_change_to_manifest(&mut semantic_value, &projected);
+        assert_eq!(get_str(&semantic_value, &["architecture", "machine", "transition_function"]), Some("transition_v2"));
+        assert!(semantic_machine_change_to_machine_change(&semantic, Some(&applied)).is_none());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
