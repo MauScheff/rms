@@ -51139,6 +51139,12 @@ fn production_file_digests(
     include_examples: bool,
 ) -> Result<BTreeMap<String, String>> {
     let mut digests = BTreeMap::new();
+    // Cargo output can contain complete source trees and package manifests.
+    // A tracked file is never exempt merely because it lives under target.
+    let tracked = Command::new("git").current_dir(root).args(["ls-files", "-z"]).output()
+        .ok().filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).split('\0')
+            .filter(|path| !path.is_empty()).map(str::to_string).collect::<BTreeSet<_>>());
     for entry in WalkDir::new(root)
         .follow_links(false)
         .into_iter()
@@ -51146,7 +51152,12 @@ fn production_file_digests(
         .filter(|entry| entry.file_type().is_file())
     {
         let relative = display_relative(root, entry.path());
-        if is_production_claim_path(&relative)
+        let cargo_output = entry.path().ancestors().skip(1).take_while(|ancestor| *ancestor != root)
+            .any(|ancestor| ancestor.file_name().is_some_and(|name| name == "target")
+                && ancestor.parent().is_some_and(|parent| parent.join("Cargo.toml").is_file()));
+        // If Git cannot identify tracked inputs, do not grant an exclusion.
+        if cargo_output && tracked.as_ref().is_some_and(|paths| !paths.contains(&relative)) { continue; }
+        if (is_production_claim_path(&relative) || cargo_output && tracked.as_ref().is_some_and(|paths| paths.contains(&relative)))
             && audit_path_str_in_scope(root, &relative, include_examples)
         {
             digests.insert(relative, sha256_file(entry.path())?);
@@ -103180,6 +103191,31 @@ architecture:
         ] {
             assert!(is_production_claim_path(path), "{path}");
         }
+    }
+
+    #[test]
+    fn production_snapshot_excludes_cargo_outputs_but_detects_source_mutation() {
+        let root = unique_test_dir("cargo-output-source-snapshot");
+        write_test_file(&root.join("Cargo.toml"), "[workspace]\n");
+        write_test_file(&root.join("modules/app/Cargo.toml"), "[package]\nname = \"app\"\n");
+        write_test_file(&root.join("src/product.rs"), "fn product() {}\n");
+        write_test_file(&root.join("src/target/product.rs"), "fn target_source() {}\n");
+        write_test_file(&root.join("target/debug/owned.rs"), "fn tracked_source() {}\n");
+        initialize_test_git_repository(&root);
+        let before = production_file_digests(&root, false).unwrap();
+        for path in [
+            "target/debug/build/boring-sys-123/out/boringssl/src/crypto/a.c",
+            "modules/app/target/debug/.fingerprint/app-123/package.json",
+        ] { write_test_file(&root.join(path), "generated\n"); }
+        assert_eq!(before, production_file_digests(&root, false).unwrap());
+        for path in ["src/product.rs", "src/target/product.rs", "target/debug/owned.rs"] {
+            write_test_file(&root.join(path), "changed\n");
+            let after = production_file_digests(&root, false).unwrap();
+            assert_ne!(before.get(path), after.get(path), "missed real mutation: {path}");
+        }
+        fs::remove_file(root.join("src/product.rs")).unwrap();
+        assert!(!production_file_digests(&root, false).unwrap().contains_key("src/product.rs"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
