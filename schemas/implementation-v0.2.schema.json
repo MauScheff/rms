@@ -172,6 +172,28 @@
         "shape": {
           "type": "string"
         },
+        "trace": {
+          "type": "object",
+          "properties": {
+            "producers": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "object",
+                "required": ["id", "profile", "bundle", "command", "runner"],
+                "properties": {
+                  "id": {"type": "string", "minLength": 1},
+                  "profile": {"enum": ["smoke", "ci", "nightly"]},
+                  "bundle": {"type": "string", "minLength": 1},
+                  "command": {"type": "string", "minLength": 1},
+                  "runner": {"type": "string", "minLength": 1},
+                  "semantic_function": {"type": "string", "minLength": 1}
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": true
+        },
         "machine": {
           "$ref": "#/$defs/machine"
         },

@@ -2035,6 +2035,32 @@ struct TraceProducer {
     bundle: String,
     command: String,
     runner: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    semantic_function: Option<String>,
+}
+
+fn trace_producer_record_symbol(implementation: &LoadedManifest, producer: &TraceProducer) -> Result<Option<String>> {
+    let Some(id) = &producer.semantic_function else {
+        return Ok(get_str(&implementation.value, &["architecture", "machine", "transition_record_function"]).map(str::to_string));
+    };
+    if get_str(&implementation.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC)
+        || get_str(&implementation.value, &["binding"]) != Some("rust") {
+        bail!("explicit trace semantic_function requires a Rust implementation v0.2");
+    }
+    let functions = semantic_function_items(implementation).into_iter().flatten()
+        .filter(|function| get_str(function, &["id"]) == Some(id.as_str())).collect::<Vec<_>>();
+    let [function] = functions.as_slice() else { bail!("trace semantic_function `{id}` must identify exactly one declaration"); };
+    let symbol = get_str(function, &["symbol"]).ok_or_else(|| anyhow!("trace semantic function has no exact symbol"))?;
+    let Some((path, _)) = binding_reference_parts(symbol) else { bail!("trace semantic function requires an exact path#symbol"); };
+    if get_str(function, &["kind"]) != Some("transition") || get_str(function, &["purity"]) != Some("pure")
+        || !get_string_array(function, &["authorities"]).is_empty()
+        || !structure_role_paths(implementation, "transition_record").iter().any(|role| same_semantic_path(role, path)) {
+        bail!("trace semantic_function `{id}` must be pure and owned by an exact transition_record role");
+    }
+    if trace_command_uses_invocation_records(implementation, &producer.command) {
+        bail!("transition-record semantic_function cannot select an invocation-record command");
+    }
+    Ok(Some(symbol.to_string()))
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -16818,11 +16844,14 @@ fn execute_trace_producers(
         }
         let inspectable_producer =
             runner_valid && get_str(&manifest.value, &["binding"]) != Some("executable");
-        let transition_record_symbol = get_str(
-            &manifest.value,
-            &["architecture", "machine", "transition_record_function"],
-        );
-        let calls_transition_record = transition_record_symbol.is_some_and(|symbol| {
+        let transition_record_symbol = match trace_producer_record_symbol(&manifest, &producer) {
+            Ok(symbol) => symbol,
+            Err(problem) => {
+                diagnostics.push(error("trace.producer-semantic-function", implementation, problem.to_string()));
+                continue;
+            }
+        };
+        let calls_transition_record = transition_record_symbol.as_deref().is_some_and(|symbol| {
             trace_producer_calls_transition_record(root, &manifest, &producer.runner, symbol)
         });
         let serializes_transition_records =
@@ -20216,12 +20245,15 @@ fn validate_trace_producer_declarations(
             );
         }
     }
-    let transition_record = get_str(
-        &implementation.value,
-        &["architecture", "machine", "transition_record_function"],
-    );
     let producer_roles = structure_role_paths(implementation, "trace_producer");
     for producer in producers {
+        let transition_record = match trace_producer_record_symbol(implementation, &producer) {
+            Ok(symbol) => symbol,
+            Err(problem) => {
+                diagnostics.push(error("trace.producer-semantic-function", &implementation.path, problem.to_string()));
+                continue;
+            }
+        };
         if get_str(&implementation.value, &["commands", &producer.command]).is_none() {
             push_unique_warning(
                 diagnostics,
@@ -20262,7 +20294,7 @@ fn validate_trace_producer_declarations(
             );
         }
         let inspectable = get_str(&implementation.value, &["binding"]) != Some("executable");
-        let calls_transition_record = transition_record.is_some_and(|symbol| {
+        let calls_transition_record = transition_record.as_deref().is_some_and(|symbol| {
             trace_producer_calls_transition_record(base, implementation, &producer.runner, symbol)
         });
         let serializes_transition_records =
@@ -62002,6 +62034,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     )?;
     writeln!(out, "      command: trace")?;
     writeln!(out, "      runner: path/to/trace_producer#produce_trace")?;
+    writeln!(out, "      # Optional Rust v0.2 semantic_function: exact existing pure transition semantic-function id in a transition_record role. Omission selects the current machine record function. The producer must still call that exact source symbol and serialize returned record fields; this does not change trace coverage or proof gates.")?;
     writeln!(out, "  set: null")?;
     writeln!(out, "  remove: []")?;
     writeln!(out, "public_behavior_bindings:")?;
@@ -67823,6 +67856,9 @@ fn validate_trace_producers(
     working.extend(request.add.clone());
     let mut ids = BTreeSet::new();
     for producer in &working {
+        if let Err(problem) = trace_producer_record_symbol(implementation, producer) {
+            diagnostics.push(error("trace.producer-semantic-function", &context.target, problem.to_string()));
+        }
         if !is_stable_semantic_id(&producer.id) || !ids.insert(producer.id.clone()) {
             diagnostics.push(error(
                 "trace.producer-id-invalid",
@@ -101164,6 +101200,49 @@ class Proof {
     }
 
     #[test]
+    fn trace_producer_selects_exact_versioned_semantic_record_function() {
+        let root = unique_test_dir("trace-versioned-record-function");
+        run_add_module(add_module_request(&root, "versioned", "Preserve V1 trace execution beside V2.", "library", &[], Some(ScaffoldShape::DomainEngine), Some("rust")), &no_provider_options()).unwrap();
+        let path = root.join("implementation.yaml");
+        let mut manifest = load_manifest(&path).unwrap();
+        let record_path = structure_role_paths(&manifest, "transition_record")[0].clone();
+        let function = json!({"id":"v1-record", "symbol":format!("{record_path}#transition_record"), "kind":"transition", "purity":"pure", "trust":"internal", "authorities":[]});
+        let mut functions = get_path(&manifest.value, &["semantic_functions"]).unwrap().as_sequence().unwrap().clone();
+        functions.push(serde_yaml::to_value(&function).unwrap());
+        set_yaml_sequence_path(&mut manifest.value, &["semantic_functions"], functions);
+        set_yaml_string_path(&mut manifest.value, &["architecture", "machine", "transition_record_function"], "transition_record_v2");
+        let mut producer = trace_producers_from_implementation(&manifest).remove(0);
+        assert_eq!(trace_producer_record_symbol(&manifest, &producer).unwrap().as_deref(), Some("transition_record_v2"));
+        assert!(!trace_producer_calls_transition_record(&root, &manifest, &producer.runner, "transition_record_v2"));
+        producer.semantic_function = Some("v1-record".into());
+        let target = trace_producer_record_symbol(&manifest, &producer).unwrap().unwrap();
+        assert!(trace_producer_calls_transition_record(&root, &manifest, &producer.runner, &target));
+        assert!(trace_producer_serializes_transition_records(&root, &manifest, &producer.runner));
+        set_yaml_sequence_path(&mut manifest.value, &["architecture", "trace", "producers"], vec![trace_producer_yaml(&producer)]);
+        write_yaml_manifest(&manifest).unwrap();
+        let report = execute_trace_producers(&path, PropertyProfile::Smoke, false, true, 30).unwrap();
+        assert!(!report.diagnostics.iter().any(|diagnostic| matches!(diagnostic.check.as_str(), "trace.producer-semantic-function" | "trace.producer-bypasses-transition-record")), "{report:?}");
+        let change: SemanticChange = serde_json::from_value(json!({"spec":"rms/semantic-change/v0.1", "trace_producers":{"set":[producer.clone()]}})).unwrap();
+        assert_eq!(final_trace_producers(&manifest, change.trace_producers.as_ref().unwrap())[0].semantic_function.as_deref(), Some("v1-record"));
+        for (field, value) in [("purity", json!("effectful")), ("kind", json!("constructor")), ("symbol", json!("src/other.rs#transition_record")), ("symbol", json!("transition_record")), ("authorities", json!(["filesystem"]))] {
+            let mut bad = manifest.clone(); let mut invalid = function.clone(); invalid[field] = value;
+            set_yaml_sequence_path(&mut bad.value, &["semantic_functions"], vec![serde_yaml::to_value(invalid).unwrap()]);
+            assert!(trace_producer_record_symbol(&bad, &producer).is_err(), "{field}");
+        }
+        let mut duplicate = manifest.clone();
+        set_yaml_sequence_path(&mut duplicate.value, &["semantic_functions"], vec![serde_yaml::to_value(&function).unwrap(), serde_yaml::to_value(&function).unwrap()]);
+        assert!(trace_producer_record_symbol(&duplicate, &producer).is_err());
+        producer.semantic_function = Some("unknown".into());
+        assert!(trace_producer_record_symbol(&manifest, &producer).is_err());
+        producer.semantic_function = Some("v1-record".into());
+        let (runner_path, _) = binding_reference_parts(&producer.runner).unwrap();
+        fs::write(root.join(runner_path), "#[test] fn produce_transition_trace() { let static_declaration = \"{}\"; std::fs::write(\"out\", static_declaration); }").unwrap();
+        assert!(!trace_producer_calls_transition_record(&root, &manifest, &producer.runner, &target));
+        assert!(!trace_producer_serializes_transition_records(&root, &manifest, &producer.runner));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn trace_producer_must_serialize_returned_transition_records() {
         let root = unique_test_dir("trace-producer-static-copy");
         run_add_module(
@@ -101528,6 +101607,7 @@ architecture:
         set_yaml_value_path(&mut manifest.value, &["architecture", "trace", "producers"], serde_yaml::to_value(vec![TraceProducer {
             id: "codec-invocations".into(), profile: "smoke".into(), bundle: "verification/traces/codec.json".into(),
             command: "codec".into(), runner: "runner.py#run".into(),
+            semantic_function: None,
         }]).unwrap());
         write_yaml_manifest(&manifest).unwrap();
         for mode in ["standalone", "bundle"] {
