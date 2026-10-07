@@ -22505,6 +22505,7 @@ fn property_generator_is_fixed_literal_corpus(
                 Some("swift") => swift_function_source(&source, symbol).is_some_and(|function| {
                     function.contains('[')
                         && !function.contains(".map")
+                        && !swift_generator_has_seeded_range_flat_map(function)
                         && !function.contains("for ")
                         && !function.contains("while ")
                         && !function.to_ascii_lowercase().contains("random")
@@ -22519,6 +22520,47 @@ fn property_generator_is_fixed_literal_corpus(
             }
         }
     }
+}
+
+fn swift_generator_has_seeded_range_flat_map(source: &str) -> bool {
+    fn descendants<'a>(node: TreeSitterNode<'a>, kind: &str) -> Vec<TreeSitterNode<'a>> {
+        let mut found = Vec::new();
+        if node.kind() == kind { found.push(node); }
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) { found.extend(descendants(child, kind)); }
+        found
+    }
+    let mut parser = TreeSitterParser::new();
+    if parser.set_language(&tree_sitter_swift::LANGUAGE.into()).is_err() { return false; }
+    let Some(tree) = parser.parse(source, None) else { return false; };
+    if tree.root_node().has_error() { return false; }
+    let functions = descendants(tree.root_node(), "function_declaration");
+    let [function] = functions.as_slice() else { return false; };
+    let Some(body) = function.child_by_field_name("body") else { return false; };
+    let Some(statements) = body.named_child(0).filter(|node| node.kind() == "statements") else { return false; };
+    // Do not accept a dead generator call followed by a literal return.
+    if statements.named_child_count() != 1 { return false; }
+    let mut expression = statements.named_child(0).unwrap();
+    while matches!(expression.kind(), "control_transfer_statement" | "try_expression") {
+        let mut cursor = expression.walk();
+        let Some(child) = expression.named_children(&mut cursor).last() else { return false; };
+        expression = child;
+    }
+    if expression.kind() != "call_expression" { return false; }
+    let Some(navigation) = expression.named_child(0).filter(|node| node.kind() == "navigation_expression") else { return false; };
+    let Some(suffix) = navigation.child_by_field_name("suffix") else { return false; };
+    if suffix.utf8_text(source.as_bytes()).ok().map(str::trim) != Some(".flatMap") { return false; }
+    let Some(target) = navigation.child_by_field_name("target") else { return false; };
+    if descendants(target, "range_expression").is_empty() { return false; }
+    let closures = descendants(expression, "lambda_literal");
+    let [closure] = closures.as_slice() else { return false; };
+    let parameters = descendants(*closure, "lambda_parameter");
+    let [parameter] = parameters.as_slice() else { return false; };
+    let Some(name) = parameter.child_by_field_name("name").and_then(|node| node.utf8_text(source.as_bytes()).ok()) else { return false; };
+    if name == "_" { return false; }
+    descendants(*closure, "statements").first().is_some_and(|body|
+        descendants(*body, "simple_identifier").iter().any(|node|
+            node.utf8_text(source.as_bytes()).ok() == Some(name)))
 }
 
 fn rust_expr_is_fixed_literal_collection(expression: &syn::Expr) -> bool {
@@ -101239,6 +101281,32 @@ class Proof {
         fs::write(root.join(runner_path), "#[test] fn produce_transition_trace() { let static_declaration = \"{}\"; std::fs::write(\"out\", static_declaration); }").unwrap();
         assert!(!trace_producer_calls_transition_record(&root, &manifest, &producer.runner, &target));
         assert!(!trace_producer_serializes_transition_records(&root, &manifest, &producer.runner));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn swift_seeded_flat_map_is_generated_but_literals_remain_corpus() {
+        let root = unique_test_dir("swift-flat-map-generator");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = LoadedManifest { path:root.join("implementation.yaml"), value:serde_yaml::from_str("binding: swift").unwrap() };
+        for (body, fixed) in [
+            ("try (0..<256).flatMap { seed in [try fixture(seed), try fixture(seed, deviceInitiator: false)] }", false),
+            ("(0..<256).flatMap { seed in [(seed, true), (seed, false)] }", false),
+            ("return (0...255).flatMap { seed in [(seed, true), (seed, false)] }", false),
+            ("return [0, 1, 255]", true),
+            ("[(0, true), (0, false)]", true),
+            ("return [fixture(0), fixture(1)]", true),
+            ("/* (0..<256).flatMap { seed in [seed] } */ return [0, 1]", true),
+            ("return [\".flatMap\"]", true),
+            ("(0..<256).flatMap { _ in [0, 1] }", true),
+            ("(0..<256).flatMap { seed in [0, 1] }", true),
+            ("[0, 1].flatMap { seed in [seed] }", true),
+            ("let ignored = (0..<256).flatMap { seed in [seed] }; return [0, 1]", true),
+        ] {
+            let source = format!("func generate() throws -> [Fixture] {{ {body} }}");
+            fs::write(root.join("Tests.swift"), &source).unwrap();
+            assert_eq!(property_generator_is_fixed_literal_corpus(&root, &manifest, "Tests.swift#generate"), fixed, "{source}");
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
