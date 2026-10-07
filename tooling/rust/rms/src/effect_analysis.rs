@@ -2936,6 +2936,9 @@ struct SwiftStandardNames {
     string_split: bool,
     foundation_values: bool,
     compact_map: bool,
+    byte_equality: bool,
+    named_all_satisfy: bool,
+    string_fields: BTreeSet<(String, String)>,
 }
 
 fn extract_tree_sitter_functions(
@@ -3011,6 +3014,35 @@ fn extract_tree_sitter_functions(
                 );
             }
             if binding == "swift" {
+                if swift_global_names.named_all_satisfy {
+                    let mut invocations = Vec::new();
+                    collect_nodes_of_kind(node, "call_expression", &mut invocations);
+                    let mut classified = BTreeMap::<String, bool>::new();
+                    for invocation in invocations {
+                        let Some(callee) = invocation.named_child(0).and_then(|callee| callee.utf8_text(source.as_bytes()).ok()) else { continue; };
+                        if !callee.ends_with(".allSatisfy") { continue; }
+                        let predicate = swift_named_all_satisfy(invocation, node, tree.root_node(), source);
+                        let closed = predicate.is_some() || swift_call_is_standard_literal_collection_operation(invocation, source, &swift_collection_names);
+                        classified.entry(normalize_call(callee)).and_modify(|all| *all &= closed).or_insert(closed);
+                        if let Some(predicate) = predicate { calls.insert(predicate); }
+                    }
+                    for (callee, closed) in classified { if closed { calls.remove(&callee); } }
+                }
+                if swift_global_names.byte_equality {
+                    let mut invocations = Vec::new();
+                    collect_nodes_of_kind(node, "call_expression", &mut invocations);
+                    let mut classified = BTreeMap::<String, bool>::new();
+                    for invocation in invocations {
+                        if let Some(callee) = invocation.named_child(0)
+                            .and_then(|callee| callee.utf8_text(source.as_bytes()).ok()) {
+                            let pure = swift_utf8_equality(invocation, node, source, &swift_global_names.string_fields);
+                            classified.entry(normalize_call(callee)).and_modify(|all| *all &= pure).or_insert(pure);
+                        }
+                    }
+                    for (callee, pure) in classified {
+                        if pure { calls.remove(&callee); }
+                    }
+                }
                 if swift_global_names.foundation_values {
                     swift_refine_guard_values(node, source, &mut calls);
                 }
@@ -3511,6 +3543,8 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
     let mut value_classifications = BTreeMap::<String, bool>::new();
     let mut shadowed = BTreeSet::new();
     let mut declared_methods = BTreeSet::new();
+    let mut string_fields = BTreeSet::new();
+    let mut type_counts = BTreeMap::<String, usize>::new();
     for source in sources.values() {
         let mut parser = Parser::new();
         if parser.set_language(&language).is_err() {
@@ -3519,6 +3553,37 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
         let Some(tree) = parser.parse(source, None) else {
             continue;
         };
+        let mut types = Vec::new();
+        collect_nodes_of_kind(tree.root_node(), "class_declaration", &mut types);
+        for ty in types {
+            let Some(owner) = ty.child_by_field_name("name").and_then(|name| name.utf8_text(source.as_bytes()).ok()) else { continue; };
+            *type_counts.entry(owner.to_string()).or_default() += 1;
+            let text = ty.utf8_text(source.as_bytes()).unwrap_or_default();
+            if !text.split('{').next().unwrap_or("").split_whitespace().any(|word| word == "struct") { continue; }
+            if ty.parent().is_none_or(|parent| parent.kind() != "source_file") { continue; }
+            let mut properties = Vec::new();
+            collect_nodes_of_kind(ty, "property_declaration", &mut properties);
+            let strings = properties.into_iter().filter(|property| nearest_function_ancestor(*property).is_none())
+                .filter_map(|property| {
+                    if property.parent().and_then(|parent| parent.parent()) != Some(ty) { return None; }
+                    let text = property.utf8_text(source.as_bytes()).ok()?;
+                    let (left, right) = text.split_once(':')?;
+                    if left.contains('@') || left.split_whitespace().any(|word| matches!(word, "static" | "lazy")) { return None; }
+                    let name = left.split_whitespace().last()?;
+                    if !is_simple_identifier(name) { return None; }
+                    let right = right.trim();
+                    if right == "String" { Some((name.to_string(), None)) }
+                    else {
+                        let body = right.strip_prefix("String")?.trim().strip_prefix('{')?.strip_suffix('}')?.trim();
+                        is_simple_identifier(body).then(|| (name.to_string(), Some(body.to_string())))
+                    }
+                }).collect::<BTreeMap<_, _>>();
+            for (name, forwarding) in &strings {
+                if forwarding.as_ref().is_none_or(|stored| strings.get(stored) == Some(&None)) {
+                    string_fields.insert((owner.to_string(), name.clone()));
+                }
+            }
+        }
         let mut identifiers = Vec::new();
         collect_nodes_of_kind(tree.root_node(), "simple_identifier", &mut identifiers);
         for identifier in identifiers {
@@ -3580,7 +3645,11 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
             value_classifications.entry(name).or_insert(true);
         }
     }
+    string_fields.retain(|(owner, _)| type_counts.get(owner) == Some(&1));
     SwiftStandardNames {
+        byte_equality: !["String", "Swift", "utf8", "elementsEqual"].iter().any(|name| shadowed.contains(*name)),
+        named_all_satisfy: !["Array", "Swift", "allSatisfy"].iter().any(|name| shadowed.contains(*name)),
+        string_fields,
         compact_map: !declared_methods.contains("compactMap"),
         foundation_values: !["UUID", "String", "Dictionary", "Foundation", "Swift", "lowercased", "uuidString", "trimmingCharacters"]
             .iter().any(|name| shadowed.contains(*name))
@@ -3599,6 +3668,75 @@ fn swift_global_standard_names(sources: &BTreeMap<String, String>) -> SwiftStand
             .filter_map(|(name, standard)| standard.then_some(name))
             .collect(),
     }
+}
+
+fn swift_named_all_satisfy(call: Node<'_>, function: Node<'_>, root: Node<'_>, source: &str) -> Option<String> {
+    let text = call.utf8_text(source.as_bytes()).ok()?;
+    let (receiver, arguments) = text.split_once(".allSatisfy(")?;
+    let predicate = arguments.strip_suffix(')')?.trim();
+    if !is_simple_identifier(predicate) { return None; }
+    let literal = call.named_child(0).and_then(|callee| callee.named_child(0))
+        .is_some_and(|receiver| receiver.kind() == "array_literal");
+    let mut declarations = Vec::new();
+    for kind in ["parameter", "property_declaration", "lambda_parameter"] {
+        collect_nodes_of_kind(function, kind, &mut declarations);
+    }
+    if !literal {
+        let receiver = receiver.trim();
+        if !is_simple_identifier(receiver) { return None; }
+        let matching = declarations.iter().filter(|declaration| declaration.child_by_field_name("name")
+            .and_then(|name| first_simple_identifier(name, source)).as_deref() == Some(receiver)).collect::<Vec<_>>();
+        let [declaration] = matching.as_slice() else { return None; };
+        let array_literal = declaration.child_by_field_name("value").is_some_and(|value| value.kind() == "array_literal");
+        let array_annotation = declaration.utf8_text(source.as_bytes()).ok().and_then(|text| text.split_once(':'))
+            .is_some_and(|(_, ty)| { let ty = ty.split('=').next().unwrap_or("").trim(); ty.starts_with('[') && ty.ends_with(']') });
+        if !array_literal && !array_annotation { return None; }
+    }
+    if declarations.iter().any(|declaration| declaration.child_by_field_name("name")
+        .and_then(|name| first_simple_identifier(name, source)).as_deref() == Some(predicate)) { return None; }
+    let mut loops = Vec::new();
+    collect_nodes_of_kind(function, "for_statement", &mut loops);
+    if loops.iter().any(|loop_node| loop_node.utf8_text(source.as_bytes()).unwrap_or_default()
+        .split_whitespace().take_while(|word| *word != "in").any(|word| word == predicate || word == receiver.trim())) { return None; }
+    let mut functions = Vec::new();
+    collect_function_nodes(root, &mut functions);
+    let matches = functions.into_iter().filter(|candidate| function_node_name(*candidate, source).as_deref() == Some(predicate)).collect::<Vec<_>>();
+    let [candidate] = matches.as_slice() else { return None; };
+    if nearest_function_ancestor(*candidate).is_some_and(|owner| owner != function) { return None; }
+    Some(predicate.to_string())
+}
+
+// Recognize only the callback-free comparison of two proven String UTF8 views.
+// Custom sequences, getters, overloads and open predicates stay fail-closed.
+fn swift_utf8_equality(call: Node<'_>, function: Node<'_>, source: &str,
+    fields: &BTreeSet<(String, String)>) -> bool {
+    if function.utf8_text(source.as_bytes()).unwrap_or_default().split('(').next().unwrap_or("").contains('<') { return false; }
+    let text = call.utf8_text(source.as_bytes()).unwrap_or_default();
+    let compact = text.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let Some((left, right)) = compact.split_once(".utf8.elementsEqual(") else { return false; };
+    let Some(right) = right.strip_suffix(".utf8)") else { return false; };
+    let mut parameters = Vec::new();
+    collect_nodes_of_kind(function, "parameter", &mut parameters);
+    let mut locals = Vec::new();
+    for kind in ["property_declaration", "lambda_parameter", "for_statement"] {
+        collect_nodes_of_kind(function, kind, &mut locals);
+    }
+    let is_string = |path: &str| {
+        let parts = path.split('.').collect::<Vec<_>>();
+        if parts.is_empty() || parts.len() > 2 || !parts.iter().all(|part| is_simple_identifier(part)) { return false; }
+        let root = parts[0];
+        if locals.iter().any(|local| local.utf8_text(source.as_bytes()).unwrap_or_default()
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|token| token == root)) { return false; }
+        let types = parameters.iter().filter_map(|parameter| {
+            let text = parameter.utf8_text(source.as_bytes()).ok()?;
+            let (name, ty) = text.split_once(':')?;
+            (name.split_whitespace().last() == Some(root)).then(|| ty.trim())
+        }).collect::<Vec<_>>();
+        let [ty] = types.as_slice() else { return false; };
+        if parts.len() == 1 { *ty == "String" }
+        else { fields.contains(&(ty.to_string(), parts[1].to_string())) }
+    };
+    is_string(left) && is_string(right)
 }
 
 fn swift_labeled_array_value_names(source: &str) -> BTreeSet<String> {
@@ -6526,6 +6664,52 @@ fn decide() {
             result.functions[0].transitive_authorities,
             vec!["dynamic-dispatch"]
         );
+    }
+
+    #[test]
+    fn swift_utf8_equality_requires_string_views_and_no_callback() {
+        let declaration = "struct Endpoint { private let stored: String; var fingerprint: String { stored } }";
+        for source in [
+            "func decide(_ lhs: String, _ rhs: String) -> Bool { lhs.utf8.elementsEqual(rhs.utf8) }".to_string(),
+            format!("{declaration}\nfunc decide(_ lhs: Endpoint, _ rhs: Endpoint) -> Bool {{ lhs.fingerprint.utf8.elementsEqual(rhs.fingerprint.utf8) }}"),
+        ] {
+            let result = report("swift", "App.swift", &source, expectation("decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{source}: {result:#?}");
+        }
+        for source in [
+            "func decide(_ lhs: Custom, _ rhs: Custom) { lhs.utf8.elementsEqual(rhs.utf8) }",
+            "func decide(_ lhs: String, _ rhs: Custom) { lhs.utf8.elementsEqual(rhs.utf8) }",
+            "func decide(_ lhs: String, _ rhs: String, by: (UInt8, UInt8) -> Bool) { lhs.utf8.elementsEqual(rhs.utf8, by: by) }",
+            "func decide(_ lhs: String, _ rhs: String) { lhs.utf8.elementsEqual(rhs.utf8, by: { print($0); return true }) }",
+            "func decide(_ lhs: String, _ rhs: String, by: (UInt8, UInt8) -> Bool) { _ = lhs.utf8.elementsEqual(rhs.utf8); _ = lhs.utf8.elementsEqual(rhs.utf8, by: by) }",
+            "struct Endpoint { var fingerprint: String { fetch() } } func decide(_ lhs: Endpoint, _ rhs: Endpoint) { lhs.fingerprint.utf8.elementsEqual(rhs.fingerprint.utf8) }",
+            "struct Endpoint { @Wrapper var fingerprint: String } func decide(_ lhs: Endpoint, _ rhs: Endpoint) { lhs.fingerprint.utf8.elementsEqual(rhs.fingerprint.utf8) }",
+            "struct Endpoint { let fingerprint: String } func decide<Endpoint>(_ lhs: Endpoint, _ rhs: Endpoint) { lhs.fingerprint.utf8.elementsEqual(rhs.fingerprint.utf8) }",
+            "struct Endpoint { var fingerprint: Custom; struct Nested { let fingerprint: String } } func decide(_ lhs: Endpoint, _ rhs: Endpoint) { lhs.fingerprint.utf8.elementsEqual(rhs.fingerprint.utf8) }",
+            "struct String {} func decide(_ lhs: String, _ rhs: String) { lhs.utf8.elementsEqual(rhs.utf8) }",
+            "extension String.UTF8View { func elementsEqual(_ other: Self) -> Bool { print(other); return true } } func decide(_ lhs: String, _ rhs: String) { lhs.utf8.elementsEqual(rhs.utf8) }",
+        ] {
+            let source = source.replace("} func", "}\nfunc");
+            let result = report("swift", "App.swift", &source, expectation("decide", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}: {result:#?}");
+        }
+    }
+
+    #[test]
+    fn swift_named_all_satisfy_follows_predicate_effects() {
+        for (source, expected) in [
+            ("func decide(_ values: [Int]) -> Bool { func valid(_ n: Int) -> Bool { n > 0 }; return values.allSatisfy(valid) }", AnalysisResult::Pass),
+            ("func decide(_ n: Int) -> Bool { func valid(_ n: Int) -> Bool { n > 0 }; return [n, 1].allSatisfy(valid) }", AnalysisResult::Pass),
+            ("func decide(_ values: [Int]) -> Bool { func valid(_ n: Int) -> Bool { print(n); return true }; return values.allSatisfy(valid) }", AnalysisResult::Fail),
+            ("func decide(_ values: [Int], valid: (Int) -> Bool) -> Bool { values.allSatisfy(valid) }", AnalysisResult::Fail),
+            ("func valid(_ n: Int) -> Bool { n > 0 }\nfunc decide(_ values: [Int], valid: (Int) -> Bool) -> Bool { values.allSatisfy(valid) }", AnalysisResult::Fail),
+            ("func decide(_ values: Custom) -> Bool { func valid(_ n: Int) -> Bool { n > 0 }; return values.allSatisfy(valid) }", AnalysisResult::Fail),
+            ("struct Other { let values: [Int] }\nfunc decide(_ values: Custom) -> Bool { func valid(_ n: Int) -> Bool { n > 0 }; return values.allSatisfy(valid) }", AnalysisResult::Fail),
+            ("func decide(_ values: Custom<[Int]>) -> Bool { func valid(_ n: Int) -> Bool { n > 0 }; return values.allSatisfy(valid) }", AnalysisResult::Fail),
+        ] {
+            let result = report("swift", "App.swift", source, expectation("decide", "pure", &[]));
+            assert_eq!(result.result, expected, "{source}: {result:#?}");
+        }
     }
 
     #[test]
