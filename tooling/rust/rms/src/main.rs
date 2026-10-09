@@ -43093,8 +43093,16 @@ fn build_next_report_with_optional_program(
     let bounded_existing_implementation = classification.lane == TaskLane::ImplementationCandidate
         && task_requests_declared_role_implementation_completion(task)
         && owner.status() == OwnerStatus::Selected;
-    let bounded_binding_metadata = (rust_package_identity_change || rust_public_reexports_change || integration_package_rebind)
+    let bounded_external_crate_metadata = external_rust_crate_declaration
+        && intent.as_ref().is_some_and(|model| model.change_scope == IntentChangeScope::ExistingModule)
+        && context.implementation.as_ref().and_then(|path| load_manifest(Path::new(path)).ok())
+            .is_some_and(|manifest| get_str(&manifest.value, &["spec"]) == Some(IMPLEMENTATION_V2_SPEC)
+                && get_str(&manifest.value, &["binding"]) == Some("rust"));
+    let bounded_binding_metadata = (rust_package_identity_change || rust_public_reexports_change || integration_package_rebind || bounded_external_crate_metadata)
         && owner.status() == OwnerStatus::Selected;
+    if bounded_external_crate_metadata && owner.status() == OwnerStatus::Selected {
+        context.edit_authority = "Only receipt-guarded external Rust crate metadata may be added to the selected binding. Source, contracts, behavior, authority declarations, and topology must remain unchanged. Existing source findings remain required implementation and conformance work.".into();
+    }
     let bounded_proof_support_roles =
         exact_owner_scoped_proof_support_role_change_ready(task, intent.as_ref(), &owner);
     let owner_scoped_existing_semantic_change =
@@ -43395,10 +43403,10 @@ fn build_next_report_with_optional_program(
             TaskLane::ImplementationCandidate => {}
             _ => {}
         }
-        if context.implementation.is_some() && !native_existing_realization {
+        if context.implementation.is_some() && !native_existing_realization && !bounded_external_crate_metadata {
             allowed_actions.push("binding-migrate");
         }
-        if context.implementation.is_some() && external_rust_crate_declaration {
+        if context.implementation.is_some() && bounded_external_crate_metadata {
             allowed_actions.push("external-crate-add");
         }
         if context.implementation.is_some() && rust_package_identity_change {
@@ -90597,6 +90605,43 @@ open_questions: []
             None,
         )
         .is_err());
+        let transition_path = root.join("src/transition.rs");
+        let mut transition = fs::read_to_string(&transition_path).unwrap();
+        let function = transition.rfind("pub fn transition(").unwrap();
+        let body = function + transition[function..].find('{').unwrap() + 1;
+        transition.insert_str(body, "\nstd::fs::read(\"unimplemented-runtime\").ok();\n");
+        fs::write(&transition_path, transition).unwrap();
+        let debt_report = build_next_report_with_intent(&root, Some(&module), task,
+            RawIntentInput { yaml: Some(intent.to_string()), ..Default::default() }, None).unwrap();
+        assert_eq!(debt_report.result, NextResult::Ready, "{debt_report:#?}");
+        assert!(debt_report.validation.diagnostics.iter().any(|diagnostic|
+            diagnostic.severity == Severity::Error && diagnostic.check == "effects.transitive-purity"), "{debt_report:#?}");
+        let debt_receipt: RouteReceipt = serde_json::from_slice(&fs::read(&debt_report.receipt_path).unwrap()).unwrap();
+        assert_eq!(debt_receipt.payload.allowed_action_families, vec!["external-crate-add"]);
+        assert!(validate_route_receipt(&root, Path::new(&debt_report.receipt_path), "external-crate-add", &root.join("implementation.yaml"), None).is_ok());
+        for family in ["spec-apply", "machine-apply", "binding-migrate", "surface-apply"] {
+            assert!(validate_route_receipt(&root, Path::new(&debt_report.receipt_path), family, &root.join("implementation.yaml"), None).is_err());
+        }
+        assert!(validate_route_receipt(&root, Path::new(&debt_report.receipt_path), "external-crate-add", &root.join("other/implementation.yaml"), None).is_err());
+        for check in ["effects.transitive-purity", "structure.effect-protocol-executor-symbol-missing", "structure.persistent-async-binding", "structure.effect-protocol-executor-signature-mismatch"] {
+            let diagnostic = error(check, &root.join("implementation.yaml"), "unfinished native executor");
+            assert!(!bounded_binding_metadata_route_hard_blocker(&root, &diagnostic, &debt_report.owner));
+            assert!(bounded_owner_scoped_semantic_route_hard_blocker(&root, &diagnostic, &debt_report.owner));
+        }
+        for check in ["schema.validate", "semantic.revision-drift", "intent.contradiction", "semantic.executable-property-invalid"] {
+            assert!(bounded_binding_metadata_route_hard_blocker(&root,
+                &error(check, &root.join("implementation.yaml"), "canonical precondition"), &debt_report.owner));
+        }
+        let unknown_intent = intent.replace("reuse: {disposition: required, basis: explicit, source_quote: Rust external package}",
+            "reuse: {disposition: unknown, basis: explicit, source_quote: Rust external package}");
+        let unknown_report = build_next_report_with_intent(&root, Some(&module), task,
+            RawIntentInput { yaml: Some(unknown_intent), ..Default::default() }, None).unwrap();
+        assert_eq!(unknown_report.result, NextResult::ClarificationRequired, "{unknown_report:#?}");
+        assert!(validate_route_receipt(&root, Path::new(&unknown_report.receipt_path), "external-crate-add", &root.join("implementation.yaml"), None).is_err());
+        assert!(Command::new("git").args(["commit", "--allow-empty", "-m", "Advance metadata checkpoint"])
+            .current_dir(&root).status().unwrap().success());
+        assert!(validate_route_receipt(&root, Path::new(&debt_report.receipt_path), "external-crate-add", &root.join("implementation.yaml"), None)
+            .unwrap_err().to_string().contains("stale"));
         let owner = OwnerResolution::selected("exact owner".into(), RouteModuleSummary {
             name: "phone-number-normalization".into(), path: module.display().to_string(), kind: "library".into(), shape: "domain-engine".into(), visibility: None,
         }, Vec::new(), Vec::new(), Vec::new());
