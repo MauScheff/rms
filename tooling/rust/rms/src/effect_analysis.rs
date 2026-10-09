@@ -1014,6 +1014,7 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
+    if call == "<rust-standard-path-view>" { return true; }
     if call == "<rust-sequence-retain>" { return true; }
     if call == "<rust-character-predicate>" { return true; }
     if call == "<rust-io-error-kind>" { return true; }
@@ -1681,6 +1682,13 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                     && !self.local_closures.contains(&root.ident.to_string()))
             {
                 self.calls.insert("<dynamic-call>".into());
+                visit::visit_expr_call(self, node);
+                return;
+            }
+            if self.type_index.standard_path_view_call(node) {
+                // These exact inherent methods only borrow an existing value.
+                // Argument evaluation remains part of the analyzed closure.
+                self.calls.insert("<rust-standard-path-view>".into());
                 visit::visit_expr_call(self, node);
                 return;
             }
@@ -5580,6 +5588,34 @@ fn decide() {
         let path = "use std::path::Path; fn execute(root: &Path) { root.join(\".git\").canonicalize(); }";
         assert_eq!(report("rust", "src/lib.rs", path, expectation("execute", "effectful", &["filesystem"])).result, AnalysisResult::Pass);
         assert_eq!(report("rust", "src/lib.rs", &path.replace("std::path::Path", "custom::Path"), expectation("execute", "pure", &[])).result, AnalysisResult::Fail);
+    }
+
+    #[test]
+    fn rust_standard_path_views_resolve_exact_ufcs_and_preserve_argument_effects() {
+        let source = "fn execute(path: &std::path::PathBuf) -> bool { let raw: &[u8] = std::ffi::OsStr::as_encoded_bytes(std::path::Path::as_os_str(std::path::PathBuf::as_path(path))); raw.is_empty() || raw.contains(&0) }";
+        for source in [source.to_string(), source.replace("std::", "::std::"),
+            source.replace("fn execute", "use std::path::PathBuf as OwnedPath; use std::ffi::OsStr as NativeStr; fn execute")
+                .replace("std::path::PathBuf::as_path", "OwnedPath::as_path")
+                .replace("std::ffi::OsStr::as_encoded_bytes", "NativeStr::as_encoded_bytes")] {
+            let result = report("rust", "src/lib.rs", &source, expectation("execute", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for source in [
+            source.replace("std::path::PathBuf::as_path", "custom::PathBuf::as_path"),
+            source.replace("std::ffi::OsStr::as_encoded_bytes", "custom::OsStr::as_encoded_bytes"),
+            format!("mod std {{}} {source}"),
+            format!("use custom as std; {source}"),
+            source.replace("fn execute(", "fn execute<std>("),
+            source.replace("let raw:", "mod std {} let raw:"),
+            source.replace("let raw:", "let std = unknown(); let raw:"),
+            source.replace("std::path::PathBuf::as_path(path)", "std::path::PathBuf::as_path(path, path)"),
+            source.replace("std::path::PathBuf::as_path(path)", "std::path::PathBuf::as_path::<Other>(path)"),
+            source.replace("std::path::PathBuf::as_path(path)", "<Other as std::path::PathBuf>::as_path(path)"),
+            source.replace("std::path::PathBuf::as_path(path)", "std::path::PathBuf::as_path({ std::process::abort(); path })"),
+        ] {
+            let result = report("rust", "src/lib.rs", &source, expectation("execute", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}\n{result:#?}");
+        }
     }
 
     #[test]

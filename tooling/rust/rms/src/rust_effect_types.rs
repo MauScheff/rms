@@ -361,6 +361,15 @@ impl RustTypeIndex {
         Some(resolved)
     }
 
+    pub(super) fn standard_path_view_call(&self, call: &syn::ExprCall) -> bool {
+        let Expr::Path(path) = call.func.as_ref() else { return false; };
+        path.qself.is_none() && call.args.len() == 1
+            && path.path.segments.iter().all(|part| matches!(part.arguments, PathArguments::None))
+            && matches!(self.external_path(&path.path).as_deref(), Some(
+                "std::path::PathBuf::as_path" | "std::path::Path::as_os_str"
+                    | "std::ffi::OsStr::as_encoded_bytes"))
+    }
+
     pub(super) fn external_method_marker(&self, value: &RustValueType, method: &str, arity: usize) -> Option<&'static str> {
         let RustValueType::External(receiver) = value else { return None; };
         receiver.method(method, arity)?;
