@@ -90,6 +90,7 @@ struct FunctionNode {
     callable_selector: Option<String>,
     calls: BTreeSet<String>,
     rust_unsafe_calls: BTreeSet<String>,
+    rust_dynamic_sites: BTreeSet<String>,
     direct_authorities: BTreeSet<String>,
     rust_regex_match_names: BTreeSet<String>,
     swift_standard_value_names: BTreeSet<String>,
@@ -329,6 +330,39 @@ fn analyze_function(
         }
     } else {
         reasons.push(format!("unsupported purity `{}`", expectation.purity));
+    }
+    if !reasons.is_empty() && transitive_authorities.contains("dynamic-dispatch") {
+        for index in &visited {
+            let contributor = &nodes[*index];
+            let open_calls = contributor.calls.iter().filter(|call|
+                resolved.contains(*call) && !known_pure_call(call)
+                    && !trusted_external_calls.contains(*call)
+                    && !contributor.rust_unsafe_calls.contains(*call)
+                    && external_facade_authorities(call, facades).is_none()
+                    && resolve_local_call(*index, call, nodes).is_empty()
+                    && call_is_open(call)).collect::<Vec<_>>();
+            if !open_calls.is_empty() {
+                reasons.push(format!("dynamic dispatch originates in {}#{}",
+                    contributor.path, contributor.qualified_name));
+                for site in &contributor.rust_dynamic_sites {
+                    reasons.push(format!("dynamic call in {}#{}: {site}",
+                        contributor.path, contributor.qualified_name));
+                }
+                for call in open_calls.iter().filter(|call| call.as_str() != "<dynamic-call>") {
+                    reasons.push(format!("dynamic call in {}#{}: {call}",
+                        contributor.path, contributor.qualified_name));
+                }
+                for caller in &visited {
+                    for call in &nodes[*caller].calls {
+                        if resolve_local_call(*caller, call, nodes).contains(index) {
+                            reasons.push(format!("call to dynamic contributor {}#{} from {}#{}: {call}",
+                                contributor.path, contributor.qualified_name,
+                                nodes[*caller].path, nodes[*caller].qualified_name));
+                        }
+                    }
+                }
+            }
+        }
     }
     FunctionAnalysis {
         id: expectation.id.clone(),
@@ -596,16 +630,7 @@ fn collect_closure(
             continue;
         } else if node.binding == "shell" {
             unresolved.insert(call.clone());
-        } else if call == "<dynamic-call>"
-            || call.contains('.')
-            || (call.contains("::")
-                && call
-                    .split("::")
-                    .next()
-                    .and_then(|root| root.chars().next())
-                    .is_some_and(char::is_uppercase)
-                && !call_is_constructor(call))
-        {
+        } else if call_is_open(call) {
             authorities.insert("dynamic-dispatch".to_string());
             resolved.insert(call.clone());
         } else {
@@ -639,6 +664,12 @@ fn rust_regex_match_offset_query(call: &str, regex_match_names: &BTreeSet<String
     call.rsplit_once('.')
         .map(|(receiver, _)| receiver.trim_end_matches("()"))
         .is_some_and(|receiver| regex_match_names.contains(receiver))
+}
+
+fn call_is_open(call: &str) -> bool {
+    call == "<dynamic-call>" || call.contains('.')
+        || (call.contains("::") && call.split("::").next().and_then(|root| root.chars().next())
+            .is_some_and(char::is_uppercase) && !call_is_constructor(call))
 }
 
 fn resolve_local_call(index: usize, call: &str, nodes: &[FunctionNode]) -> Vec<usize> {
@@ -1014,6 +1045,8 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
+    if call == "<rust-result-extract>" { return true; }
+    if call == "<rust-option-extract>" { return true; }
     if call == "<rust-standard-path-view>" { return true; }
     if call == "<rust-sequence-retain>" { return true; }
     if call == "<rust-character-predicate>" { return true; }
@@ -1422,6 +1455,7 @@ fn normalized_path_matches(actual: &str, expected: &str) -> bool {
 #[derive(Default)]
 struct RustCallCollector {
     calls: BTreeSet<String>,
+    dynamic_sites: BTreeSet<String>,
     unsafe_calls: BTreeSet<String>,
     authorities: BTreeSet<String>,
     dynamic_symbols: BTreeSet<String>,
@@ -1681,6 +1715,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                     && !self.callback_bindings.contains_key(&root.ident.to_string())
                     && !self.local_closures.contains(&root.ident.to_string()))
             {
+                self.dynamic_sites.insert(rust_expr_label(&node.func));
                 self.calls.insert("<dynamic-call>".into());
                 visit::visit_expr_call(self, node);
                 return;
@@ -1778,6 +1813,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                     }
                     specialized.visit_block(&helper.block);
                     self.calls.extend(specialized.calls);
+                    self.dynamic_sites.extend(specialized.dynamic_sites);
                     self.unsafe_calls.extend(specialized.unsafe_calls);
                     self.authorities.extend(specialized.authorities);
                     for argument in &node.args {
@@ -1791,6 +1827,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 return;
             }
             if self.dynamic_symbols.contains(leaf) {
+                self.dynamic_sites.insert(call.clone());
                 self.calls.insert("<dynamic-call>".to_string());
                 visit::visit_expr_call(self, node);
                 return;
@@ -1802,6 +1839,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 "<rust-str-ascii-uppercase>".to_string()
             } else { call });
         } else {
+            self.dynamic_sites.insert(rust_expr_label(&node.func));
             self.calls.insert("<dynamic-call>".to_string());
         }
         visit::visit_expr_call(self, node);
@@ -1817,6 +1855,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             node.turbofish.is_none().then(|| self.type_index.external_method_marker(value, &node.method.to_string(), node.args.len())).flatten()
         });
         if matches!(inferred_receiver, Some(RustValueType::External(_))) && external_marker.is_none() {
+            self.dynamic_sites.insert(format!("{receiver}.{}", node.method));
             self.calls.insert("<dynamic-call>".into());
             visit::visit_expr_method_call(self, node);
             return;
@@ -1830,6 +1869,19 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         });
         let call = if let Some(marker) = external_marker {
             marker.to_string()
+        } else if matches!(&inferred_receiver, Some(RustValueType::ResultKnown(_, error))
+                if self.type_index.result_extract_error_closed(error))
+            && node.turbofish.is_none()
+            && ((node.method == "unwrap" && node.args.is_empty())
+                || (node.method == "expect" && node.args.len() == 1
+                    && matches!(&node.args[0], Expr::Lit(value) if matches!(value.lit, syn::Lit::Str(_))))) {
+            "<rust-result-extract>".into()
+        } else if matches!(inferred_receiver, Some(RustValueType::Optional(_)))
+            && node.turbofish.is_none()
+            && ((node.method == "unwrap" && node.args.is_empty())
+                || (node.method == "expect" && node.args.len() == 1
+                    && matches!(&node.args[0], Expr::Lit(value) if matches!(value.lit, syn::Lit::Str(_))))) {
+            "<rust-option-extract>".into()
         } else if inferred_receiver == Some(RustValueType::Character)
             && matches!(node.method.to_string().as_str(), "is_control" | "is_whitespace")
             && node.args.is_empty() && node.turbofish.is_none() {
@@ -1874,6 +1926,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 .is_some_and(|root| self.parameter_types.contains_key(&root))
             && !known_pure_call(&call)
         {
+            self.dynamic_sites.insert(call.clone());
             self.calls.insert("<dynamic-call>".to_string());
             visit::visit_expr_method_call(self, node);
             return;
@@ -1882,6 +1935,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
             .is_some_and(|root| self.dynamic_symbols.contains(&root))
             && !known_pure_call(&call)
         {
+            self.dynamic_sites.insert(call.clone());
             self.calls.insert("<dynamic-call>".to_string());
             visit::visit_expr_method_call(self, node);
             return;
@@ -2386,6 +2440,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             name,
             calls: calls.calls,
             rust_unsafe_calls: calls.unsafe_calls,
+            rust_dynamic_sites: calls.dynamic_sites,
             direct_authorities: calls.authorities,
             rust_regex_match_names: calls.regex_match_names,
             swift_standard_value_names: BTreeSet::new(),
@@ -2434,6 +2489,7 @@ impl<'ast> Visit<'ast> for RustFunctionCollector {
             name,
             calls: calls.calls,
             rust_unsafe_calls: calls.unsafe_calls,
+            rust_dynamic_sites: calls.dynamic_sites,
             direct_authorities: calls.authorities,
             rust_regex_match_names: calls.regex_match_names,
             swift_standard_value_names: BTreeSet::new(),
@@ -3120,6 +3176,7 @@ fn extract_tree_sitter_functions(
                     .flatten(),
                 calls,
                 rust_unsafe_calls: BTreeSet::new(),
+                rust_dynamic_sites: BTreeSet::new(),
                 direct_authorities,
                 rust_regex_match_names: BTreeSet::new(),
                 swift_standard_value_names,
@@ -5612,6 +5669,112 @@ fn decide() {
             source.replace("std::path::PathBuf::as_path(path)", "std::path::PathBuf::as_path::<Other>(path)"),
             source.replace("std::path::PathBuf::as_path(path)", "<Other as std::path::PathBuf>::as_path(path)"),
             source.replace("std::path::PathBuf::as_path(path)", "std::path::PathBuf::as_path({ std::process::abort(); path })"),
+        ] {
+            let result = report("rust", "src/lib.rs", &source, expectation("execute", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Fail, "{source}\n{result:#?}");
+        }
+    }
+
+    #[test]
+    fn rust_collection_lookup_preserves_exact_element_calls_and_option_extraction() {
+        let run = |source: &str| analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+            sources: BTreeMap::from([
+                ("src/lib.rs".into(), source.into()),
+                ("tests/observations.rs".into(), "fn check() { std::process::abort(); }".into()),
+            ]),
+            semantic_functions: vec![expectation("src/lib.rs#execute", "pure", &[])],
+            authority_facades: Vec::new(), trusted_external_calls: BTreeSet::new(),
+        });
+        let deque = "use std::collections::VecDeque; struct Frame; impl Frame { fn check(&self) {} } struct Session { frames: VecDeque<Frame> } fn execute(session: &Session) { session.frames.get(0).unwrap().check(); }";
+        let vector = "struct Frame; impl Frame { fn check(&self) {} } struct Session { frames: Vec<Frame> } fn execute(session: &mut Session) { let frame = session.frames.remove(0); frame.check(); }";
+        for source in [deque.to_string(), deque.replace("unwrap()", "expect(\"frame\")"),
+            deque.replace("get(0)", "remove(0)").replace("session: &Session", "session: &mut Session"),
+            vector.to_string(), vector.replace("remove(0)", "get(0).unwrap()"),
+            vector.replace("fn execute(session: &mut Session)", "fn execute(session: &mut Session, index: usize)").replace("remove(0)", "remove(index)"),
+            vector.replace("fn execute", "fn position() -> Option<usize> { Some(0) } fn execute")
+                .replace("let frame =", "let Some(index) = position() else { return; }; let frame =")
+                .replace("remove(0)", "remove(index)"),
+            vector.replace("fn execute", "#[doc = \"Return a matching index.\"] fn position() -> Option<usize> { Some(0) } fn execute")
+                .replace("let frame =", "let Some(index) = position() else { return; }; let frame =")
+                .replace("remove(0)", "remove(index)"),
+            format!("{} #[cfg(test)] mod tests {{ use super::*; }}", vector
+                .replace("fn execute", "#[doc = \"Return a matching index.\"] fn position() -> Option<usize> { Some(0) } fn execute")
+                .replace("let frame =", "let Some(index) = position() else { return; }; let frame =")
+                .replace("remove(0)", "remove(index)")),
+            deque.replace("fn execute", "fn unwrap() { std::process::abort(); } fn execute")] {
+            let result = run(&source);
+            assert_eq!(result.result, AnalysisResult::Pass, "{source}\n{result:#?}");
+            assert!(!result.functions[0].resolved_callees.iter().any(|call| call == "unwrap"));
+        }
+        for source in [
+            deque.replace("fn check(&self) {}", "fn check(&self) { std::process::abort(); }"),
+            deque.replace("std::collections::VecDeque", "custom::VecDeque"),
+            deque.replace("use std::collections::VecDeque;", "#[cfg(feature = \"custom\")] use std::collections::VecDeque;"),
+            "struct Frame; impl Frame { fn check(&self) {} } fn execute<VecDeque>(frames: &VecDeque) { frames.get(0).unwrap().check(); }".into(),
+            vector.replace("fn execute(session: &mut Session)", "fn execute<usize>(session: &mut Session, index: usize)").replace("remove(0)", "remove(index)"),
+            format!("{} mod other {{ use custom::*; }}", vector
+                .replace("fn execute(session: &mut Session)", "fn execute(session: &mut Session, index: usize)")
+                .replace("remove(0)", "remove(index)")),
+            vector.replace("fn execute", "#[cfg(feature = \"enabled\")] fn position() -> Option<usize> { Some(0) } fn execute")
+                .replace("let frame =", "let Some(index) = position() else { return; }; let frame =")
+                .replace("remove(0)", "remove(index)"),
+            deque.replace("get(0)", "get(custom_index())"),
+            deque.replace("get(0)", "get::<Other>(0)"),
+            deque.replace("unwrap()", "unwrap(custom_argument())"),
+            deque.replace("unwrap()", "expect(custom_message())"),
+        ] { let result = run(&source); assert_eq!(result.result, AnalysisResult::Fail, "{source}\n{result:#?}"); }
+        let result = report("rust", "src/lib.rs", "fn helper(callback: &dyn Fn()) { callback(); } fn execute(callback: &dyn Fn()) { helper(callback); }", expectation("execute", "pure", &[]));
+        assert_eq!(result.result, AnalysisResult::Fail);
+        assert!(result.functions[0].reasons.iter().any(|reason| reason == "dynamic dispatch originates in src/lib.rs#helper"));
+        assert!(result.functions[0].reasons.iter().any(|reason| reason == "dynamic call in src/lib.rs#helper: callback"));
+    }
+
+    #[test]
+    fn rust_named_variant_patterns_keep_exact_field_method_authority() {
+        let source = "struct Chunk; impl Chunk { fn bytes(&self) -> &[u8] { &[] } } enum Effect { Write { chunk: Chunk, offset: usize }, Empty } fn execute(effect: &Effect) { if let Effect::Write { chunk, .. } = effect { chunk.bytes(); } }";
+        let run = |source: &str| analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+            sources: BTreeMap::from([
+                ("src/lib.rs".into(), source.into()),
+                ("tests/observations.rs".into(), "fn bytes() { std::process::abort(); }".into()),
+            ]),
+            semantic_functions: vec![expectation("src/lib.rs#execute", "pure", &[])],
+            authority_facades: Vec::new(), trusted_external_calls: BTreeSet::new(),
+        });
+        for source in [source.to_string(), source.replace("chunk, ..", "chunk: value, offset").replace("chunk.bytes()", "value.bytes()"),
+            source.replace("if let Effect::Write { chunk, .. } = effect { chunk.bytes(); }", "match effect { Effect::Write { chunk, .. } => { chunk.bytes(); }, _ => {} }")] {
+            let result = run(&source);
+            assert_eq!(result.result, AnalysisResult::Pass, "{source}\n{result:#?}");
+            assert!(result.functions[0].resolved_callees.contains(&"Chunk::bytes".into()));
+            assert!(!result.functions[0].resolved_callees.contains(&"bytes".into()));
+        }
+        for source in [
+            source.replace("{ &[] }", "{ std::process::abort(); &[] }"),
+            source.replace("Effect::Write { chunk, .. } =", "Other::Write { chunk, .. } ="),
+            source.replace("enum Effect { Write", "enum Effect { #[cfg(feature = \"enabled\")] Write"),
+            source.replace("chunk: Chunk", "#[cfg(feature = \"enabled\")] chunk: Chunk"),
+            source.replace("chunk, ..", "missing: chunk, .."),
+            source.replace("enum Effect", "struct Effect; enum Effect"),
+        ] { let result = run(&source); assert_eq!(result.result, AnalysisResult::Fail, "{source}\n{result:#?}"); }
+    }
+
+    #[test]
+    fn rust_result_extraction_requires_closed_standard_debug_error() {
+        let source = "#[derive(Debug)] enum Error { Invalid } struct Value; impl Value { fn new() -> Result<Self, Error> { Ok(Self) } fn check(&self) {} } fn execute() { let value = Value::new(); value.expect(\"validated\").check(); }";
+        for source in [source.to_string(), source.replace("expect(\"validated\")", "unwrap()")] {
+            let result = report("rust", "src/lib.rs", &source, expectation("execute", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for source in [
+            source.replace("#[derive(Debug)]", ""),
+            source.replace("enum Error { Invalid }", "enum Error { Invalid(Custom) }"),
+            source.replace("#[derive(Debug)]", "#[cfg(feature = \"custom\")] #[derive(Debug)]"),
+            source.replace("Invalid }", "#[cfg(feature = \"custom\")] Invalid }"),
+            format!("use custom::Debug; {source}"),
+            format!("{source} impl std::fmt::Debug for Error {{ fn fmt(&self, out: &mut std::fmt::Formatter) -> std::fmt::Result {{ std::process::abort(); }} }}"),
+            source.replace("Ok(Self)", "std::process::abort(); Ok(Self)"),
+            source.replace("expect(\"validated\")", "expect(custom_message())"),
         ] {
             let result = report("rust", "src/lib.rs", &source, expectation("execute", "pure", &[]));
             assert_eq!(result.result, AnalysisResult::Fail, "{source}\n{result:#?}");
