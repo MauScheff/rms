@@ -43717,6 +43717,7 @@ fn task_requests_external_rust_crate_declaration(task: &str) -> bool {
     let normalized = task.to_ascii_lowercase();
     let names_external_crate = normalized.contains("external rust crate")
         || normalized.contains("external crate")
+        || task_mentions_token(task, "binding add-external-crate")
         || normalized.contains("rust external package")
         || normalized.contains("external rust package")
         || normalized.contains("cargo dependency")
@@ -90598,6 +90599,8 @@ open_questions: []
             &no_provider_options(),
         )
         .unwrap();
+        fs::write(root.join("prior.yaml"), "prior: immutable\n").unwrap();
+        seal_implementation_semantics(&mut load_manifest(&root.join("implementation.yaml")).unwrap(), &root.join("prior.yaml"), SemanticRevisionAuthority::SpecApply).unwrap();
         initialize_test_git_repository(&root);
         let module = root.join("module.yaml");
         let task = "Declare canonical Rust external package identity/version policy and allowlist for regex before editing Cargo.toml.";
@@ -90663,6 +90666,20 @@ open_questions: []
             None,
         )
         .is_err());
+        let development_task = "Declare the Rust external development-only crate bolero, package bolero, version requirement =0.13.4, for the existing phone-number-normalization coverage-guided fuzz harness. Use binding add-external-crate. Preserve all production dependencies, product behavior and contracts.";
+        let development_intent = intent.replace("operation: semantic-change", "operation: implementation-change")
+            .replace("reuse: {disposition: required, basis: explicit, source_quote: Rust external package}", "reuse: {disposition: absent, basis: inferred, rationale: development dependency metadata does not publish a capability}");
+        let development_report = build_next_report_with_intent(&root, Some(&module), development_task,
+            RawIntentInput { yaml: Some(development_intent), ..Default::default() }, None).unwrap();
+        assert_eq!(development_report.result, NextResult::Ready, "{development_report:#?}");
+        let receipt = validate_route_receipt(&root, Path::new(&development_report.receipt_path), "external-crate-add", &root.join("implementation.yaml"), None).unwrap();
+        assert_eq!(receipt.payload.allowed_action_families, vec!["external-crate-add"]);
+        assert!(validate_route_receipt(&root, Path::new(&development_report.receipt_path), "spec-apply", &module, None).is_err());
+        let implementation_before = fs::read(root.join("implementation.yaml")).unwrap();
+        let cargo_before = fs::read(root.join("Cargo.toml")).unwrap();
+        run_add_external_rust_crate(&root.join("implementation.yaml"), "bolero", "bolero", "=0.13.4", &receipt.receipt_id, true).unwrap();
+        assert_eq!(fs::read(root.join("implementation.yaml")).unwrap(), implementation_before);
+        assert_eq!(fs::read(root.join("Cargo.toml")).unwrap(), cargo_before);
         let transition_path = root.join("src/transition.rs");
         let mut transition = fs::read_to_string(&transition_path).unwrap();
         let function = transition.rfind("pub fn transition(").unwrap();
