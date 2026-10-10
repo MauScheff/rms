@@ -233,16 +233,17 @@ impl Index {
             .items
             .iter()
             .filter(|item| match item {
-                Item::Fn(item) => item.sig.ident == first,
-                Item::Mod(item) => item.ident == first,
+                Item::Fn(item) => call.len() == 1 && item.sig.ident == first,
+                Item::Mod(item) => call.len() > 1 && item.ident == first,
                 Item::Struct(item) => item.ident == first,
                 Item::Enum(item) => item.ident == first,
                 _ => false,
             })
             .collect::<Vec<_>>();
         if !definitions.is_empty() {
-            // A module and a re-exported function can share a spelling. Rust
-            // keeps their namespaces distinct; a qualified call uses the module.
+            // Ordinary functions are values; modules are path qualifiers. Select
+            // that namespace before checking uniqueness. Keep type/constructor
+            // collisions conservative and retain the existing import checks.
             if definitions.len() != 1 || (!root_imports.is_empty() && !matches!(definitions[0], Item::Mod(_))) {
                 return Err(());
             }
@@ -442,6 +443,35 @@ impl<'ast> Visit<'ast> for Calls<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_and_function_facade_names_use_the_applicable_namespace() {
+        let library = PathBuf::from("/p/src/lib.rs");
+        let record = (PathBuf::from("/p/src/transition.rs"), "transition_record".into());
+        let facade = "mod transition; pub fn transition() { crate::transition::transition(); } pub use crate::transition::transition_record;";
+        let sources = BTreeMap::from([
+            (library.clone(), facade.into()),
+            (record.0.clone(), "pub fn transition() {} pub fn transition_record() { transition(); }".into()),
+            (PathBuf::from("/p/src/driver.rs"), "fn drive() { crate::transition(); crate::transition_record(); }".into()),
+            (PathBuf::from("/p/tests/trace.rs"), "use owner::transition_record; fn produce() { transition_record(); }".into()),
+        ]);
+        let index = Index::new(&sources, library.clone(), Some("owner".into()));
+        assert_eq!(index.resolve(&library, &["transition".into()]), Some((library.clone(), "transition".into())));
+        assert_eq!(index.resolve(&library, &["transition".into(), "transition_record".into()]), Some(record.clone()));
+        for start in [(PathBuf::from("/p/src/driver.rs"), "drive".into()), (PathBuf::from("/p/tests/trace.rs"), "produce".into())] {
+            assert!(index.reaches(start, record.clone()));
+        }
+        for (extra, call) in [
+            ("mod transition;", vec!["transition", "transition_record"]),
+            ("struct transition;", vec!["transition", "transition_record"]),
+            ("pub fn transition() {}", vec!["transition"]),
+            ("use foreign::transition;", vec!["transition"]),
+        ] {
+            let mut changed = sources.clone();
+            changed.insert(library.clone(), format!("{facade} {extra}"));
+            assert!(Index::new(&changed, library.clone(), Some("owner".into())).resolve(&library, &call.into_iter().map(str::to_string).collect::<Vec<_>>()).is_none(), "{extra}");
+        }
+    }
 
     #[test]
     fn inherent_dispatch_preserves_exact_executor_paths_and_closed_owners() {

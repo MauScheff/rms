@@ -101544,7 +101544,7 @@ fn produce_transition_trace() {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::create_dir_all(root.join("tests")).unwrap();
         fs::write(root.join("Cargo.toml"), "[package]\nname='proof-owner'\nversion='0.1.0'\nautotests=false\n").unwrap();
-        let library = "mod transition; #[cfg(test)] #[path=\"../tests/trace.rs\"] mod trace; #[cfg(test)] #[path=\"../tests/probe.rs\"] mod probe;";
+        let library = "mod transition; pub fn transition() {} pub use crate::transition::transition_record; #[cfg(test)] #[path=\"../tests/trace.rs\"] mod trace; #[cfg(test)] #[path=\"../tests/probe.rs\"] mod probe;";
         fs::write(root.join("src/lib.rs"), library).unwrap();
         fs::write(root.join("src/transition.rs"), "pub fn transition_record() -> Record { todo!() }").unwrap();
         fs::write(root.join("tests/probe.rs"), "pub fn record_json(record: &Record) -> Value { serde_json::json!({\"state_before\":record.state_before,\"state_after\":record.state_after,\"output\":record.output,\"source\":record.source}) }").unwrap();
@@ -101552,6 +101552,9 @@ fn produce_transition_trace() {
         fs::write(root.join("tests/trace.rs"), producer).unwrap();
         let check = || rust_trace_proof(&root, "tests/trace.rs", "produce", Some("src/transition.rs#transition_record"));
         assert_eq!(check(), (true, true));
+        fs::write(root.join("tests/trace.rs"), producer.replace("use crate::transition::transition_record;", "use crate::transition_record;")).unwrap();
+        assert_eq!(check(), (true, true));
+        fs::write(root.join("tests/trace.rs"), producer).unwrap();
         let sources = rust_source_files(&root).into_iter().map(|path| {
             let source = fs::read_to_string(&path).unwrap(); (path, source)
         }).collect();
