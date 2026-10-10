@@ -122,16 +122,35 @@ impl Index {
 
     /// Positive reachability requires exact source identities on every edge.
     pub(crate) fn reaches(&self, start: (PathBuf, String), target: (PathBuf, String)) -> bool {
-        let Some(start_path) = normalize(&start.0) else { return false; };
         let Some(target_path) = normalize(&target.0) else { return false; };
-        let start = (start_path, start.1);
         let target = (target_path, target.1);
+        self.reaches_where(start, |path, symbol, _| path == target.0 && symbol == target.1)
+    }
+
+    pub(crate) fn reaches_control_loop(&self, start: (PathBuf, String)) -> bool {
+        #[derive(Default)]
+        struct Loops(bool);
+        impl<'ast> Visit<'ast> for Loops {
+            fn visit_expr_loop(&mut self, _: &'ast syn::ExprLoop) { self.0 = true; }
+            fn visit_expr_while(&mut self, _: &'ast syn::ExprWhile) { self.0 = true; }
+            fn visit_expr_for_loop(&mut self, _: &'ast syn::ExprForLoop) { self.0 = true; }
+            fn visit_item(&mut self, _: &'ast Item) {}
+            fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
+        }
+        self.reaches_where(start, |_, _, body| { let mut loops = Loops::default(); loops.visit_block(body); loops.0 })
+    }
+
+    fn reaches_where(&self, start: (PathBuf, String), predicate: impl Fn(&Path, &str, &syn::Block) -> bool) -> bool {
+        let Some(start_path) = normalize(&start.0) else { return false; };
+        let start = (start_path, start.1);
         let mut pending = vec![start];
         let mut seen = BTreeSet::new();
         while let Some((path, symbol)) = pending.pop() {
             if !seen.insert((path.clone(), symbol.clone())) { continue; }
             if seen.len() > 512 { return false; }
             let Some(file) = self.files.get(&path) else { continue; };
+            let identity = symbol.split("::").map(str::to_string).collect::<Vec<_>>();
+            if self.resolve(&path, &identity) != Some((path.clone(), symbol.clone())) { continue; }
             let mut bodies = Vec::new();
             for item in &file.items {
                 match item {
@@ -151,16 +170,16 @@ impl Index {
                 }
             }
             if bodies.len() != 1 { continue; }
-            if (path.clone(), symbol) == target { return true; }
             let (self_type, signature, body) = bodies[0].clone();
-            let mut collector = Calls { index: self, path: &path, self_type, locals: BTreeMap::new(), calls: Vec::new(), local_import: false };
+            if predicate(&path, &symbol, body) { return true; }
+            let mut collector = Calls { index: self, path: &path, self_type, locals: BTreeMap::new(), calls: Vec::new(), local_imports: BTreeSet::new() };
             for input in &signature.inputs {
                 if let syn::FnArg::Typed(input) = input {
                     if let syn::Pat::Ident(name) = &*input.pat { collector.locals.insert(name.ident.to_string(), type_path(&input.ty)); }
                 }
             }
             collector.visit_block(body);
-            if !collector.local_import { pending.extend(collector.calls); }
+            pending.extend(collector.calls);
         }
         false
     }
@@ -222,20 +241,43 @@ impl Index {
             })
             .collect::<Vec<_>>();
         if !definitions.is_empty() {
-            if definitions.len() != 1 {
+            // A module and a re-exported function can share a spelling. Rust
+            // keeps their namespaces distinct; a qualified call uses the module.
+            if definitions.len() != 1 || (!root_imports.is_empty() && !matches!(definitions[0], Item::Mod(_))) {
                 return Err(());
             }
             return match definitions[0] {
                 Item::Struct(_) | Item::Enum(_) if call.len() == 2 => {
-                    let methods = file.items.iter().filter_map(|item| if let Item::Impl(block) = item { Some(block) } else { None })
-                        .filter(|block| block.trait_.is_none() && block.attrs.is_empty() && matches!(&*block.self_ty, syn::Type::Path(ty) if ty.path.is_ident(first)))
-                        .flat_map(|block| &block.items)
-                        .filter(|item| matches!(item, syn::ImplItem::Fn(function) if function.sig.ident == call[1] && function.attrs.iter().all(|attr| attr.path().is_ident("doc"))))
-                        .count();
+                    let (attrs, generics) = match definitions[0] {
+                        Item::Struct(owner) => (&owner.attrs, &owner.generics),
+                        Item::Enum(owner) => (&owner.attrs, &owner.generics),
+                        _ => unreachable!(),
+                    };
+                    if !generics.params.is_empty() || generics.where_clause.is_some()
+                        || attrs.iter().any(|attr| !attr.path().is_ident("doc") && !attr.path().is_ident("derive")) { return Err(()); }
+                    let mut methods = 0;
+                    for item in &file.items {
+                        let Item::Impl(block) = item else { continue; };
+                        if block.trait_.is_some() { continue; }
+                        let syn::Type::Path(ty) = block.self_ty.as_ref() else { continue; };
+                        if !ty.path.segments.last().is_some_and(|part| part.ident == first) { continue; }
+                        for member in &block.items {
+                            let syn::ImplItem::Fn(function) = member else { continue; };
+                            if function.sig.ident != call[1] { continue; }
+                            if ty.qself.is_some() || !ty.path.is_ident(first)
+                                || !block.generics.params.is_empty() || block.generics.where_clause.is_some()
+                                || block.attrs.iter().any(|attr| !attr.path().is_ident("doc"))
+                                || !function.sig.generics.params.is_empty() || function.sig.generics.where_clause.is_some()
+                                || function.attrs.iter().any(|attr| !attr.path().is_ident("doc")) { return Err(()); }
+                            methods += 1;
+                        }
+                    }
                     if methods == 1 { Ok((path.to_path_buf(), call.join("::"))) } else { Err(()) }
                 }
                 Item::Fn(item)
                     if call.len() == 1
+                        && item.sig.generics.params.is_empty()
+                        && item.sig.generics.where_clause.is_none()
                         && item.attrs.iter().all(|attr| {
                             attr.path().is_ident("test") || attr.path().is_ident("doc")
                         }) =>
@@ -300,7 +342,8 @@ impl Index {
 fn type_path(ty: &syn::Type) -> Option<Vec<String>> {
     match ty {
         syn::Type::Reference(reference) => type_path(&reference.elem),
-        syn::Type::Path(path) if path.qself.is_none() => Some(path.path.segments.iter().map(|part| part.ident.to_string()).collect()),
+        syn::Type::Path(path) if path.qself.is_none()
+            && path.path.segments.iter().all(|part| matches!(part.arguments, syn::PathArguments::None)) => Some(path.path.segments.iter().map(|part| part.ident.to_string()).collect()),
         _ => None,
     }
 }
@@ -311,11 +354,13 @@ struct Calls<'a> {
     self_type: Option<String>,
     locals: BTreeMap<String, Option<Vec<String>>>,
     calls: Vec<(PathBuf, String)>,
-    local_import: bool,
+    local_imports: BTreeSet<String>,
 }
 
 impl Calls<'_> {
     fn add(&mut self, mut path: Vec<String>) {
+        if path.first().is_some_and(|root| !matches!(root.as_str(), "crate" | "self" | "super")
+            && (self.local_imports.contains(root) || self.local_imports.contains("*"))) { return; }
         if path.first().is_some_and(|name| name == "Self") {
             let Some(name) = &self.self_type else { return; };
             path[0] = name.clone();
@@ -324,7 +369,7 @@ impl Calls<'_> {
     }
     fn value_type(&self, expr: &syn::Expr) -> Option<Vec<String>> {
         match expr {
-            syn::Expr::Struct(value) => Some(value.path.segments.iter().map(|part| if part.ident == "Self" { self.self_type.clone().unwrap_or_default() } else { part.ident.to_string() }).collect()),
+            syn::Expr::Struct(value) => type_path(&syn::Type::Path(syn::TypePath { qself: value.qself.clone(), path: value.path.clone() })).map(|parts| parts.into_iter().map(|part| if part == "Self" { self.self_type.clone().unwrap_or_default() } else { part }).collect()),
             syn::Expr::Path(path) => {
                 let name = path.path.get_ident()?.to_string();
                 if name == "self" { self.self_type.clone().map(|name| vec![name]) } else { self.locals.get(&name).cloned().flatten() }
@@ -339,7 +384,7 @@ impl Calls<'_> {
 impl<'ast> Visit<'ast> for Calls<'_> {
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let syn::Expr::Path(path) = &*node.func {
-            if path.qself.is_none() { self.add(path.path.segments.iter().map(|part| part.ident.to_string()).collect()); }
+            if path.qself.is_none() && path.path.segments.iter().all(|part| matches!(part.arguments, syn::PathArguments::None)) { self.add(path.path.segments.iter().map(|part| part.ident.to_string()).collect()); }
         }
         visit::visit_expr_call(self, node);
     }
@@ -359,16 +404,37 @@ impl<'ast> Visit<'ast> for Calls<'_> {
     }
     fn visit_block(&mut self, node: &'ast syn::Block) {
         let saved = self.locals.clone();
+        let saved_imports = self.local_imports.clone();
+        fn names(tree: &syn::UseTree, bound: &mut BTreeSet<String>) {
+            match tree {
+                syn::UseTree::Name(item) => { bound.insert(item.ident.to_string()); }
+                syn::UseTree::Rename(item) => { bound.insert(item.rename.to_string()); }
+                syn::UseTree::Path(item) => names(&item.tree, bound),
+                syn::UseTree::Group(group) => { for item in &group.items { names(item, bound); } }
+                syn::UseTree::Glob(_) => { bound.insert("*".into()); }
+            }
+        }
         for statement in &node.stmts {
             if let syn::Stmt::Item(Item::Fn(function)) = statement { self.locals.insert(function.sig.ident.to_string(), None); }
+            if let syn::Stmt::Item(Item::Use(item)) = statement { names(&item.tree, &mut self.local_imports); }
+            if let syn::Stmt::Item(item) = statement {
+                let name = match item {
+                    Item::Struct(item) => Some(&item.ident), Item::Enum(item) => Some(&item.ident),
+                    Item::Type(item) => Some(&item.ident), Item::Mod(item) => Some(&item.ident),
+                    Item::Trait(item) => Some(&item.ident), Item::Union(item) => Some(&item.ident),
+                    Item::ExternCrate(item) => Some(item.rename.as_ref().map(|(_, name)| name).unwrap_or(&item.ident)),
+                    _ => None,
+                };
+                if let Some(name) = name { self.local_imports.insert(name.to_string()); }
+            }
         }
         visit::visit_block(self, node);
         self.locals = saved;
+        self.local_imports = saved_imports;
     }
     fn visit_item(&mut self, node: &'ast Item) {
         // Local functions/imports are not executed by being declared.
         if let Item::Fn(function) = node { self.locals.insert(function.sig.ident.to_string(), None); }
-        if matches!(node, Item::Use(_)) { self.local_import = true; }
     }
     fn visit_expr_closure(&mut self, _node: &'ast syn::ExprClosure) {}
 }
@@ -376,6 +442,45 @@ impl<'ast> Visit<'ast> for Calls<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inherent_dispatch_preserves_exact_executor_paths_and_closed_owners() {
+        let sources = BTreeMap::from([
+            (PathBuf::from("/p/src/lib.rs"), "mod driver; mod runtime; mod a; mod b; pub use crate::a::a;".into()),
+            (PathBuf::from("/p/src/driver.rs"), "use crate::runtime::Adapters; fn drive(adapters: &Adapters) { adapters.dispatch(); }".into()),
+            (PathBuf::from("/p/src/runtime.rs"), "struct Adapters; struct NativePorts; enum Request { Run } impl Adapters { fn dispatch(&self) { NativePorts::dispatch(); } } impl NativePorts { fn dispatch() { let pending = async { use Request as R; crate::a::execute(); }; } }".into()),
+            (PathBuf::from("/p/src/a.rs"), "fn execute() {} pub fn a() {}".into()),
+            (PathBuf::from("/p/src/b.rs"), "fn execute() {}".into()),
+        ]);
+        let start = (PathBuf::from("/p/src/driver.rs"), "drive".into());
+        let target = (PathBuf::from("/p/src/a.rs"), "execute".into());
+        let index = Index::new(&sources, PathBuf::from("/p/src/lib.rs"), None);
+        assert!(index.reaches(start.clone(), target.clone()));
+        assert!(!index.reaches(start.clone(), (PathBuf::from("/p/src/b.rs"), "execute".into())));
+        assert!(!index.reaches_control_loop(start.clone()));
+        let mut looped = sources.clone();
+        looped.insert(PathBuf::from("/p/src/b.rs"), "fn execute() { loop {} }".into());
+        assert!(!Index::new(&looped, PathBuf::from("/p/src/lib.rs"), None).reaches_control_loop(start.clone()));
+        looped.insert(PathBuf::from("/p/src/a.rs"), "fn execute() { loop {} }".into());
+        assert!(Index::new(&looped, PathBuf::from("/p/src/lib.rs"), None).reaches_control_loop(start.clone()));
+        let runtime = sources.get(&PathBuf::from("/p/src/runtime.rs")).unwrap();
+        for invalid in [
+            runtime.replace("impl NativePorts", "#[cfg(feature = \"optional\")] impl NativePorts"),
+            runtime.replace("struct NativePorts;", "#[cfg(feature = \"optional\")] struct NativePorts;"),
+            runtime.replace("impl NativePorts", "impl<T> NativePorts<T>"),
+            runtime.replace("impl NativePorts", "impl other::NativePorts"),
+            runtime.replace("impl NativePorts", "impl Trait for NativePorts"),
+            runtime.replace("NativePorts::dispatch();", "NativePorts::<u8>::dispatch();"),
+            runtime.replace("NativePorts::dispatch();", "struct NativePorts; NativePorts::dispatch();"),
+            format!("{runtime} impl NativePorts {{ fn dispatch() {{}} }}"),
+            format!("{runtime} #[cfg(feature = \"optional\")] impl NativePorts {{ fn dispatch() {{}} }}"),
+            format!("{runtime} struct NativePorts;"),
+        ] {
+            let mut changed = sources.clone();
+            changed.insert(PathBuf::from("/p/src/runtime.rs"), invalid.clone());
+            assert!(!Index::new(&changed, PathBuf::from("/p/src/lib.rs"), None).reaches(start.clone(), target.clone()), "{invalid}");
+        }
+    }
 
     #[test]
     fn nested_crate_facade_methods_reach_only_the_exact_driver() {

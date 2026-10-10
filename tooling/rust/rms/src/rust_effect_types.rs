@@ -21,6 +21,14 @@ pub(super) enum RustValueType {
     MapValues(Box<Self>),
     ResultOk(Box<Self>),
     ResultKnown(Box<Self>, Box<Self>),
+    Shared(Box<Self>),
+    Boxed(Box<Self>),
+    StandardMutex(Box<Self>),
+    TokioMutex(Box<Self>),
+    MutexGuard(Box<Self>),
+    PoisonError(Box<Self>),
+    FutureValue(Box<Self>),
+    Poll(Box<Self>),
     Tuple(Vec<Self>),
 }
 
@@ -29,6 +37,9 @@ pub(super) enum ExternalType {
     Stdin, IoError, GitRepository, GitReference, GitCommit, GitTree,
     GitTreeEntry, GitDiff, GitDiffLine, GitOid, GitError, GitIndex, GitTreeWalkResult,
     GitStatusOptions, GitDiffOptions,
+    TokioHandle, TokioRuntimeError, TokioCommand, TokioChild,
+    TokioChildStdin, TokioChildStdout, TokioChildStderr,
+    ExitStatus, Stdio, AtomicBool, Context, Waker, Duration,
 }
 
 impl ExternalType {
@@ -41,6 +52,15 @@ impl ExternalType {
         Some(match (self, method, arity) {
             (Stdin, "read_to_string", 1) => RustValueType::ResultKnown(Box::new(U), Box::new(E(IoError))),
             (IoError, "kind", 0) => U,
+            (TokioRuntimeError, "is_missing_context" | "is_thread_local_destroyed", 0) => U,
+            (TokioCommand, "args" | "stdin" | "stdout" | "stderr" | "kill_on_drop", 1) => E(TokioCommand),
+            (TokioCommand, "spawn", 0) => RustValueType::ResultKnown(Box::new(E(TokioChild)), Box::new(E(IoError))),
+            (TokioChild, "try_wait", 0) => RustValueType::ResultKnown(Box::new(optional(E(ExitStatus))), Box::new(E(IoError))),
+            (TokioChild, "start_kill", 0) => RustValueType::ResultKnown(Box::new(U), Box::new(E(IoError))),
+            (ExitStatus, "code", 0) => optional(RustValueType::Integer),
+            (AtomicBool, "load", 1) | (AtomicBool, "store", 2) => U,
+            (Context, "waker", 0) | (Waker, "clone", 0) => E(Waker),
+            (Waker, "wake" | "wake_by_ref", 0) => U,
             (GitRepository, "head", 0) | (GitRepository, "find_reference", 1) => result(E(GitReference)),
             (GitRepository, "find_commit", 1) | (GitReference, "peel_to_commit", 0) => result(E(GitCommit)),
             (GitRepository, "find_tree", 1) | (GitCommit, "tree", 0) => result(E(GitTree)),
@@ -79,9 +99,15 @@ impl ExternalType {
 
 impl RustValueType {
     pub(super) fn name(&self) -> Option<&String> {
-        match self {
+        match self.deref_value() {
             Self::Named(name) => Some(name),
             _ => None,
+        }
+    }
+    fn deref_value(&self) -> &Self {
+        match self {
+            Self::Shared(value) | Self::Boxed(value) | Self::MutexGuard(value) => value.deref_value(),
+            _ => self,
         }
     }
     pub(super) fn element(&self) -> Option<&Self> {
@@ -352,18 +378,31 @@ impl RustTypeIndex {
         if aliases.contains_key(&root) && (path.leading_colon.is_some() || !super::rust_unique_unconditional_imports(&file).contains(&root)) { return None; }
         if file.items.iter().any(|item| matches!(item, Item::Mod(item) if item.ident == root)) { return None; }
         let reference = path.segments.iter().map(|part| part.ident.to_string()).collect::<Vec<_>>().join("::");
-        let resolved = super::resolve_call_alias(&reference, &aliases);
+        let mut resolved = super::resolve_call_alias(&reference, &aliases);
+        if root == "Box" && !aliases.contains_key(&root) && self.unshadowed_external_root("Box") {
+            resolved = format!("std::boxed::{resolved}");
+        }
         let external_root = resolved.split("::").next()?;
-        if !matches!(external_root, "std" | "git2") || !self.unshadowed_external_root(external_root) { return None; }
+        if !matches!(external_root, "std" | "git2" | "tokio") || !self.unshadowed_external_root(external_root) { return None; }
         if external_root == "git2" {
             let prefix = self.path.split_once("src/")?.0;
             if self.sources.get(&format!("rms-metadata/rust-external-api/{prefix}git2-0.20.4")).map(String::as_str)
                 != Some("7b88256088d75a56f8ecfa070513a775dd9107f6530ef14919dac831af9cfe2b") { return None; }
         }
+        if external_root == "tokio" {
+            // Integration-test contributors belong to the same pinned crate.
+            // Do not borrow metadata from another crate or arbitrary directory.
+            let prefix = self.path.split_once("src/").or_else(|| self.path.split_once("tests/"))?.0;
+            if !prefix.is_empty() && !prefix.ends_with('/') { return None; }
+            if self.sources.get(&format!("rms-metadata/rust-external-api/{prefix}tokio-1.53.1")).map(String::as_str)
+                != Some("202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed") { return None; }
+        }
         Some(resolved)
     }
 
     pub(super) fn result_extract_error_closed(&self, error: &RustValueType) -> bool {
+        // Standard PoisonError formats a fixed message, not its guarded value.
+        if matches!(error, RustValueType::PoisonError(_)) { return true; }
         let RustValueType::Named(owner) = error else { return false; };
         let Some((path, name)) = owner.split_once('#') else { return false; };
         let context = self.for_path(path);
@@ -395,13 +434,66 @@ impl RustTypeIndex {
     }
 
     pub(super) fn external_method_marker(&self, value: &RustValueType, method: &str, arity: usize) -> Option<&'static str> {
-        let RustValueType::External(receiver) = value else { return None; };
+        if matches!((value, method, arity),
+            (RustValueType::StandardMutex(_), "lock", 0)
+            | (RustValueType::PoisonError(_), "into_inner", 0)
+            | (RustValueType::Shared(_), "clone", 0)
+            | (RustValueType::Poll(_), "is_ready" | "is_pending", 0)) { return Some("<rust-memory-operation>"); }
+        // An async mutex can wake a user-owned waiter when its guard releases.
+        if matches!((value, method, arity), (RustValueType::TokioMutex(_), "lock", 0)) { return Some("<dynamic-call>"); }
+        if matches!((value, method, arity), (RustValueType::Optional(inner), "as_deref" | "as_deref_mut", 0)
+            if matches!(inner.as_ref(), RustValueType::Boxed(_) | RustValueType::Shared(_) | RustValueType::MutexGuard(_) | RustValueType::Text)) { return Some("<rust-memory-operation>"); }
+        let RustValueType::External(receiver) = value.deref_value() else { return None; };
         receiver.method(method, arity)?;
         Some(match receiver {
             ExternalType::Stdin => "<rust-stdin-read>",
             ExternalType::IoError => "<rust-io-error-kind>",
+            ExternalType::TokioCommand if method == "args" => return None, // AsRef/IntoIterator require argument proof.
+            ExternalType::TokioCommand if method != "spawn" => "<rust-memory-operation>",
+            ExternalType::TokioCommand | ExternalType::TokioChild => "<rust-tokio-process>",
+            ExternalType::AtomicBool | ExternalType::Context | ExternalType::ExitStatus => "<rust-memory-operation>",
+            ExternalType::Waker => "<dynamic-call>", // Wake invokes a user-owned vtable.
+            ExternalType::TokioRuntimeError => "<rust-memory-operation>",
             _ => "<rust-git2-call>",
         })
+    }
+
+    pub(super) fn external_function_marker(&self, call: &syn::ExprCall, values: &BTreeMap<String, RustValueType>) -> Option<&'static str> {
+        let Expr::Path(path) = call.func.as_ref() else { return None; };
+        if path.qself.is_some() { return None; }
+        let exact = self.external_path(&path.path)?;
+        match (exact.as_str(), call.args.len()) {
+            ("tokio::runtime::Handle::try_current", 0) => Some("<rust-runtime-context>"),
+            ("tokio::process::Command::new", 1) if self.standard_process_argument(&call.args[0], values) => Some("<rust-memory-operation>"),
+            ("tokio::task::yield_now", 0) => Some("<dynamic-call>"),
+            ("tokio::time::sleep", 1) if self.expression_type(&call.args[0], values) == Some(RustValueType::External(ExternalType::Duration)) => Some("<rust-tokio-time>"),
+            ("std::future::Future::poll", 2) => Some("<dynamic-call>"),
+            ("std::sync::Mutex::new" | "tokio::sync::Mutex::new" | "std::sync::Arc::new" | "std::boxed::Box::new" | "std::boxed::Box::pin", 1)
+                | ("std::process::Stdio::piped" | "std::process::Stdio::null", 0)
+                | ("std::time::Duration::from_millis", 1) => Some("<rust-memory-operation>"),
+            _ => None,
+        }
+    }
+
+    fn standard_process_argument(&self, argument: &Expr, values: &BTreeMap<String, RustValueType>) -> bool {
+        matches!(self.expression_type(argument, values), Some(RustValueType::Text))
+            || matches!(self.expression_type(argument, values), Some(RustValueType::Named(path)) if matches!(path.as_str(), "std::path::Path" | "std::path::PathBuf"))
+    }
+
+    pub(super) fn command_arguments_marker(&self, call: &syn::ExprMethodCall, values: &BTreeMap<String, RustValueType>) -> Option<&'static str> {
+        if call.method != "args" || call.turbofish.is_some() || call.args.len() != 1 { return None; }
+        let receiver = self.expression_type(&call.receiver, values)?;
+        if receiver.deref_value() != &RustValueType::External(ExternalType::TokioCommand) { return None; }
+        matches!(self.expression_type(&call.args[0], values), Some(RustValueType::Sequence(element)) if *element == RustValueType::Text)
+            .then_some("<rust-memory-operation>")
+    }
+
+    pub(super) fn standard_poll_fn(&self, call: &syn::ExprCall) -> bool {
+        matches!(call.func.as_ref(), Expr::Path(path) if path.qself.is_none()
+            && self.external_path(&path.path).as_deref() == Some("std::future::poll_fn"))
+            && call.args.len() == 1
+            && matches!(&call.args[0], Expr::Closure(closure) if closure.inputs.len() == 1
+                && matches!(&closure.inputs[0], Pat::Ident(argument) if argument.subpat.is_none()))
     }
 
     pub(super) fn from_sources(sources: &BTreeMap<String, String>) -> Self {
@@ -779,14 +871,37 @@ impl RustTypeIndex {
             Type::Slice(slice) => Some(RustValueType::Sequence(Box::new(
                 self.parse_type(&slice.elem).unwrap_or(RustValueType::Unknown)))),
             Type::Path(path) if path.qself.is_none() => {
+                // Resolve only the nominal wrapper path; its payload remains
+                // a source-derived type. Unknown payloads never become owners.
+                let mut nominal = path.path.clone();
+                if let Some(last) = nominal.segments.last_mut() { last.arguments = PathArguments::None; }
+                if let Some(external) = self.external_path(&nominal) {
+                    if let PathArguments::AngleBracketed(arguments) = &path.path.segments.last()?.arguments {
+                        let types = arguments.args.iter().filter_map(|argument| if let GenericArgument::Type(ty) = argument { Some(ty) } else { None }).collect::<Vec<_>>();
+                        if types.len() == 1 && arguments.args.iter().all(|argument| matches!(argument, GenericArgument::Type(_) | GenericArgument::Lifetime(_))) {
+                            let inner = Box::new(self.parse_type(types[0]).unwrap_or(RustValueType::Unknown));
+                            let wrapper = match external.as_str() {
+                                "std::sync::Arc" => Some(RustValueType::Shared(inner)),
+                                "std::boxed::Box" => Some(RustValueType::Boxed(inner)),
+                                "std::sync::Mutex" => Some(RustValueType::StandardMutex(inner)),
+                                "tokio::sync::Mutex" => Some(RustValueType::TokioMutex(inner)),
+                                "std::sync::MutexGuard" | "tokio::sync::MutexGuard" => Some(RustValueType::MutexGuard(inner)),
+                                "std::sync::PoisonError" => Some(RustValueType::PoisonError(inner)),
+                                "std::task::Poll" => Some(RustValueType::Poll(inner)),
+                                _ => None,
+                            };
+                            if wrapper.is_some() { return wrapper; }
+                        }
+                    }
+                }
                 if path.path.is_ident("usize") && self.standard_integer_available("usize") {
                     return Some(RustValueType::Usize);
                 }
                 if path.path.is_ident("Self") {
                     return self.self_type.clone().map(RustValueType::Named);
                 }
-                if self.external_path(&path.path).as_deref() == Some("std::path::Path") {
-                    return Some(RustValueType::Named("std::path::Path".into()));
+                if let Some(path) = self.external_path(&path.path).filter(|path| matches!(path.as_str(), "std::path::Path" | "std::path::PathBuf")) {
+                    return Some(RustValueType::Named(path));
                 }
                 let external = self.external_path(&path.path).and_then(|path| match path.as_str() {
                     "git2::Repository" => Some(ExternalType::GitRepository),
@@ -794,6 +909,19 @@ impl RustTypeIndex {
                     "git2::Tree" => Some(ExternalType::GitTree),
                     "git2::Error" => Some(ExternalType::GitError),
                     "std::io::Error" => Some(ExternalType::IoError),
+                    "tokio::runtime::Handle" => Some(ExternalType::TokioHandle),
+                    "tokio::runtime::TryCurrentError" => Some(ExternalType::TokioRuntimeError),
+                    "tokio::process::Command" => Some(ExternalType::TokioCommand),
+                    "tokio::process::Child" => Some(ExternalType::TokioChild),
+                    "tokio::process::ChildStdin" => Some(ExternalType::TokioChildStdin),
+                    "tokio::process::ChildStdout" => Some(ExternalType::TokioChildStdout),
+                    "tokio::process::ChildStderr" => Some(ExternalType::TokioChildStderr),
+                    "std::process::ExitStatus" => Some(ExternalType::ExitStatus),
+                    "std::process::Stdio" => Some(ExternalType::Stdio),
+                    "std::sync::atomic::AtomicBool" => Some(ExternalType::AtomicBool),
+                    "std::task::Context" => Some(ExternalType::Context),
+                    "std::task::Waker" => Some(ExternalType::Waker),
+                    "std::time::Duration" => Some(ExternalType::Duration),
                     _ => None,
                 });
                 if let Some(external) = external { return Some(RustValueType::External(external)); }
@@ -906,6 +1034,11 @@ impl RustTypeIndex {
     }
 
     pub(super) fn unshadowed_external_root(&self, root: &str) -> bool {
+        self.unshadowed_external_root_at(root, 0)
+    }
+
+    fn unshadowed_external_root_at(&self, root: &str, depth: usize) -> bool {
+        if depth > 8 { return false; }
         if self.is_generic(root) || !self.standard_external_crate_available(root) { return false; }
         let Some(file) = self.sources.get(&self.path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
         fn imported(tree: &syn::UseTree, name: &str) -> bool {
@@ -924,9 +1057,77 @@ impl RustTypeIndex {
             Item::Enum(item) => item.ident == root,
             Item::Type(item) => item.ident == root,
             Item::Trait(item) => item.ident == root,
-            Item::Use(item) => imported(&item.tree, root),
+            Item::Use(item) => imported(&item.tree, root)
+                && !self.source_use_excludes_root(&item.tree, root, &[], depth),
             _ => false,
         })
+    }
+
+    fn source_use_excludes_root(&self, tree: &syn::UseTree, root: &str, prefix: &[String], depth: usize) -> bool {
+        if depth > 8 { return false; }
+        match tree {
+            syn::UseTree::Name(item) => item.ident != root,
+            syn::UseTree::Rename(item) => item.rename != root,
+            syn::UseTree::Group(group) => group.items.iter().all(|item| self.source_use_excludes_root(item, root, prefix, depth)),
+            syn::UseTree::Path(item) => {
+                let mut prefix = prefix.to_vec(); prefix.push(item.ident.to_string());
+                self.source_use_excludes_root(&item.tree, root, &prefix, depth)
+            }
+            syn::UseTree::Glob(_) => {
+                // A flat, source-owned crate module can prove absence. Unknown
+                // exports, macros, inline modules and re-export cycles cannot.
+                if prefix.len() != 2 || prefix[0] != "crate" { return false; }
+                let source_root = self.path.split_once("/src/").map_or("src".to_string(), |(prefix, _)| format!("{prefix}/src"));
+                let Some(library) = self.sources.get(&format!("{source_root}/lib.rs")).and_then(|source| syn::parse_file(source).ok()) else { return false; };
+                let declarations = library.items.iter().filter_map(|item| match item {
+                    Item::Mod(module) if module.ident == prefix[1] => Some(module), _ => None,
+                }).collect::<Vec<_>>();
+                let [module] = declarations.as_slice() else { return false; };
+                if module.content.is_some() || module.attrs.iter().any(|attr| !attr.path().is_ident("doc")) { return false; }
+                let candidates = [format!("{source_root}/{}.rs", prefix[1]), format!("{source_root}/{}/mod.rs", prefix[1])];
+                let sources = candidates.iter().filter_map(|path| self.sources.get(path).map(|source| (path, source))).collect::<Vec<_>>();
+                let [(target_path, source)] = sources.as_slice() else { return false; };
+                let Ok(file) = syn::parse_file(source) else { return false; };
+                if !file.attrs.is_empty() { return false; }
+                let target = self.for_path(target_path);
+                let mut derives = BTreeSet::new();
+                for item in &file.items {
+                    let attrs = match item {
+                        Item::Fn(item) => &item.attrs, Item::Struct(item) => &item.attrs,
+                        Item::Enum(item) => &item.attrs, Item::Type(item) => &item.attrs,
+                        Item::Trait(item) => &item.attrs, Item::Impl(item) => &item.attrs,
+                        Item::Mod(item) => &item.attrs, Item::Use(item) => &item.attrs,
+                        Item::ExternCrate(item) => &item.attrs, Item::Union(item) => &item.attrs,
+                        Item::Const(item) => &item.attrs, Item::Static(item) => &item.attrs,
+                        _ => continue,
+                    };
+                    for attr in attrs {
+                        if attr.path().is_ident("doc") || attr.path().is_ident("cfg") { continue; }
+                        if !attr.path().is_ident("derive") { return false; }
+                        let Ok(paths) = attr.parse_args_with(syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated) else { return false; };
+                        for path in paths {
+                            let Some(name) = path.get_ident() else { return false; };
+                            if !matches!(name.to_string().as_str(), "Debug" | "Clone" | "Copy" | "PartialEq" | "Eq" | "PartialOrd" | "Ord" | "Hash" | "Default") { return false; }
+                            derives.insert(name.to_string());
+                        }
+                    }
+                }
+                if !derives.iter().all(|name| target.unshadowed_external_root_at(name, depth + 1)) { return false; }
+                !file.items.iter().any(|item| match item {
+                    Item::Fn(item) => item.sig.ident == root,
+                    Item::Mod(item) => item.ident == root,
+                    Item::Struct(item) => item.ident == root,
+                    Item::Enum(item) => item.ident == root,
+                    Item::Type(item) => item.ident == root,
+                    Item::Trait(item) => item.ident == root,
+                    Item::Union(item) => item.ident == root,
+                    Item::ExternCrate(item) => item.rename.as_ref().map(|(_, name)| name).unwrap_or(&item.ident) == root,
+                    Item::Use(item) => !target.source_use_excludes_root(&item.tree, root, &[], depth + 1),
+                    Item::Macro(_) => true,
+                    _ => false,
+                })
+            }
+        }
     }
 
     pub(super) fn external_uuid_v4(&self, path: &syn::ExprPath) -> bool {
@@ -1347,18 +1548,35 @@ impl RustTypeIndex {
             }
             Expr::Reference(reference) => self.expression_type(&reference.expr, values),
             Expr::Paren(paren) => self.expression_type(&paren.expr, values),
+            Expr::Await(value) => match self.expression_type(&value.base, values)? {
+                RustValueType::FutureValue(output) => Some(*output),
+                _ => None,
+            },
+            Expr::Unary(value) if matches!(value.op, syn::UnOp::Deref(_)) => match self.expression_type(&value.expr, values)? {
+                RustValueType::Shared(value) | RustValueType::Boxed(value) | RustValueType::MutexGuard(value) => Some(*value),
+                _ => None,
+            },
+            Expr::Array(array) => {
+                let first = self.expression_type(array.elems.first()?, values)?;
+                array.elems.iter().all(|value| self.expression_type(value, values).as_ref() == Some(&first))
+                    .then_some(RustValueType::Sequence(Box::new(first)))
+            },
             Expr::Index(index) if matches!(index.index.as_ref(), Expr::Range(_))
                 && self.expression_type(&index.expr, values) == Some(RustValueType::Text) => Some(RustValueType::Text),
             Expr::Tuple(tuple) => Some(RustValueType::Tuple(tuple.elems.iter().map(|expr|
                 self.expression_type(expr, values).unwrap_or(RustValueType::Unknown)).collect())),
             Expr::Struct(value) if value.qself.is_none() => self.local_constructed_type(&value.path, None),
             Expr::Field(field) => {
-                let RustValueType::Named(owner) = self.expression_type(&field.base, values)? else { return None; };
+                let receiver = self.expression_type(&field.base, values)?;
                 let member = match &field.member {
                     syn::Member::Named(name) => name.to_string(),
                     syn::Member::Unnamed(index) => index.index.to_string(),
                 };
-                self.fields.get(&(owner, member)).cloned()
+                if receiver.deref_value() == &RustValueType::External(ExternalType::TokioChild) {
+                    let pipe = match member.as_str() { "stdin" => ExternalType::TokioChildStdin, "stdout" => ExternalType::TokioChildStdout, "stderr" => ExternalType::TokioChildStderr, _ => return None };
+                    return Some(RustValueType::Optional(Box::new(RustValueType::External(pipe))));
+                }
+                self.fields.get(&(receiver.name()?.clone(), member)).cloned()
             }
             Expr::Try(value) => match self.expression_type(&value.expr, values)? {
                 RustValueType::ResultOk(value) => Some(*value),
@@ -1382,6 +1600,20 @@ impl RustTypeIndex {
                             ("git2::Index::new", 0) => Some(RustValueType::ResultKnown(Box::new(RustValueType::External(GitIndex)), Box::new(RustValueType::External(GitError)))),
                             ("git2::StatusOptions::new", 0) => Some(RustValueType::External(GitStatusOptions)),
                             ("git2::DiffOptions::new", 0) => Some(RustValueType::External(GitDiffOptions)),
+                            ("tokio::runtime::Handle::try_current", 0) => Some(RustValueType::ResultKnown(Box::new(RustValueType::External(TokioHandle)), Box::new(RustValueType::External(TokioRuntimeError)))),
+                            ("tokio::process::Command::new", 1) if self.standard_process_argument(&call.args[0], values) => Some(RustValueType::External(TokioCommand)),
+                            ("std::process::Stdio::piped" | "std::process::Stdio::null", 0) => Some(RustValueType::External(Stdio)),
+                            ("std::time::Duration::from_millis", 1) => Some(RustValueType::External(Duration)),
+                            ("std::future::Future::poll", 2) => Some(RustValueType::Poll(Box::new(RustValueType::Unknown))),
+                            ("std::sync::Mutex::new" | "tokio::sync::Mutex::new" | "std::sync::Arc::new" | "std::boxed::Box::new", 1) => {
+                                let value = Box::new(self.expression_type(&call.args[0], values).unwrap_or(RustValueType::Unknown));
+                                Some(match external.as_str() {
+                                    "std::sync::Mutex::new" => RustValueType::StandardMutex(value),
+                                    "tokio::sync::Mutex::new" => RustValueType::TokioMutex(value),
+                                    "std::sync::Arc::new" => RustValueType::Shared(value),
+                                    _ => RustValueType::Boxed(value),
+                                })
+                            }
                             _ => None,
                         };
                         if value.is_some() { return value; }
@@ -1408,6 +1640,21 @@ impl RustTypeIndex {
             Expr::MethodCall(call) => {
                 let receiver = self.expression_type(&call.receiver, values)?;
                 let method = call.method.to_string();
+                if call.turbofish.is_none() && call.args.is_empty() {
+                    match (&receiver, method.as_str()) {
+                        (RustValueType::Shared(_), "clone") => return Some(receiver),
+                        (RustValueType::StandardMutex(inner), "lock") => {
+                            let guard = Box::new(RustValueType::MutexGuard(inner.clone()));
+                            return Some(RustValueType::ResultKnown(guard.clone(), Box::new(RustValueType::PoisonError(guard))));
+                        }
+                        (RustValueType::TokioMutex(inner), "lock") => return Some(RustValueType::FutureValue(Box::new(RustValueType::MutexGuard(inner.clone())))),
+                        (RustValueType::PoisonError(inner), "into_inner") => return Some(*inner.clone()),
+                        (RustValueType::Optional(inner), "as_deref" | "as_deref_mut")
+                            if matches!(inner.as_ref(), RustValueType::Boxed(_) | RustValueType::Shared(_) | RustValueType::MutexGuard(_) | RustValueType::Text) => return Some(RustValueType::Optional(Box::new(inner.deref_value().clone()))),
+                        _ => {}
+                    }
+                }
+                let receiver = receiver.deref_value().clone();
                 match receiver {
                     RustValueType::External(receiver) if call.turbofish.is_none() => receiver.method(&method, call.args.len()),
                     RustValueType::ResultKnown(ok, error) if self.result_extract_error_closed(&error)
@@ -1466,6 +1713,8 @@ impl RustTypeIndex {
                         && ((method == "unwrap" && call.args.is_empty())
                             || (method == "expect" && call.args.len() == 1
                                 && matches!(&call.args[0], Expr::Lit(value) if matches!(value.lit, syn::Lit::Str(_))))) => Some(*element),
+                    RustValueType::Optional(element) if call.turbofish.is_none()
+                        && matches!(method.as_str(), "unwrap_or" | "unwrap_or_else") && call.args.len() == 1 => Some(*element),
                     RustValueType::Set(element) if matches!(method.as_str(), "iter" | "into_iter") =>
                         Some(RustValueType::Iterator(element)),
                     RustValueType::MapValues(element) if method == "get" =>
@@ -1488,7 +1737,7 @@ impl RustTypeIndex {
                     RustValueType::Iterator(element) if matches!(method.as_str(), "find" | "min" | "max" | "min_by" | "max_by" | "min_by_key" | "max_by_key") => {
                         Some(RustValueType::Optional(element))
                     }
-                    RustValueType::Optional(element) if matches!(method.as_str(), "filter" | "as_ref" | "copied" | "cloned" | "or_else") => {
+                    RustValueType::Optional(element) if matches!(method.as_str(), "filter" | "as_ref" | "as_mut" | "take" | "copied" | "cloned" | "or_else") => {
                         Some(RustValueType::Optional(element))
                     }
                     RustValueType::Optional(element) if method == "transpose" && call.args.is_empty() => {

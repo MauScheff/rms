@@ -27762,10 +27762,21 @@ fn append_nested_owning_crate_aliases(manifest: &LoadedManifest, sources: &mut B
 }
 
 fn pinned_git2_identity(cargo: &TomlValue, lock: &TomlValue) -> Option<&'static str> {
-    let dependency = cargo.get("dependencies")?.get("git2")?;
+    pinned_rust_external_identity(cargo, lock, "git2", "0.20.4", &["0.20", "^0.20", "0.20.4", "^0.20.4", "=0.20.4"],
+        "7b88256088d75a56f8ecfa070513a775dd9107f6530ef14919dac831af9cfe2b")
+}
+
+fn pinned_tokio_identity(cargo: &TomlValue, lock: &TomlValue) -> Option<&'static str> {
+    pinned_rust_external_identity(cargo, lock, "tokio", "1.53.1", &["1.53.1", "^1.53.1", "=1.53.1"],
+        "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed")
+}
+
+fn pinned_rust_external_identity(cargo: &TomlValue, lock: &TomlValue, name: &str, pinned_version: &str,
+    requirements: &[&str], checksum: &'static str) -> Option<&'static str> {
+    let dependency = cargo.get("dependencies")?.get(name)?;
     if dependency.as_table().is_some_and(|table| table.keys().any(|key| !matches!(key.as_str(), "version" | "features" | "default-features" | "optional"))) { return None; }
     let version = dependency.as_str().or_else(|| dependency.get("version").and_then(TomlValue::as_str));
-    if !matches!(version, Some("0.20" | "^0.20" | "0.20.4" | "^0.20.4" | "=0.20.4"))
+    if !version.is_some_and(|version| requirements.contains(&version))
         || cargo.get("target").is_some() || cargo.get("patch").is_some() || cargo.get("replace").is_some() { return None; }
     let package = cargo.get("package")?.get("name")?.as_str()?;
     let package_version = cargo.get("package")?.get("version")?.as_str()?;
@@ -27774,18 +27785,18 @@ fn pinned_git2_identity(cargo: &TomlValue, lock: &TomlValue) -> Option<&'static 
         && value.get("version").and_then(TomlValue::as_str) == Some(package_version)).collect::<Vec<_>>();
     let [owner] = owners.as_slice() else { return None; };
     if !owner.get("dependencies").and_then(TomlValue::as_array).is_some_and(|dependencies|
-        dependencies.iter().any(|dependency| matches!(dependency.as_str(), Some("git2" | "git2 0.20.4")))) { return None; }
-    let candidates = packages.iter().filter(|value| value.get("name").and_then(TomlValue::as_str) == Some("git2")).collect::<Vec<_>>();
-    let [git2] = candidates.as_slice() else { return None; };
-    let checksum = "7b88256088d75a56f8ecfa070513a775dd9107f6530ef14919dac831af9cfe2b";
-    (git2.get("version").and_then(TomlValue::as_str) == Some("0.20.4")
-        && git2.get("source").and_then(TomlValue::as_str) == Some("registry+https://github.com/rust-lang/crates.io-index")
-        && git2.get("checksum").and_then(TomlValue::as_str) == Some(checksum)).then_some(checksum)
+        dependencies.iter().any(|dependency| dependency.as_str().is_some_and(|dependency|
+            dependency == name || dependency == format!("{name} {pinned_version}")))) { return None; }
+    let candidates = packages.iter().filter(|value| value.get("name").and_then(TomlValue::as_str) == Some(name)).collect::<Vec<_>>();
+    let [external] = candidates.as_slice() else { return None; };
+    (external.get("version").and_then(TomlValue::as_str) == Some(pinned_version)
+        && external.get("source").and_then(TomlValue::as_str) == Some("registry+https://github.com/rust-lang/crates.io-index")
+        && external.get("checksum").and_then(TomlValue::as_str) == Some(checksum)).then_some(checksum)
 }
 
 fn append_pinned_rust_external_api(manifest: &LoadedManifest, sources: &mut BTreeMap<String, String>) {
-    // This first catalog deliberately supports only an unredirected crates.io
-    // git2 0.20.4 dependency. Missing or ambiguous resolution means no facts.
+    // Catalog facts require an exact, unredirected crates.io identity.
+    // Missing or ambiguous resolution means no facts.
     let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
     let cargo_home = std::env::var_os("CARGO_HOME").map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")));
@@ -27797,20 +27808,28 @@ fn append_pinned_rust_external_api(manifest: &LoadedManifest, sources: &mut BTre
         let directory = base.join(&prefix);
         let read_toml = |path: &Path| fs::read_to_string(path).ok().and_then(|text| text.parse::<TomlValue>().ok());
         let Some(cargo) = read_toml(&directory.join("Cargo.toml")) else { continue; };
-        if cargo.get("dependencies").and_then(|value| value.get("git2")).is_none() { continue; }
+        let standalone_workspace = cargo.get("workspace").and_then(TomlValue::as_table).is_some();
         let Ok(directory) = fs::canonicalize(&directory) else { continue; };
         let mut lock = None;
         let mut redirected = false;
         for ancestor in directory.ancestors() {
             redirected |= ancestor.join(".cargo/config").exists() || ancestor.join(".cargo/config.toml").exists();
             if let Some(cargo) = read_toml(&ancestor.join("Cargo.toml")) {
-                redirected |= cargo.get("patch").is_some() || cargo.get("replace").is_some();
+                // An explicit workspace root owns its own patch resolution.
+                // Parent Cargo configs still apply and remain checked above.
+                if !standalone_workspace || ancestor == directory {
+                    redirected |= cargo.get("patch").is_some() || cargo.get("replace").is_some();
+                }
             }
             if lock.is_none() { lock = read_toml(&ancestor.join("Cargo.lock")); }
         }
         if redirected { continue; }
-        let Some(checksum) = lock.as_ref().and_then(|lock| pinned_git2_identity(&cargo, lock)) else { continue; };
-        sources.insert(format!("rms-metadata/rust-external-api/{prefix}git2-0.20.4"), checksum.into());
+        if let Some(checksum) = lock.as_ref().and_then(|lock| pinned_git2_identity(&cargo, lock)) {
+            sources.insert(format!("rms-metadata/rust-external-api/{prefix}git2-0.20.4"), checksum.into());
+        }
+        if let Some(checksum) = lock.as_ref().and_then(|lock| pinned_tokio_identity(&cargo, lock)) {
+            sources.insert(format!("rms-metadata/rust-external-api/{prefix}tokio-1.53.1"), checksum.into());
+        }
     }
 }
 
@@ -35561,7 +35580,12 @@ fn validate_rust_machine_execution_path(
     ) else {
         return;
     };
+    let driver_symbol = driver;
     let driver = semantic_symbol_name(driver);
+    let exact_calls = rust_structure_call_index(implementation, summary);
+    let base = implementation.path.parent().unwrap_or_else(|| Path::new("."));
+    let exact_callable = |symbol: &str| binding_reference_parts(symbol)
+        .map(|(path, name)| (base.join(path), name.to_string()));
     if !summary.functions.contains(driver) {
         diagnostics.push(error(
             "structure.machine-driver-symbol-missing",
@@ -35719,6 +35743,7 @@ fn validate_rust_machine_execution_path(
             continue;
         };
         let executor = semantic_symbol_name(executor_symbol);
+        let executor_callable = exact_callable(executor_symbol);
         if !summary.functions.contains(executor) {
             diagnostics.push(error(
                 "structure.effect-protocol-executor-symbol-missing",
@@ -35763,16 +35788,15 @@ fn validate_rust_machine_execution_path(
                 ));
             }
         }
-        if protocol.atomicity == "one-request-one-result"
-            && rust_reachable_functions(summary, executor, None)
+        let reaches_loop = executor_callable.as_ref().map_or_else(|| rust_reachable_functions(summary, executor, None)
                 .iter()
                 .any(|function| {
                     summary
                         .function_facts
                         .get(function)
                         .is_some_and(|facts| facts.has_control_loop)
-                })
-        {
+                }), |executor| exact_calls.reaches_control_loop(executor.clone()));
+        if protocol.atomicity == "one-request-one-result" && reaches_loop {
             diagnostics.push(error(
                 "structure.effect-protocol-not-atomic",
                 &implementation.path,
@@ -35782,9 +35806,11 @@ fn validate_rust_machine_execution_path(
                 ),
             ));
         }
-        if rust_function_reaches(summary, executor, transition, None)
-            || rust_function_reaches(summary, executor, transition_record_function, None)
-        {
+        let reaches_transition = |target: &str| match (executor_callable.as_ref(), exact_callable(target)) {
+            (Some(executor), Some(target)) => exact_calls.reaches(executor.clone(), target),
+            _ => rust_function_reaches(summary, executor, semantic_symbol_name(target), None),
+        };
+        if reaches_transition(transition) || reaches_transition(transition_record_symbol) {
             diagnostics.push(error(
                 "structure.effect-result-bypasses-transition",
                 &implementation.path,
@@ -35794,12 +35820,16 @@ fn validate_rust_machine_execution_path(
                 ),
             ));
         }
-        if !rust_function_reaches(summary, driver, executor, None) {
+        let reaches_executor = match (exact_callable(driver_symbol), executor_callable) {
+            (Some(driver), Some(executor)) => exact_calls.reaches(driver, executor),
+            _ => rust_function_reaches(summary, driver, executor, None),
+        };
+        if !reaches_executor {
             diagnostics.push(error(
                 "structure.machine-driver-effect-executor-missing",
                 &implementation.path,
                 format!(
-                    "machine driver `{driver}` does not reach executor `{executor}` for effect `{}`",
+                    "machine driver `{driver_symbol}` does not reach exact executor `{executor_symbol}` for effect `{}`",
                     protocol.effect
                 ),
             ));
@@ -35858,14 +35888,20 @@ fn rust_surface_reaches_driver(implementation: &LoadedManifest, summary: &RustTy
     let Some((surface_path, surface_symbol)) = binding_reference_parts(surface) else { return false; };
     let driver_paths = structure_role_paths(implementation, "machine_driver");
     let [driver_path] = driver_paths.as_slice() else { return false; };
-    let cargo_path = get_str(&implementation.value, &["toolchain", "cargo_manifest"]).unwrap_or("Cargo.toml");
-    let Some(cargo) = fs::read_to_string(base.join(cargo_path)).ok().and_then(|source| source.parse::<TomlValue>().ok()) else { return false; };
-    let crate_name = cargo.get("lib").and_then(|lib| lib.get("name"))
-        .or_else(|| cargo.get("package").and_then(|package| package.get("name")))
-        .and_then(TomlValue::as_str).map(|name| name.replace('-', "_"));
-    let library = base.join(cargo.get("lib").and_then(|lib| lib.get("path")).and_then(TomlValue::as_str).unwrap_or("src/lib.rs"));
-    let index = rust_proof_calls::Index::from_parsed(summary.exact_sources.clone(), library, crate_name);
+    let index = rust_structure_call_index(implementation, summary);
     index.reaches((base.join(surface_path), surface_symbol.to_string()), (base.join(driver_path), driver.to_string()))
+}
+
+fn rust_structure_call_index(implementation: &LoadedManifest, summary: &RustTypingSummary) -> rust_proof_calls::Index {
+    let base = implementation.path.parent().unwrap_or_else(|| Path::new("."));
+    let cargo_path = get_str(&implementation.value, &["toolchain", "cargo_manifest"]).unwrap_or("Cargo.toml");
+    let cargo = fs::read_to_string(base.join(cargo_path)).ok().and_then(|source| source.parse::<TomlValue>().ok());
+    let crate_name = cargo.as_ref().and_then(|cargo| cargo.get("lib").and_then(|lib| lib.get("name"))
+        .or_else(|| cargo.get("package").and_then(|package| package.get("name"))))
+        .and_then(TomlValue::as_str).map(|name| name.replace('-', "_"));
+    let library = base.join(cargo.as_ref().and_then(|cargo| cargo.get("lib")).and_then(|lib| lib.get("path"))
+        .and_then(TomlValue::as_str).unwrap_or("src/lib.rs"));
+    rust_proof_calls::Index::from_parsed(summary.exact_sources.clone(), library, crate_name)
 }
 
 fn rust_symbol_belongs_to_role(
@@ -101111,6 +101147,54 @@ architecture:
             let item: syn::ItemFn = syn::parse_str(&format!("#[cfg({cfg})] fn fixture() {{}} ")).unwrap();
             assert_eq!(has_cfg_test_attr(&item.attrs), test_only, "item {cfg}");
         }
+    }
+
+    #[test]
+    fn tokio_external_metadata_respects_standalone_workspace_patch_scope() {
+        let root = unique_test_dir("tokio-standalone-workspace-pin");
+        let module = root.join("module");
+        fs::create_dir_all(module.join("src")).unwrap();
+        fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=[]\n[patch.crates-io]\ntokio={path='not-the-consumer-tokio'}\n").unwrap();
+        let cargo = "[package]\nname='fixture'\nversion='0.1.0'\n[workspace]\n[dependencies]\ntokio='=1.53.1'\n";
+        fs::write(module.join("Cargo.toml"), cargo).unwrap();
+        fs::write(module.join("src/lib.rs"), "pub fn run() {}\n").unwrap();
+        fs::write(module.join("Cargo.lock"), "version=4\n[[package]]\nname='fixture'\nversion='0.1.0'\ndependencies=['tokio']\n[[package]]\nname='tokio'\nversion='1.53.1'\nsource='registry+https://github.com/rust-lang/crates.io-index'\nchecksum='202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed'\n").unwrap();
+        // Cargo is the independent oracle for this workspace boundary.
+        let output = Command::new("cargo").args(["metadata", "--offline", "--no-deps", "--format-version", "1"])
+            .current_dir(&module).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let metadata: JsonValue = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(metadata["workspace_root"].as_str(), fs::canonicalize(&module).unwrap().to_str());
+        let manifest = LoadedManifest { path: module.join("implementation.yaml"), value: YamlValue::Null };
+        let mut sources = BTreeMap::from([("src/lib.rs".into(), "pub fn run() {}".into())]);
+        append_pinned_rust_external_api(&manifest, &mut sources);
+        assert!(sources.contains_key("rms-metadata/rust-external-api/tokio-1.53.1"));
+        fs::write(module.join("Cargo.toml"), format!("{cargo}\n[patch.crates-io]\ntokio={{path='../redirect'}}\n")).unwrap();
+        sources.retain(|path, _| path.ends_with(".rs"));
+        append_pinned_rust_external_api(&manifest, &mut sources);
+        assert!(!sources.contains_key("rms-metadata/rust-external-api/tokio-1.53.1"));
+    }
+
+    #[test]
+    fn tokio_external_facts_require_exact_unredirected_lock_identity() {
+        let cargo = "[package]\nname='fixture'\nversion='0.1.0'\n[dependencies]\ntokio='=1.53.1'\n";
+        let lock = "[[package]]\nname='fixture'\nversion='0.1.0'\ndependencies=['tokio']\n[[package]]\nname='tokio'\nversion='1.53.1'\nsource='registry+https://github.com/rust-lang/crates.io-index'\nchecksum='202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed'\n";
+        let parse = |value: &str| value.parse::<TomlValue>().unwrap();
+        assert!(pinned_tokio_identity(&parse(cargo), &parse(lock)).is_some());
+        for changed in [
+            cargo.replace("tokio='=1.53.1'", "tokio={path='../tokio', version='=1.53.1'}"),
+            cargo.replace("tokio='=1.53.1'", "tokio={git='https://example.invalid/tokio', version='=1.53.1'}"),
+            cargo.replace("tokio='=1.53.1'", "tokio={workspace=true}"),
+            cargo.replace("tokio='=1.53.1'", "tokio='=1.53.0'"),
+            format!("{cargo}\n[patch.crates-io]\ntokio={{path='../tokio'}}"),
+        ] { assert!(pinned_tokio_identity(&parse(&changed), &parse(lock)).is_none()); }
+        for changed in [
+            lock.replace("1.53.1", "1.53.0"),
+            lock.replace("202caea8", "00000000"),
+            lock.replace("registry+https://github.com/rust-lang/crates.io-index", "git+https://example.invalid/tokio"),
+            lock.replace("dependencies=['tokio']", "dependencies=[]"),
+            format!("{lock}\n[[package]]\nname='tokio'\nversion='1.52.3'"),
+        ] { assert!(pinned_tokio_identity(&parse(cargo), &parse(&changed)).is_none()); }
     }
 
     #[test]

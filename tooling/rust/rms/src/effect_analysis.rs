@@ -12,8 +12,8 @@ mod rust_effect_types;
 use rust_effect_types::{RustTypeIndex, RustValueType};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
-pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.8";
-pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.6";
+pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.9";
+pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.7";
 
 #[derive(Clone, Debug)]
 pub(crate) struct SemanticFunctionExpectation {
@@ -865,6 +865,14 @@ fn authorities_for_node(
 }
 
 fn authority_for_call(binding: &str, call: &str) -> Option<String> {
+    if binding == "rust" {
+        match call {
+            "<rust-tokio-process>" => return Some("native-process".into()),
+            "<rust-tokio-time>" => return Some("clock".into()),
+            "<rust-runtime-context>" => return Some("environment".into()),
+            _ => {}
+        }
+    }
     if binding == "rust" && call == "<rust-git2-call>" { return Some("git".into()); }
     if binding == "rust" && call == "<rust-stdin-read>" { return Some("filesystem".into()); }
     if binding == "rust" && call == "<rust-external-uuid-v4>" {
@@ -1045,6 +1053,7 @@ fn call_leaf(call: &str) -> &str {
 }
 
 fn known_pure_call(call: &str) -> bool {
+    if call == "<rust-memory-operation>" { return true; }
     if call == "<rust-result-extract>" { return true; }
     if call == "<rust-option-extract>" { return true; }
     if call == "<rust-standard-path-view>" { return true; }
@@ -1727,6 +1736,12 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 visit::visit_expr_call(self, node);
                 return;
             }
+            if let Some(marker) = self.type_index.external_function_marker(node, &self.value_types) {
+                if marker == "<dynamic-call>" { self.dynamic_sites.insert(rust_expr_label(&node.func)); }
+                self.calls.insert(marker.into());
+                visit::visit_expr_call(self, node);
+                return;
+            }
             if node.args.is_empty() && self.type_index.external_uuid_v4(path)
                 && path.path.segments.first().is_some_and(|root|
                     !self.value_types.contains_key(&root.ident.to_string())
@@ -1752,16 +1767,42 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 visit::visit_expr_call(self, node);
                 return;
             }
-            if path.path.leading_colon.is_some()
+            if self.type_index.standard_poll_fn(node) || (path.path.leading_colon.is_some()
                 && matches!(call.as_str(), "std::future::poll_fn" | "core::future::poll_fn")
                 && node.args.len() == 1
                 && matches!(node.args.first(), Some(Expr::Closure(closure)) if closure.inputs.len() == 1)
-                && self.type_index.standard_external_crate_available(&path.path.segments[0].ident.to_string())
+                && self.type_index.standard_external_crate_available(&path.path.segments[0].ident.to_string()))
             {
                 self.calls.insert("<rust-standard-poll-fn>".into());
                 // poll_fn supplies scheduling, not an authority exemption. All
                 // callback calls and captured dynamic dispatch remain visible.
-                visit::visit_expr_call(self, node);
+                let Expr::Closure(closure) = &node.args[0] else { unreachable!(); };
+                let prior_values = self.value_types.clone();
+                let prior_types = self.parameter_types.clone();
+                let prior_dynamic = self.dynamic_symbols.clone();
+                let prior_callbacks = self.callback_bindings.clone();
+                let prior_return_error = self.return_error.take();
+                let mut names = BTreeSet::new();
+                collect_rust_pattern_identifiers(&closure.inputs[0], &mut names);
+                for name in names {
+                    self.parameter_types.remove(&name);
+                    self.callback_bindings.remove(&name);
+                    self.dynamic_symbols.insert(name.clone());
+                    self.value_types.insert(name, RustValueType::Unknown);
+                }
+                if let Pat::Ident(argument) = &closure.inputs[0] {
+                    let name = argument.ident.to_string();
+                    self.parameter_types.remove(&name);
+                    self.dynamic_symbols.remove(&name);
+                    self.callback_bindings.remove(&name);
+                    self.value_types.insert(name, RustValueType::External(rust_effect_types::ExternalType::Context));
+                }
+                self.visit_expr(&closure.body);
+                self.value_types = prior_values;
+                self.parameter_types = prior_types;
+                self.dynamic_symbols = prior_dynamic;
+                self.callback_bindings = prior_callbacks;
+                self.return_error = prior_return_error;
                 return;
             }
             if let Some(callback) = self.callback_bindings.get(&call) {
@@ -1853,7 +1894,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         let inferred_name = inferred_receiver.as_ref().and_then(RustValueType::name);
         let external_marker = inferred_receiver.as_ref().and_then(|value| {
             node.turbofish.is_none().then(|| self.type_index.external_method_marker(value, &node.method.to_string(), node.args.len())).flatten()
-        });
+        }).or_else(|| self.type_index.command_arguments_marker(node, &self.value_types));
         if matches!(inferred_receiver, Some(RustValueType::External(_))) && external_marker.is_none() {
             self.dynamic_sites.insert(format!("{receiver}.{}", node.method));
             self.calls.insert("<dynamic-call>".into());
@@ -7253,6 +7294,101 @@ fn ready(data: &Data) -> bool {
         let result = report("rust", "src/array.rs", &unknown, expectation("src/array.rs#ready", "pure", &[]));
         assert_eq!(result.result, AnalysisResult::Fail);
         assert!(result.functions[0].transitive_authorities.contains(&"dynamic-dispatch".into()), "{result:#?}");
+    }
+
+    #[test]
+    fn rust_concrete_mutex_guards_keep_payload_effects_and_reject_unknown_globs() {
+        let source = "use crate::values::*; struct Root { state: std::sync::Mutex<Leaf> } fn run(root: &Root) { let guard = match root.state.lock() { Ok(guard) => guard, Err(poisoned) => poisoned.into_inner() }; guard.check(); }";
+        let check = |source: &str, values: &str| analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+            sources: BTreeMap::from([
+                ("src/lib.rs".into(), "mod values; mod ops;".into()),
+                ("src/values.rs".into(), values.into()),
+                ("src/ops.rs".into(), source.into()),
+            ]),
+            semantic_functions: vec![expectation("src/ops.rs#run", "pure", &[])],
+            authority_facades: vec![], trusted_external_calls: BTreeSet::new(),
+        });
+        let leaf = "pub(crate) struct Leaf; impl Leaf { pub(crate) fn check(&self) -> bool { true } }";
+        assert_eq!(check(source, &leaf.replace("pub(crate) struct", "#[derive(Debug)] pub(crate) struct")).result, AnalysisResult::Pass);
+        for source in [source.to_string(), source.replace("match root.state.lock() { Ok(guard) => guard, Err(poisoned) => poisoned.into_inner() }", "root.state.lock().expect(\"poisoned\")")] {
+            let result = check(&source, leaf);
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+            let result = check(&source, &leaf.replace("true", "std::fs::read_to_string(\"x\").is_ok()"));
+            assert_eq!(result.result, AnalysisResult::Fail, "{result:#?}");
+            assert!(result.functions[0].transitive_authorities.contains(&"filesystem".into()));
+        }
+        for (changed, values) in [
+            (format!("use unknown::*; {source}"), leaf.to_string()),
+            (source.to_string(), format!("{leaf} pub mod std {{}}")),
+            (source.to_string(), format!("{leaf} pub use unknown::*;")),
+            (source.to_string(), format!("{leaf} macro_rules! unknown {{ () => {{}} }}")),
+            (source.to_string(), leaf.replace("pub(crate) struct", "#[derive(UnknownMacro)] pub(crate) struct")),
+            (source.to_string(), format!("#[derive(Debug)] {leaf} pub use crate::values::*;")),
+        ] {
+            assert_eq!(check(&changed, &values).result, AnalysisResult::Fail, "{changed}");
+        }
+    }
+
+    #[test]
+    fn rust_concrete_tokio_catalog_requires_pin_and_preserves_authority() {
+        for path in ["tests/runtime.rs", "other/tests/runtime.rs", "notests/runtime.rs"] {
+            let result = analyze(AnalysisInput {
+                binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+                sources: BTreeMap::from([
+                    ("src/lib.rs".into(), String::new()),
+                    (path.into(), "async fn run() { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }".into()),
+                    ("rms-metadata/rust-external-api/tokio-1.53.1".into(), "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed".into()),
+                ]),
+                semantic_functions: vec![expectation(&format!("{path}#run"), "effectful", &["clock"])],
+                authority_facades: vec![], trusted_external_calls: BTreeSet::new(),
+            });
+            assert_eq!(result.result, if path == "tests/runtime.rs" { AnalysisResult::Pass } else { AnalysisResult::Fail }, "{result:#?}");
+        }
+        let check = |source: &str, purity: &str, authorities: &[&str], pin: bool| {
+            let mut sources = BTreeMap::from([("src/lib.rs".into(), source.into())]);
+            if pin { sources.insert("rms-metadata/rust-external-api/tokio-1.53.1".into(), "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed".into()); }
+            analyze(AnalysisInput { binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(), sources,
+                semantic_functions: vec![expectation("src/lib.rs#run", purity, authorities)], authority_facades: vec![], trusted_external_calls: BTreeSet::new() })
+        };
+        for (source, authority) in [
+            ("fn run() { let mut command = tokio::process::Command::new(\"tool\"); command.args([\"--check\"]).stdin(std::process::Stdio::piped()).kill_on_drop(true); let _ = command.spawn(); }", "native-process"),
+            ("async fn run() { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }", "clock"),
+            ("fn run() { tokio::runtime::Handle::try_current().is_err(); }", "environment"),
+        ] {
+            let result = check(source, "effectful", &[authority], true);
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+            assert!(result.functions[0].transitive_authorities.contains(&authority.into()));
+            assert_eq!(check(source, "pure", &[], true).result, AnalysisResult::Fail);
+            assert_eq!(check(source, "effectful", &[], true).result, AnalysisResult::Fail);
+            assert_eq!(check(source, "effectful", &[authority], false).result, AnalysisResult::Fail);
+        }
+        let source = "struct Leaf; impl Leaf { fn check(&self) -> bool { true } } struct Root { value: tokio::sync::Mutex<Leaf> } async fn run(root: &Root) { let guard = root.value.lock().await; guard.check(); }";
+        assert_eq!(check(source, "effectful", &["dynamic-dispatch"], true).result, AnalysisResult::Pass);
+        assert_eq!(check(source, "pure", &[], true).result, AnalysisResult::Fail);
+        let impure = source.replace("true", "std::fs::read_to_string(\"x\").is_ok()");
+        let result = check(&impure, "pure", &[], true);
+        assert_eq!(result.result, AnalysisResult::Fail);
+        assert!(result.functions[0].transitive_authorities.contains(&"filesystem".into()));
+        for source in [
+            "fn run(command: &mut tokio::process::Command, values: Unknown) { command.args(values); }",
+            "fn run(command: &mut tokio::process::Command, callback: impl Fn() -> bool) { command.kill_on_drop(callback()); }",
+            "async fn run(pipe: &mut tokio::process::ChildStdout) { pipe.read(&mut [0u8; 1]).await; }",
+            "mod tokio {} fn run() { tokio::runtime::Handle::try_current(); }",
+        ] { assert_eq!(check(source, "pure", &[], true).result, AnalysisResult::Fail, "{source}"); }
+    }
+
+    #[test]
+    fn rust_concrete_poll_callbacks_keep_waker_and_future_dispatch() {
+        let source = "fn run(future: Unknown) { std::future::poll_fn(|cx| { cx.waker().wake_by_ref(); std::future::Future::poll(future, cx).is_ready() }); }";
+        let result = report("rust", "src/lib.rs", source, expectation("src/lib.rs#run", "effectful", &["dynamic-dispatch"]));
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert_eq!(result.functions[0].transitive_authorities, vec!["dynamic-dispatch"]);
+        assert_eq!(report("rust", "src/lib.rs", source, expectation("src/lib.rs#run", "pure", &[])).result, AnalysisResult::Fail);
+        let source = "fn run() { Box::pin(async { unknown(); }); }";
+        assert_eq!(report("rust", "src/lib.rs", source, expectation("src/lib.rs#run", "pure", &[])).result, AnalysisResult::Fail);
+        let source = "struct Leaf; impl Leaf { fn check(&self) -> bool { true } } fn run(cx: Leaf) { ::std::future::poll_fn(|cx: Unknown| cx.check()); }";
+        assert_eq!(report("rust", "src/lib.rs", source, expectation("src/lib.rs#run", "pure", &[])).result, AnalysisResult::Fail);
     }
 
     #[test]
