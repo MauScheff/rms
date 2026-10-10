@@ -385,6 +385,10 @@ enum Commands {
         /// Include complete delegated validation evidence.
         #[arg(long)]
         details: bool,
+
+        /// Maximum duration for each RMS probe, trace, property, or audit proof command.
+        #[arg(long, visible_alias = "timeout-seconds", default_value_t = DEFAULT_PROOF_TIMEOUT_SECONDS, value_parser = clap::value_parser!(u64).range(1..))]
+        proof_timeout_seconds: u64,
     },
 
     /// Render a versioned RMS workbench prompt for a module task.
@@ -9878,12 +9882,14 @@ fn run_main() -> Result<()> {
             module,
             json,
             details,
+            proof_timeout_seconds,
         } => run_check(
             &root,
             CheckMode::from_flags(environment, changes, committed, all),
             module.as_deref(),
             json,
             details,
+            proof_timeout_seconds,
         ),
         Commands::Prompt {
             kind,
@@ -25528,13 +25534,20 @@ fn run_verify_target_captured(target: &Path) -> Result<String> {
 struct CapturedVerificationCache<'a> {
     outcomes: std::cell::RefCell<BTreeMap<PathBuf, std::result::Result<String, String>>>,
     proof_cache: Option<&'a verification::ProofCache>,
+    timeout_seconds: u64,
 }
 
 impl<'a> CapturedVerificationCache<'a> {
+    #[cfg(test)]
     fn new(proof_cache: Option<&'a verification::ProofCache>) -> Self {
+        Self::with_timeout(proof_cache, DEFAULT_PROOF_TIMEOUT_SECONDS)
+    }
+
+    fn with_timeout(proof_cache: Option<&'a verification::ProofCache>, timeout_seconds: u64) -> Self {
         Self {
             outcomes: std::cell::RefCell::new(BTreeMap::new()),
             proof_cache,
+            timeout_seconds,
         }
     }
 
@@ -25569,6 +25582,7 @@ fn run_verify_target_captured_with_cache(
             run_verify_implementation_captured_with_cache(
                 target,
                 cache.and_then(|cache| cache.proof_cache),
+                cache.map(|cache| cache.timeout_seconds).unwrap_or(DEFAULT_PROOF_TIMEOUT_SECONDS),
             )
         }
         Some("rms/module/v0.1") if is_composite_module(&manifest.value) => {
@@ -25584,12 +25598,13 @@ fn run_verify_target_captured_with_cache(
 }
 
 fn run_verify_implementation_captured(implementation: &Path) -> Result<String> {
-    run_verify_implementation_captured_with_cache(implementation, None)
+    run_verify_implementation_captured_with_cache(implementation, None, DEFAULT_PROOF_TIMEOUT_SECONDS)
 }
 
 fn run_verify_implementation_captured_with_cache(
     implementation: &Path,
     proof_cache: Option<&verification::ProofCache>,
+    timeout_seconds: u64,
 ) -> Result<String> {
     let manifest = load_manifest(implementation)?;
     ensure_implementation_manifest_valid_for_verify(&manifest)?;
@@ -25611,13 +25626,13 @@ fn run_verify_implementation_captured_with_cache(
     let batch_evidence =
         RustBatchProofEvidence::from_successful_verify(&manifest, command, &output);
 
-    let probe_summary = verify_probe_handshake(implementation, DEFAULT_PROOF_TIMEOUT_SECONDS)?;
-    let trace_reports = verify_declared_trace_bundles(&manifest, root)?;
+    let probe_summary = verify_probe_handshake(implementation, timeout_seconds)?;
+    let trace_reports = verify_declared_trace_bundles_with_timeout(&manifest, root, timeout_seconds)?;
     let property_summary = verify_implementation_smoke_properties_with_cache(
         implementation,
         &manifest,
         false,
-        DEFAULT_PROOF_TIMEOUT_SECONDS,
+        timeout_seconds,
         batch_evidence.as_ref(),
         proof_cache,
     )?;
@@ -25816,7 +25831,7 @@ fn execute_machine_probe_request(
     )?;
     if output.timed_out {
         bail!(
-            "probe runner `{}` exceeded {} second(s) during {label}{}",
+            "[proof.command-timeout] probe runner `{}` exceeded {} second(s) during {label}{}",
             binding.runner,
             timeout_seconds,
             proof_process_output_excerpt(&output)
@@ -25863,6 +25878,7 @@ fn ensure_implementation_manifest_valid_for_verify(manifest: &LoadedManifest) ->
     Ok(())
 }
 
+#[cfg(test)]
 fn verify_declared_trace_bundles(
     manifest: &LoadedManifest,
     module_root: &Path,
@@ -25990,6 +26006,7 @@ fn run_verify_composite_module_captured_with_cache(
     manifest: &LoadedManifest,
     cache: Option<&CapturedVerificationCache<'_>>,
 ) -> Result<String> {
+    let timeout_seconds = cache.map(|cache| cache.timeout_seconds).unwrap_or(DEFAULT_PROOF_TIMEOUT_SECONDS);
     let module_name = get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>");
     let root = rms_root_for(module_path);
 
@@ -26014,7 +26031,7 @@ fn run_verify_composite_module_captured_with_cache(
         manifest,
         PropertyProfile::Smoke,
         false,
-        DEFAULT_PROOF_TIMEOUT_SECONDS,
+        timeout_seconds,
     )?;
     if property_report.result == "fail" {
         bail!(
@@ -39704,7 +39721,9 @@ fn run_check(
     module: Option<&Path>,
     json_output: bool,
     include_details: bool,
+    timeout_seconds: u64,
 ) -> Result<()> {
+    if timeout_seconds == 0 { bail!("check proof timeout must be positive"); }
     if module.is_some() && !matches!(mode, CheckMode::Changes | CheckMode::Committed) {
         bail!("--module is supported only with --changes or --committed");
     }
@@ -39716,11 +39735,12 @@ fn run_check(
         let repository_digest = release_input_digest(&canonical_root, false)?;
         let scoped_digest = sha256_bytes(
             format!(
-                "{}\0{}",
+                "{}\0{}\0{}",
                 repository_digest,
                 module
                     .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "all-modules".to_string())
+                    .unwrap_or_else(|| "all-modules".to_string()),
+                timeout_seconds,
             )
             .as_bytes(),
         );
@@ -39750,6 +39770,7 @@ fn run_check(
         mode,
         module,
         strict_execution.as_ref().map(|(_, cache)| cache),
+        timeout_seconds,
     )?;
     let surface = project_check_report(&report, include_details);
     if json_output {
@@ -39839,7 +39860,7 @@ fn build_check_report_scoped(
     mode: CheckMode,
     module: Option<&Path>,
 ) -> Result<CheckReport> {
-    build_check_report_scoped_with_proof_cache(root, mode, module, None)
+    build_check_report_scoped_with_proof_cache(root, mode, module, None, DEFAULT_PROOF_TIMEOUT_SECONDS)
 }
 
 fn build_check_report_scoped_with_proof_cache(
@@ -39847,18 +39868,19 @@ fn build_check_report_scoped_with_proof_cache(
     mode: CheckMode,
     module: Option<&Path>,
     proof_cache: Option<&verification::ProofCache>,
+    timeout_seconds: u64,
 ) -> Result<CheckReport> {
     let root = fs::canonicalize(root)
         .with_context(|| format!("failed to resolve repository root `{}`", root.display()))?;
     let mut report = match mode {
         CheckMode::Project => build_project_check_report(&root),
         CheckMode::Environment => build_environment_check_report(&root),
-        CheckMode::Changes => build_changes_check_report_scoped(&root, module),
+        CheckMode::Changes => build_changes_check_report_scoped(&root, module, timeout_seconds),
         CheckMode::Committed => {
-            build_committed_check_report_scoped_with_proof_cache(&root, module, proof_cache)
+            build_committed_check_report_scoped_with_proof_cache(&root, module, proof_cache, timeout_seconds)
         }
         CheckMode::All => {
-            let mut report = build_committed_check_report_with_proof_cache(&root, proof_cache)?;
+            let mut report = build_committed_check_report_with_proof_cache(&root, proof_cache, timeout_seconds)?;
             report.mode = CheckMode::All;
             report.summary = format!(
                 "RMS exhaustive all check {} across the complete discovered repository.",
@@ -40939,10 +40961,11 @@ fn build_check_report(root: &Path, mode: CheckMode) -> Result<CheckReport> {
     build_check_report_scoped(root, mode, None)
 }
 
-fn build_changes_check_report_scoped(root: &Path, module: Option<&Path>) -> Result<CheckReport> {
+fn build_changes_check_report_scoped(root: &Path, module: Option<&Path>, timeout_seconds: u64) -> Result<CheckReport> {
+    let verification_cache = CapturedVerificationCache::with_timeout(None, timeout_seconds);
     match module {
-        Some(module) => build_module_scoped_check_report(root, module, CheckMode::Changes),
-        None => build_affected_check_report(root, CheckMode::Changes, None),
+        Some(module) => build_module_scoped_check_report_with_audit(root, module, CheckMode::Changes, None, Some(&verification_cache), None),
+        None => build_affected_check_report_with_timeout(root, CheckMode::Changes, None, timeout_seconds),
     }
 }
 
@@ -40950,10 +40973,11 @@ fn build_committed_check_report_scoped_with_proof_cache(
     root: &Path,
     module: Option<&Path>,
     proof_cache: Option<&verification::ProofCache>,
+    timeout_seconds: u64,
 ) -> Result<CheckReport> {
     match module {
         Some(module) => {
-            let verification_cache = CapturedVerificationCache::new(proof_cache);
+            let verification_cache = CapturedVerificationCache::with_timeout(proof_cache, timeout_seconds);
             build_module_scoped_check_report_with_audit(
                 root,
                 module,
@@ -40963,14 +40987,24 @@ fn build_committed_check_report_scoped_with_proof_cache(
                 proof_cache,
             )
         }
-        None => build_affected_check_report(root, CheckMode::Committed, proof_cache),
+        None => build_affected_check_report_with_timeout(root, CheckMode::Committed, proof_cache, timeout_seconds),
     }
 }
 
+#[cfg(test)]
 fn build_affected_check_report(
     root: &Path,
     mode: CheckMode,
     proof_cache: Option<&verification::ProofCache>,
+) -> Result<CheckReport> {
+    build_affected_check_report_with_timeout(root, mode, proof_cache, DEFAULT_PROOF_TIMEOUT_SECONDS)
+}
+
+fn build_affected_check_report_with_timeout(
+    root: &Path,
+    mode: CheckMode,
+    proof_cache: Option<&verification::ProofCache>,
+    timeout_seconds: u64,
 ) -> Result<CheckReport> {
     let selection = build_check_selection(root, mode)?;
     let receipt_path = persist_check_selection(root, &selection)?;
@@ -41058,7 +41092,7 @@ fn build_affected_check_report(
 
     let audit_roots = selected_audit_roots(root, &selection)?;
     let shared_audit = build_audit_report_for_closures(root, true, false, Some(&audit_roots))?;
-    let verification_cache = CapturedVerificationCache::new(proof_cache);
+    let verification_cache = CapturedVerificationCache::with_timeout(proof_cache, timeout_seconds);
     let mut reports = Vec::new();
     for closure in &selection.closures {
         reports.push(build_module_scoped_check_report_with_audit(
@@ -41070,7 +41104,7 @@ fn build_affected_check_report(
             proof_cache,
         )?);
     }
-    let baseline_reports = build_baseline_closure_reports(root, &selection, mode)?;
+    let baseline_reports = build_baseline_closure_reports(root, &selection, mode, timeout_seconds)?;
     let baseline_findings = baseline_reports
         .iter()
         .flat_map(check_report_findings)
@@ -41080,14 +41114,8 @@ fn build_affected_check_report(
         .iter()
         .flat_map(check_report_findings)
         .collect::<BTreeSet<_>>();
-    let candidate_regressions = candidate_findings
-        .difference(&baseline_findings)
-        .cloned()
-        .collect::<Vec<_>>();
-    let unchanged_baseline_debt = candidate_findings
-        .intersection(&baseline_findings)
-        .cloned()
-        .collect::<Vec<_>>();
+    let (candidate_regressions, unchanged_baseline_debt) =
+        partition_affected_findings(&candidate_findings, &baseline_findings);
     delta.candidate_regressions = candidate_regressions.clone();
     delta.unchanged_baseline_debt = unchanged_baseline_debt.clone();
     let has_failure = candidate_regressions
@@ -41172,6 +41200,20 @@ fn build_affected_check_report(
         delta,
         proof: Default::default(),
         details,
+    })
+}
+
+fn partition_affected_findings(
+    candidate: &BTreeSet<String>,
+    baseline: &BTreeSet<String>,
+) -> (Vec<String>, Vec<String>) {
+    // A timed-out command is missing execution proof, not historical semantic
+    // debt. The baseline cannot turn that failure into a passing affected gate.
+    candidate.iter().cloned().partition(|finding| {
+        !baseline.contains(finding)
+            || (finding.starts_with("fail: ")
+                && (finding.contains("[proof.command-timeout]")
+                    || finding.contains("proof.command-timeout:")))
     })
 }
 
@@ -41262,6 +41304,7 @@ fn build_baseline_closure_reports(
     root: &Path,
     selection: &CheckSelectionReceipt,
     mode: CheckMode,
+    timeout_seconds: u64,
 ) -> Result<Vec<CheckReport>> {
     let Some(baseline) = selection.baseline.as_deref() else {
         return Ok(Vec::new());
@@ -41279,7 +41322,7 @@ fn build_baseline_closure_reports(
         let audit_roots = selected_audit_roots(&worktree, selection)?;
         let shared_audit =
             build_audit_report_for_closures(&worktree, true, false, Some(&audit_roots))?;
-        let verification_cache = CapturedVerificationCache::new(None);
+        let verification_cache = CapturedVerificationCache::with_timeout(None, timeout_seconds);
         let mut reports = Vec::new();
         for closure in &selection.closures {
             let module = worktree.join(&closure.path);
@@ -42044,6 +42087,7 @@ where
     })
 }
 
+#[cfg(test)]
 fn build_module_scoped_check_report(
     root: &Path,
     requested: &Path,
@@ -42060,6 +42104,7 @@ fn build_module_scoped_check_report_with_audit(
     verification_cache: Option<&CapturedVerificationCache<'_>>,
     proof_cache: Option<&verification::ProofCache>,
 ) -> Result<CheckReport> {
+    let timeout_seconds = verification_cache.map(|cache| cache.timeout_seconds).unwrap_or(DEFAULT_PROOF_TIMEOUT_SECONDS);
     let modules = discover_module_index(root)?;
     let requested_path = if requested.is_absolute() {
         requested.to_path_buf()
@@ -42210,7 +42255,7 @@ fn build_module_scoped_check_report_with_audit(
                 root,
                 false,
                 false,
-                DEFAULT_PROOF_TIMEOUT_SECONDS,
+                timeout_seconds,
                 &mut audit.checks,
                 proof_cache,
                 Some(&closure_roots),
@@ -42658,13 +42703,14 @@ fn changes_check_report_from_gate(root: &Path, gate: GateReport) -> CheckReport 
 fn build_committed_check_report_with_proof_cache(
     root: &Path,
     proof_cache: Option<&verification::ProofCache>,
+    timeout_seconds: u64,
 ) -> Result<CheckReport> {
     let audit = execute_audit_with_proof_cache(
         root,
         true,
         false,
         false,
-        DEFAULT_PROOF_TIMEOUT_SECONDS,
+        timeout_seconds,
         proof_cache,
     )?;
     Ok(committed_check_report_from_audit(root, audit))
@@ -93826,6 +93872,30 @@ realizations:
     }
 
     #[test]
+    fn check_accepts_an_explicit_positive_proof_budget() {
+        let default = Cli::try_parse_from(["rms", "check", "--changes"]).unwrap();
+        assert!(matches!(default.command, Commands::Check { proof_timeout_seconds: DEFAULT_PROOF_TIMEOUT_SECONDS, .. }));
+        for mode in ["--changes", "--committed", "--all"] {
+            assert!(Cli::try_parse_from(["rms", "check", mode, "--proof-timeout-seconds", "1800"]).is_ok());
+            assert!(Cli::try_parse_from(["rms", "check", mode, "--proof-timeout-seconds", "0"]).is_err());
+        }
+    }
+
+    #[test]
+    fn affected_timeout_failure_is_not_deferred_as_baseline_debt() {
+        for timeout in [
+            "fail: [owner] verify: [proof.command-timeout] exact runner exceeded 1 second(s)",
+            "fail: [owner] proof.command-timeout: exact runner exceeded 1 second(s)",
+        ] {
+            let existing = "fail: [owner] structure.old-finding: unchanged declaration debt".to_string();
+            let findings = BTreeSet::from([timeout.to_string(), existing.clone()]);
+            let (regressions, debt) = partition_affected_findings(&findings, &findings);
+            assert_eq!(regressions, vec![timeout.to_string()]);
+            assert_eq!(debt, vec![existing]);
+        }
+    }
+
+    #[test]
     fn verify_proof_budget_preserves_timeout_failure_and_budget_identity() {
         let root = unique_test_dir("verify-proof-budget");
         run_add_module(add_module_request(&root, "budget", "Verify the complete declared proof within an explicit time bound.", "library", &[], Some(ScaffoldShape::DomainEngine), Some("rust")), &no_provider_options()).unwrap();
@@ -93845,6 +93915,22 @@ realizations:
         assert_eq!(property.result, "fail");
         assert!(property.diagnostics.iter().any(|item| item.check == "proof.command-timeout"));
         assert!(run_verify_with_timeout(&target, false, 0).is_err());
+        // Check's captured verifier and committed executable audit use the same
+        // budget. Unrelated scaffold readiness debt is not waived by this test.
+        for mode in [CheckMode::Changes, CheckMode::Committed] {
+            let large = build_check_report_scoped_with_proof_cache(&root, mode, Some(&root.join("module.yaml")), None, 5).unwrap();
+            assert_eq!(large.details["verification"][0]["result"], "pass", "{large:#?}");
+            let small = build_check_report_scoped_with_proof_cache(&root, mode, Some(&root.join("module.yaml")), None, 1).unwrap();
+            assert_eq!(small.details["verification"][0]["result"], "fail", "{small:#?}");
+            assert!(small.details["verification"][0]["error"].as_str().unwrap().contains("proof.command-timeout"));
+            assert_eq!(large.details["closure"], small.details["closure"]);
+            if mode == CheckMode::Committed {
+                let large_checks = large.details["audit"]["checks"].as_array().unwrap();
+                assert!(large_checks.iter().any(|check| check["id"] == "property.execution-proof" && check["result"] == "pass"), "{large:#?}");
+                let checks = small.details["audit"]["checks"].as_array().unwrap();
+                assert!(checks.iter().any(|check| check["id"] == "proof.command-timeout" && check["result"] == "fail" && check["note"].as_str().is_some_and(|note| note.contains("exceeded 1 second(s)"))), "{small:#?}");
+            }
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -120140,7 +120226,7 @@ architecture:
         assert!(analyzed.iter().any(|path| path.ends_with("modules/skipped/implementation.yaml")),
             "selected dependencies must retain source and effect analysis");
         AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| *paths.borrow_mut() = Some(Vec::new()));
-        build_baseline_closure_reports(&root, &selection, CheckMode::Changes).unwrap();
+        build_baseline_closure_reports(&root, &selection, CheckMode::Changes, DEFAULT_PROOF_TIMEOUT_SECONDS).unwrap();
         let analyzed = AUDIT_ANALYZED_IMPLEMENTATIONS.with(|paths| paths.borrow_mut().take().unwrap());
         assert!(!analyzed.is_empty());
         assert!(analyzed.iter().all(|path| path.ends_with("modules/selected/implementation.yaml")),

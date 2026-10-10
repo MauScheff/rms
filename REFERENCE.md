@@ -387,6 +387,8 @@ Focused proof is selected from the promises affected by the change:
 
 `rms verify <target> --proof-timeout-seconds 1800` sets a positive per-command budget for RMS probe, trace, and smoke-property proof. `--timeout-seconds` is an alias. The default is 300 seconds. Composite verification passes the same budget to contained implementation bindings. The budget enters the verification run identity and the property-execution cache key. It does not bound the project-owned `commands.verify` or surface-smoke commands, change proof selection, or waive timeout failures. Use `rms property run <implementation.yaml> --timeout-seconds 1800` for the corresponding property-only budget. No binding or global configuration field sets these budgets.
 
+Use `--proof-timeout-seconds 1800` with `rms check --changes`, `rms check --committed`, or `rms check --all` to pass the same positive per-command budget to captured implementation/composite verification and executable audit proof. Candidate and baseline verification use the same budget. Scoped and affected checks retain their exact owner selection. Committed run identity includes the budget. The default remains 300 seconds; budget exhaustion remains a failure, even when the baseline has the same timeout. Other unchanged baseline debt remains visible. No preceding `verify` invocation sets a later check's budget.
+
 ### Executable property loop
 
 Choose the specialist command by scope:
