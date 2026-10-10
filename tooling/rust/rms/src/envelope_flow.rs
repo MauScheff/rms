@@ -183,6 +183,11 @@ fn import_spelling(tree: &syn::UseTree) -> String {
         ),
     }
 }
+// Display identifier segments even when generics prevent proof resolution.
+fn path_identifiers(path: &syn::Path) -> String {
+    path.segments.iter().map(|part| part.ident.to_string())
+        .collect::<Vec<_>>().join("::")
+}
 fn atom(expr: &Expr, name: &str) -> bool {
     matches!(expr, Expr::Path(path) if path.qself.is_none() && path.path.is_ident(name))
 }
@@ -1472,12 +1477,19 @@ struct Closure<'a, 'b> {
 impl Closure<'_, '_> {
     fn refuse(&mut self, reason: &str) {
         if self.reason.is_none() {
-            self.reason = Some(if reason.starts_with(&format!("{}: ", self.file)) {
+            self.reason = Some(if reason.starts_with(&format!("{}:", self.file)) {
                 reason.into()
             } else {
                 format!("{}: {reason}", self.file)
             });
         }
+    }
+    fn refuse_reference(&mut self, node: &impl Spanned, reference: &str, cause: &str) {
+        let location = node.span().start();
+        self.refuse(&format!(
+            "{}:{}:{}: {cause}; reference `{reference}`",
+            self.file, location.line, location.column + 1,
+        ));
     }
     fn sensitive(&self, path: &syn::Path) -> bool {
         path.segments
@@ -1596,7 +1608,11 @@ impl<'ast> Visit<'ast> for Closure<'_, '_> {
                 .iter()
                 .any(|part| part.ident == self.context_name)
             {
-                self.refuse("context constructor or callable escapes the registered flow");
+                self.refuse_reference(
+                    &node.path,
+                    &plain(&node.path).unwrap_or_else(|| path_identifiers(&node.path)),
+                    "context constructor or callable escapes the registered flow",
+                );
             }
         }
         let leaf = node
@@ -1608,7 +1624,11 @@ impl<'ast> Visit<'ast> for Closure<'_, '_> {
         if self.checker.callable_leaves.contains(&leaf)
             && !self.checker.allowed_paths.contains(&address(node))
         {
-            self.refuse("registered callable has an unproven call site or function alias");
+            self.refuse_reference(
+                &node.path,
+                &plain(&node.path).unwrap_or_else(|| path_identifiers(&node.path)),
+                &format!("registered callable has an unproven call site or function alias (conservative match on leaf `{leaf}`)"),
+            );
         }
         visit::visit_expr_path(self, node);
     }
@@ -1619,7 +1639,11 @@ impl<'ast> Visit<'ast> for Closure<'_, '_> {
             .contains(&node.method.to_string())
             && !self.checker.allowed_methods.contains(&address(node))
         {
-            self.refuse("registered context/executor method has an unproven call site");
+            self.refuse_reference(
+                &node.method,
+                &node.method.to_string(),
+                &format!("registered context/executor method has an unproven call site (conservative match on leaf `{}`)", node.method),
+            );
         }
         visit::visit_expr_method_call(self, node);
     }
@@ -2015,6 +2039,29 @@ envelope_flow:
             &types(),
             Some(contract),
         )
+    }
+    #[test]
+    fn callable_collision_diagnostic_names_reference_and_source_location() {
+        let mut sources = sources();
+        sources.insert("tests/trace_producer.rs".into(),
+            "fn witness() {\n    let observed = 1;\n    let _ = observed;\n}".into());
+        let errors = check(&sources, BINDING, &contract());
+        assert!(errors.iter().any(|reason|
+            reason.contains("tests/trace_producer.rs:3:13")
+                && reason.contains("reference `observed`")
+                && reason.contains("conservative match on leaf `observed`")), "{errors:?}");
+        for (source, reference, cause) in [
+            ("fn witness() { let _ = crate::read::execute; }", "crate::read::execute", "registered callable"),
+            ("fn witness(value: u64) { value.observed(); }", "observed", "registered context/executor method"),
+            ("fn witness() { let _ = crate::types::Context::split; }", "crate::types::Context::split", "context constructor or callable"),
+        ] {
+            sources.insert("tests/trace_producer.rs".into(), source.into());
+            let errors = check(&sources, BINDING, &contract());
+            assert!(errors.iter().any(|reason|
+                reason.contains("tests/trace_producer.rs:1:")
+                    && reason.contains(&format!("reference `{reference}`"))
+                    && reason.contains(cause)), "{errors:?}");
+        }
     }
     #[test]
     fn test_only_module_exception_has_a_closed_attribute_grammar() {
