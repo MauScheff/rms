@@ -236,6 +236,47 @@ impl<'a> Index<'a> {
                         }
                     }
                 }
+                Item::Impl(item) if item.trait_.is_none() => {
+                    let Some((owner, method_name)) = name.split_once("::") else {
+                        continue;
+                    };
+                    let Type::Path(ty) = item.self_ty.as_ref() else {
+                        continue;
+                    };
+                    if !ty.path.segments.last().is_some_and(|part| part.ident == owner) {
+                        continue;
+                    }
+                    for member in &item.items {
+                        let syn::ImplItem::Fn(method) = member else { continue; };
+                        if method.sig.ident != method_name { continue; }
+                        // Do not borrow a same-named method from another owner,
+                        // conditional declaration, or generic specialization.
+                        let declarations = self.named_items(owner);
+                        let exact_owner = match declarations.as_slice() {
+                            [(owner_file, Item::Struct(owner))] => *owner_file == file
+                                && owner.generics.params.is_empty()
+                                && owner.attrs.iter().all(|attr| attr.path().is_ident("doc") || attr.path().is_ident("derive")),
+                            [(owner_file, Item::Enum(owner))] => *owner_file == file
+                                && owner.generics.params.is_empty()
+                                && owner.attrs.iter().all(|attr| attr.path().is_ident("doc") || attr.path().is_ident("derive")),
+                            _ => false,
+                        };
+                        if !exact_owner || ty.qself.is_some()
+                            || ty.path.leading_colon.is_some()
+                            || ty.path.segments.len() != 1
+                            || !matches!(ty.path.segments[0].arguments, PathArguments::None)
+                            || !item.generics.params.is_empty()
+                            || item.generics.where_clause.is_some()
+                            || !item.attrs.iter().all(|attr| attr.path().is_ident("doc"))
+                            || !method.attrs.iter().all(|attr| attr.path().is_ident("doc"))
+                            || !method.sig.generics.params.is_empty()
+                            || method.sig.generics.where_clause.is_some()
+                        {
+                            return None;
+                        }
+                        found.push(&method.sig);
+                    }
+                }
                 _ => {}
             }
         }
@@ -553,6 +594,39 @@ executors:
             "kind: synchronous-envelopes\nexecutors:\n- {symbol: 'src/other.rs#execute', request_parameter: 1}",
             "kind: synchronous-envelopes\nexecutors:\n- {symbol: 'src/driver.rs#execute', request_parameter: 1}\n- {symbol: 'src/driver.rs#execute', request_parameter: 1}",
         ] { assert!(!check_sync(&source, &serde_yaml::from_str(yaml).unwrap()).is_empty(), "{yaml}"); }
+    }
+
+    #[test]
+    fn persistent_async_resolves_exact_inherent_poll_method() {
+        let source = SOURCE.replace(
+            "trait Adapters { fn poll_input(&mut self) -> Poll<Option<Input>>; }",
+            "struct Adapters; impl Adapters { fn poll_input(&self) -> Poll<Option<Input>> { todo!() } }",
+        ).replace("adapters: &mut impl Adapters", "adapters: &Adapters");
+        assert!(check(&source).is_empty(), "{:?}", check(&source));
+        for invalid in [
+            source.replace("impl Adapters", "impl Other"),
+            source.replace("Poll<Option<Input>>", "Poll<Option<EffectResult>>"),
+            source.replace("fn poll_input", "async fn poll_input"),
+            format!("{source}\nimpl Adapters {{ fn poll_input(&self) -> Poll<Option<Input>> {{ todo!() }} }}"),
+            format!("{source}\nstruct Adapters;"),
+            source.replace("impl Adapters", "impl<T> Adapters<T>"),
+            source.replace("impl Adapters", "impl other::Adapters"),
+            source.replace("impl Adapters", "#[cfg(feature = \"optional\")] impl Adapters"),
+            source.replace("struct Adapters;", "#[cfg(feature = \"optional\")] struct Adapters;"),
+            source.replace("fn poll_input", "#[cfg(feature = \"optional\")] fn poll_input"),
+            source.replace("impl Adapters", "impl OtherTrait for Adapters"),
+        ] {
+            assert!(check(&invalid).iter().any(|error| error.contains("input poll")), "{invalid}");
+        }
+        let files = BTreeMap::from([
+            ("src/other.rs".into(), syn::parse_file(&source).unwrap()),
+        ]);
+        assert!(Index { files: &files }.signature("src/driver.rs#Adapters::poll_input").is_none());
+        let files = BTreeMap::from([
+            ("src/driver.rs".into(), syn::parse_file(&source).unwrap()),
+            ("src/other.rs".into(), syn::parse_file("struct Adapters;").unwrap()),
+        ]);
+        assert!(Index { files: &files }.signature("src/driver.rs#Adapters::poll_input").is_none());
     }
 
     #[test]
