@@ -233,6 +233,8 @@ An explicit request to implement a native adapter, handler, executor, envelope, 
 
 `no-rms-change` contains no design, specification, source-edit, gate, audit, or pending-candidate prescription, even when the readable root is uninitialized. It reports only the repository operation and its applicable authority boundary.
 
+An exact existing-owner semantic amendment may retain unfinished Rust callable, declared-variant, and recognized persistent-runtime layout findings as visible source debt. These findings do not force source implementation before canonical correction. Source validation remains failed; candidate, committed, and release gates remain strict. Malformed canonical artifacts, revision drift, actual authority violations, unresolved calls, ambiguous symbols, and owner ambiguity remain blockers. Material intent unknowns require clarification and grant no ready mutation receipt. A ready amendment receipt authorizes only its recorded mutation families and owner; the mutator still validates the exact change and seals its semantic revision.
+
 Owner selection is deterministic:
 
 1. An explicit readable `--module` wins.

@@ -43211,7 +43211,7 @@ fn build_next_report_with_optional_program(
     let bounded_proof_support_roles =
         exact_owner_scoped_proof_support_role_change_ready(task, intent.as_ref(), &owner);
     let owner_scoped_existing_semantic_change =
-        owner_scoped_existing_semantic_change_ready(intent.as_ref(), &owner);
+        owner_scoped_existing_semantic_change_scope(intent.as_ref(), &owner);
     let retained_repairs = if owner_scoped_existing_semantic_change {
         retained_structural::route_repairs(task, &owner)
     } else { BTreeMap::new() };
@@ -43289,8 +43289,8 @@ fn build_next_report_with_optional_program(
         warnings.push("The exact existing module is eligible for a bounded canonical proof-support role addition. Unrelated validation debt remains visible and must still pass the candidate and committed gates.".to_string());
     } else if owner_scoped_existing_semantic_change {
         warnings.push("The selected existing module is eligible for an owner-scoped semantic change. Unrelated module validation debt remains visible and must still pass the candidate and committed gates.".to_string());
-        if validation.diagnostics.iter().any(|diagnostic| selected_owner_missing_callable(diagnostic, &owner)) {
-            warnings.push("Missing callable realization does not block this canonical amendment. Source validation still fails until the declared callables are implemented and all source and proof gates pass.".to_string());
+        if validation.diagnostics.iter().any(|diagnostic| selected_owner_realization_debt(diagnostic, &owner)) {
+            warnings.push("Unfinished callable, variant, or runtime-layout realization does not block this scoped canonical amendment. Source validation still fails until implementation and every source and proof gate pass. Material intent unknowns still require clarification before a ready mutation receipt.".to_string());
         }
     }
     let mut blockers = if machine_repair.is_some() || spec_repair.is_some() {
@@ -43307,7 +43307,7 @@ fn build_next_report_with_optional_program(
                     && !(external_rust_crate_declaration
                         && requested_external_crate_declaration_diagnostic(task, diagnostic, &owner))
                     && !(owner_scoped_existing_semantic_change
-                        && selected_owner_missing_callable(diagnostic, &owner))
+                        && selected_owner_realization_debt(diagnostic, &owner))
                     && !retained_structural::repaired_diagnostic(diagnostic, &owner, &retained_repairs)
                     && if explicit_outside_coverage {
                         diagnostic.check.starts_with("intent.")
@@ -44280,7 +44280,7 @@ fn exact_owner_scoped_proof_support_role_change_ready(
         && !requests_product_semantics
 }
 
-fn owner_scoped_existing_semantic_change_ready(
+fn owner_scoped_existing_semantic_change_scope(
     intent: Option<&IntentModel>,
     owner: &OwnerResolution,
 ) -> bool {
@@ -44291,16 +44291,8 @@ fn owner_scoped_existing_semantic_change_ready(
         && intent.operation == IntentOperation::SemanticChange
         && intent.change_scope == IntentChangeScope::ExistingModule
         && !intent.responsibilities.is_empty()
-        && intent.open_questions.is_empty()
-        && [
-            &intent.facts.domain_decisions,
-            &intent.facts.lifecycle,
-            &intent.facts.effects,
-            &intent.facts.runnable_surface,
-            &intent.facts.reuse,
-        ]
-        .iter()
-        .all(|fact| fact.disposition != IntentDisposition::Unknown)
+    // This identifies scope only. The independent material-unknown gate still
+    // prevents readiness and mutation receipts for incomplete typed intent.
 }
 
 fn proven_required_contract_sync_repairs(
@@ -44593,6 +44585,47 @@ fn selected_owner_missing_callable(diagnostic: &Diagnostic, owner: &OwnerResolut
         "implementation.rust.typing.transition-function" => missing_symbol("declared `architecture.machine.transition_function` `", "` was not found in Rust source"),
         "structure.declared-symbol-missing" => ["transition_function", "transition_record_function", "driver_function", "initial_state_function"].iter()
             .any(|field| missing_symbol(&format!("declared architecture machine.{field} `"), "` was not found in Rust source")),
+        _ => false,
+    }
+}
+
+// Closed source-conformance findings may remain implementation debt while an
+// exact existing owner amends canonical semantics. No authority-row, unresolved
+// call, ambiguous symbol, schema, or revision finding is deferred here.
+fn selected_owner_realization_debt(diagnostic: &Diagnostic, owner: &OwnerResolution) -> bool {
+    if selected_owner_missing_callable(diagnostic, owner) { return true; }
+    let Some(selected) = owner.selected_module() else { return false; };
+    let Some(directory) = Path::new(&selected.path).parent() else { return false; };
+    if Path::new(&diagnostic.path) != directory.join("implementation.yaml") { return false; }
+    match diagnostic.check.as_str() {
+        "structure.declared-command-not-represented"
+        | "structure.declared-effect-result-not-represented"
+        | "structure.declared-state-not-represented"
+        | "structure.declared-variant-not-represented" => {
+            diagnostic.message.strip_prefix("declared semantic ")
+                .and_then(|message| message.split_once(" variant `"))
+                .is_some_and(|(category, rest)| {
+                    matches!(category, "commands" | "effect_results" | "states" | "effects" | "events" | "observed_events" | "replies" | "rejections")
+                        && rest.split_once("` is not represented by Rust enum `")
+                            .is_some_and(|(variant, container)| !variant.is_empty() && !variant.contains('`')
+                                && container.strip_suffix('`').is_some_and(|name| !name.is_empty() && !name.contains('`')))
+                })
+        }
+        "structure.effect-protocol-executor-symbol-missing" => {
+            diagnostic.message.starts_with("effect `")
+                && diagnostic.message.contains("` executor symbol `")
+                && diagnostic.message.ends_with("` was not found in Rust source")
+        }
+        "structure.persistent-async-binding" => matches!(diagnostic.message.as_str(),
+            "exact input poll method must return Poll<Option<Input>>"
+            | "persistent driver must be async and accept &mut Runtime as its first parameter"
+            | "runtime pending field must retain Vec<Future<Output = EffectResultEnvelope>>"
+            | "runtime records field must retain Vec<TransitionRecord>"
+            | "runtime state field must have the exact declared State type")
+            || diagnostic.message.split_once(' ').is_some_and(|(symbol, reason)|
+                symbol.contains('#') && !symbol.contains('`') && matches!(reason,
+                    "Future::Output must be the exact EffectResultEnvelope"
+                    | "request parameter must be the exact EffectEnvelope")),
         _ => false,
     }
 }
@@ -101431,6 +101464,19 @@ architecture:
         let mode = get_str(&before.value, &["architecture", "machine", "mode"]).unwrap();
         let change = parse_machine_change(None, Some(&format!("spec: rms/machine-change/v0.1\nmachine:\n  mode: {mode}\n  transition_function: transition_v2\n")), None).unwrap();
         run_machine_apply_change(&path, &change, false).unwrap();
+        // A normal semantic-first amendment also has unfinished ADT variants.
+        let representation = root.join(structure_role_paths(&before, "representation")[0].clone());
+        let mut source = fs::read_to_string(&representation).unwrap();
+        let parsed = syn::parse_file(&source).unwrap();
+        let command = get_str(&before.value, &["architecture", "machine", "types", "command"]).unwrap();
+        let variant = parsed.items.iter().find_map(|item| match item {
+            syn::Item::Enum(item) if item.ident == command => item.variants.first(),
+            _ => None,
+        }).unwrap();
+        let start = variant.ident.span().start();
+        let offset = source.lines().take(start.line - 1).map(|line| line.len() + 1).sum::<usize>() + start.column;
+        source.replace_range(offset..offset + variant.ident.to_string().len(), "UnfinishedCommand");
+        fs::write(&representation, source).unwrap();
         initialize_test_git_repository(&root);
         let module = root.join("module.yaml");
         let task = "Amend the versioned module contract before implementing the newly declared transition.";
@@ -101439,11 +101485,51 @@ architecture:
         assert_eq!(report.task_classification.lane, TaskLane::Semantic);
         assert!(report.validation.diagnostics.iter().any(|d| d.severity == Severity::Error && selected_owner_missing_callable(d, &report.owner)));
         assert_eq!(report.validation.status, "fail");
+        assert!(report.validation.diagnostics.iter().any(|d| d.check == "structure.declared-command-not-represented"));
         let receipt = Path::new(&report.receipt_path);
         assert!(validate_route_receipt(&root, receipt, "spec-apply", &path, None).is_ok());
+        assert!(validate_route_receipt(&root, receipt, "machine-apply", &path, None).is_ok());
+        run_machine_apply_change(&path, &change, true).unwrap();
         assert!(validate_route_receipt(&root, receipt, "surface-apply", &path, None).is_err());
         assert!(validate_route_receipt(&root, receipt, "spec-apply", &root.join("other/implementation.yaml"), None).is_err());
         let owner = &report.owner;
+        for (check, message) in [
+            ("structure.declared-command-not-represented", "declared semantic commands variant `Run` is not represented by Rust enum `Command`"),
+            ("structure.declared-effect-result-not-represented", "declared semantic effect_results variant `Done` is not represented by Rust enum `Result`"),
+            ("structure.declared-state-not-represented", "declared semantic states variant `Active` is not represented by Rust enum `State`"),
+            ("structure.declared-variant-not-represented", "declared semantic replies variant `Done` is not represented by Rust enum `Reply`"),
+            ("structure.effect-protocol-executor-symbol-missing", "effect `Work` executor symbol `src/io.rs#execute` was not found in Rust source"),
+            ("structure.persistent-async-binding", "exact input poll method must return Poll<Option<Input>>"),
+            ("structure.persistent-async-binding", "persistent driver must be async and accept &mut Runtime as its first parameter"),
+            ("structure.persistent-async-binding", "runtime pending field must retain Vec<Future<Output = EffectResultEnvelope>>"),
+            ("structure.persistent-async-binding", "runtime records field must retain Vec<TransitionRecord>"),
+            ("structure.persistent-async-binding", "runtime state field must have the exact declared State type"),
+            ("structure.persistent-async-binding", "src/io.rs#execute Future::Output must be the exact EffectResultEnvelope"),
+            ("structure.persistent-async-binding", "src/io.rs#execute request parameter must be the exact EffectEnvelope"),
+        ] {
+            let diagnostic = error(check, &path, message);
+            assert!(selected_owner_realization_debt(&diagnostic, owner), "{diagnostic:?}");
+            let mut other = diagnostic.clone(); other.path = root.join("other/implementation.yaml").display().to_string();
+            assert!(!selected_owner_realization_debt(&other, owner));
+        }
+        for (check, message) in [
+            ("structure.persistent-async-binding", "envelope-flow proof failed: constructor escapes"),
+            ("schema.validate", "invalid schema"),
+            ("semantic.revision-drift", "unsealed machine mutation"),
+            ("effects.transitive-purity", "semantic function `step` failed effect analysis: unresolved call: unknown"),
+            ("effects.transitive-purity", "semantic function `step` failed effect analysis: inferred authority filesystem"),
+        ] { assert!(!selected_owner_realization_debt(&error(check, &path, message), owner)); }
+        let mut incomplete = report.intent.clone().unwrap();
+        incomplete.facts.effects.disposition = IntentDisposition::Unknown;
+        incomplete.facts.effects.basis = IntentBasis::Inferred;
+        incomplete.facts.effects.source_quote = None;
+        incomplete.facts.effects.rationale = Some("External execution ownership is unresolved.".into());
+        incomplete.open_questions.push("Who executes external operations?".into());
+        let clarification = build_next_report_with_intent(&root, Some(&module), task,
+            RawIntentInput { json: Some(serde_json::to_string(&incomplete).unwrap()), ..RawIntentInput::default() }, None).unwrap();
+        assert_eq!(clarification.result, NextResult::ClarificationRequired, "{clarification:#?}");
+        assert_eq!(clarification.owner.status(), OwnerStatus::None);
+        assert!(validate_route_receipt(&root, Path::new(&clarification.receipt_path), "machine-apply", &path, None).is_err());
         for reason in ["semantic symbol resolved to 2 source functions; expected exactly one", "unresolved call: unknown", "inferred authority filesystem", "semantic symbol resolved to 0 source functions; expected exactly one; unresolved call"] {
             let diagnostic = error("effects.transitive-purity", &path, format!("semantic function `transition-v2` failed effect analysis: {reason}"));
             assert!(!selected_owner_missing_callable(&diagnostic, owner));
