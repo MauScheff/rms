@@ -2,6 +2,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use syn::{FnArg, GenericArgument, Item, PathArguments, ReturnType, Type, TypeParamBound};
+#[path = "envelope_flow.rs"]
+mod envelope_flow;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
@@ -10,6 +12,8 @@ pub(crate) enum ExecutionBinding {
     Synchronous {},
     SynchronousEnvelopes {
         executors: Vec<ExecutorBinding>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        envelope_flow: Option<EnvelopeFlow>,
     },
     PersistentAsync {
         runtime: String,
@@ -18,6 +22,8 @@ pub(crate) enum ExecutionBinding {
         pending_field: String,
         input_poll: String,
         executors: Vec<ExecutorBinding>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        envelope_flow: Option<EnvelopeFlow>,
     },
 }
 
@@ -26,6 +32,25 @@ pub(crate) enum ExecutionBinding {
 pub(crate) struct ExecutorBinding {
     symbol: String,
     request_parameter: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status_symbol: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EnvelopeFlow {
+    context: String,
+    split: String,
+    observe: String,
+    dispatcher: String,
+    request_parameter: usize,
+}
+
+/// Canonical evidence, not caller-selected projection fields.
+pub(crate) struct FlowContract {
+    pub protocols: BTreeMap<String, String>,
+    pub request_fields: BTreeSet<String>,
+    pub result_fields: BTreeSet<String>,
 }
 
 impl ExecutionBinding {
@@ -287,6 +312,7 @@ impl<'a> Index<'a> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn validate(
         &self,
         binding: &ExecutionBinding,
@@ -294,8 +320,15 @@ impl<'a> Index<'a> {
         protocols: &[String],
         types: &Types<'_>,
     ) -> Vec<String> {
-        if let ExecutionBinding::SynchronousEnvelopes { executors } = binding {
-            return self.validate_executors(executors, protocols, types, false);
+        self.validate_with_flow(binding, driver, protocols, types, None)
+    }
+
+    pub(crate) fn validate_with_flow(
+        &self, binding: &ExecutionBinding, driver: &str, protocols: &[String],
+        types: &Types<'_>, contract: Option<&FlowContract>,
+    ) -> Vec<String> {
+        if let ExecutionBinding::SynchronousEnvelopes { executors, envelope_flow } = binding {
+            return self.validate_executors(executors, protocols, types, false, envelope_flow.as_ref(), contract);
         }
         let ExecutionBinding::PersistentAsync {
             runtime,
@@ -304,6 +337,7 @@ impl<'a> Index<'a> {
             pending_field,
             input_poll,
             executors,
+            envelope_flow,
         } = binding
         else {
             return Vec::new();
@@ -375,7 +409,7 @@ impl<'a> Index<'a> {
         {
             errors.push("exact input poll method must return Poll<Option<Input>>".into());
         }
-        errors.extend(self.validate_executors(executors, protocols, types, true));
+        errors.extend(self.validate_executors(executors, protocols, types, true, envelope_flow.as_ref(), contract));
         errors
     }
 
@@ -385,8 +419,24 @@ impl<'a> Index<'a> {
         protocols: &[String],
         types: &Types<'_>,
         asynchronous: bool,
+        flow: Option<&EnvelopeFlow>,
+        contract: Option<&FlowContract>,
     ) -> Vec<String> {
         let mut errors = Vec::new();
+        let projected = if let Some(flow) = flow {
+            match contract {
+                Some(contract) => match envelope_flow::prove(self, flow, executors, types, contract, asynchronous) {
+                    Ok(()) => true,
+                    Err(reason) => { errors.push(format!("envelope-flow proof failed: {reason}")); false }
+                },
+                None => { errors.push("envelope-flow requires canonical protocol and message-field evidence".into()); false }
+            }
+        } else {
+            if executors.iter().any(|executor| executor.status_symbol.is_some()) {
+                errors.push("status_symbol requires an explicit envelope_flow binding".into());
+            }
+            false
+        };
         // Every protocol must remain bound. Neither variant erases enum ownership.
         for name in [types.effect, types.result] {
             if !matches!(self.named_items(name).as_slice(), [(_, Item::Enum(_))]) {
@@ -427,7 +477,7 @@ impl<'a> Index<'a> {
                 .and_then(parameter_type);
             if !executor.symbol.contains('#')
                 || generic_envelope
-                || request.is_none_or(|ty| !self.nominal(ty, types.request_envelope))
+                || (!projected && request.is_none_or(|ty| !self.nominal(ty, types.request_envelope)))
             {
                 errors.push(format!(
                     "{} request parameter must be the exact EffectEnvelope",
@@ -495,6 +545,12 @@ fn collect_imports(tree: &syn::UseTree, prefix: &str, imports: &mut BTreeSet<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn envelope_flow_requires_explicit_supported_binding() {
+        let yaml = "kind: synchronous-envelopes\nexecutors:\n- {symbol: 'src/read.rs#execute', request_parameter: 1, status_symbol: 'src/io.rs#Ports::read'}\nenvelope_flow:\n  context: src/types.rs#Context\n  split: src/types.rs#Context::split\n  observe: src/types.rs#Context::observed\n  dispatcher: src/runtime.rs#dispatch\n  request_parameter: 1\n";
+        assert!(serde_yaml::from_str::<ExecutionBinding>(yaml).is_ok(), "closed envelope projection is not yet representable");
+    }
 
     const SOURCE: &str = r#"
 use std::{future::Future, pin::Pin, task::Poll};

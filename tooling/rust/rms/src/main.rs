@@ -35661,11 +35661,17 @@ fn validate_rust_machine_execution_path(
                 result_envelope: machine_types.effect_result_envelope.as_deref().unwrap_or(""),
             };
             let protocols = existing_effect_protocols(implementation).into_iter().filter_map(|protocol| protocol.executor_symbol).collect::<Vec<_>>();
-            for message in (persistent_async::Index { files: &summary.async_sources }).validate(
+            let flow_contract = persistent_async::FlowContract {
+                protocols: existing_effect_protocols(implementation).into_iter().filter_map(|protocol| protocol.executor_symbol.map(|symbol| (symbol, protocol.effect))).collect(),
+                request_fields: get_structure_values(&implementation.value, &["architecture", "messages", "effect_envelope"]).into_iter().collect(),
+                result_fields: get_structure_values(&implementation.value, &["architecture", "messages", "effect_result_envelope"]).into_iter().collect(),
+            };
+            for message in (persistent_async::Index { files: &summary.async_sources }).validate_with_flow(
                 &binding,
                 get_str(&implementation.value, &["architecture", "machine", "driver_function"]).unwrap_or(""),
                 &protocols,
                 &types,
+                Some(&flow_contract),
             ) {
                 diagnostics.push(error(if persistent { "structure.persistent-async-binding" } else { "structure.synchronous-envelope-binding" }, &implementation.path, message));
             }
@@ -106526,6 +106532,43 @@ machine:
         unsupported.machine.mode = "stateless-decision-machine".into();
         let manifest = LoadedManifest { path: PathBuf::from("implementation.yaml"), value };
         assert!(validate_machine_change(&manifest, &unsupported).iter().any(|diagnostic| diagnostic.check == "machine-change.execution-binding-unsupported"));
+    }
+
+    #[test]
+    fn envelope_flow_binding_roundtrips_through_canonical_machine_change_and_schema() {
+        let change: MachineChange = serde_yaml::from_str(r#"
+spec: rms/machine-change/v0.1
+machine:
+  mode: workflow-effect-machine
+  execution_binding:
+    kind: synchronous-envelopes
+    executors:
+    - {symbol: 'src/read.rs#execute', request_parameter: 1, status_symbol: 'src/io.rs#Ports::read'}
+    envelope_flow:
+      context: src/types.rs#Context
+      split: src/types.rs#Context::split
+      observe: src/types.rs#Context::observed
+      dispatcher: src/runtime.rs#dispatch
+      request_parameter: 1
+"#).unwrap();
+        let mut value = serde_yaml::from_str(include_str!("../../../../examples/rust/implementation.yaml")).unwrap();
+        apply_machine_change_to_manifest(&mut value, &change);
+        let manifest = LoadedManifest { path: PathBuf::from("implementation.yaml"), value };
+        let mut diagnostics = Vec::new();
+        validate_against_embedded_schema(&manifest, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(get_str(&manifest.value, &["architecture", "machine", "execution_binding", "envelope_flow", "context"]), Some("src/types.rs#Context"));
+        let binding = get_path(&manifest.value, &["architecture", "machine", "execution_binding"]).unwrap();
+        let decoded: persistent_async::ExecutionBinding = serde_yaml::from_value(binding.clone()).unwrap();
+        assert_eq!(&serde_yaml::to_value(decoded).unwrap(), binding);
+        for path in [vec!["architecture", "machine", "execution_binding", "envelope_flow"], vec!["architecture", "machine", "execution_binding", "executors"]] {
+            let mut invalid = manifest.clone();
+            if path.last() == Some(&"envelope_flow") { remove_yaml_path(&mut invalid.value, &path); }
+            else { set_yaml_value_path(&mut invalid.value, &path, serde_yaml::from_str("[{symbol: 'src/read.rs#execute', request_parameter: 1}]").unwrap()); }
+            diagnostics.clear();
+            validate_against_embedded_schema(&invalid, &mut diagnostics);
+            assert!(!diagnostics.is_empty(), "schema accepted incomplete opt-in");
+        }
     }
 
     #[test]
