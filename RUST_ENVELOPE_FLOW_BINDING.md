@@ -54,6 +54,18 @@ rms machine apply implementation.yaml --change-file envelope-flow.yaml --route-r
 
 The canonical effect protocols select variant-to-executor mappings. The canonical message declarations select identity fields. The packet does not supply an identity-field subset or an alternative protocol map.
 
+## Adoption when the old signature rule fails
+
+An existing projected executor can fail the default exact-envelope rule before adoption. Obtain a fresh owner-local machine-binding repair route. Select the exact owning `module.yaml`, not `implementation.yaml`.
+
+```sh
+rms next "Adopt the closed envelope-flow execution binding declaration for the existing <module> implementation. Preserve all contracts, states, lifecycle, effects, authorities, and dependencies. No source change or new product meaning is requested." --root <root> --module <root>/modules/<module>/module.yaml --ai
+```
+
+This recovery route requires an explicit owner and only recognized owner-local binding errors. The exact `path.rs#symbol request parameter must be the exact EffectEnvelope` finding qualifies. Other persistent-binding findings, closed-flow proof failures, authority errors, canonical drift, invalid schemas, and unrelated errors do not qualify. Unresolved intent still blocks the route.
+
+A ready recovery receipt permits focused machine apply, not spec apply or source edits. Apply only the reviewed execution-binding declaration. Use the new receipt for dry-run and write mode. Do not substitute an older ready receipt for a blocked result. Source repair needs its own ready private-implementation route. Final source conformance, native proof, candidate checks, and committed checks remain required. Recovery readiness does not certify the current source or the proposed projection.
+
 ## Supported source shape
 
 The context is one source-owned, non-generic struct. Its fields are private. The context has no derives and no trait implementation. Its one inherent implementation contains exactly the registered split and observe methods. Documentation attributes are permitted. The context is not publicly exported outside the crate.

@@ -44624,7 +44624,7 @@ fn owner_local_binding_repair_ready(
 }
 
 fn task_requests_owner_local_binding_repair(task: &str) -> bool {
-    let repair = ["repair", "fix", "align", "restore", "declare"]
+    let repair = ["repair", "fix", "align", "restore", "declare", "adopt"]
         .iter()
         .any(|term| task_mentions_token(task, term));
     let binding = [
@@ -44642,6 +44642,17 @@ fn task_requests_owner_local_binding_repair(task: &str) -> bool {
 }
 
 fn recognized_owner_local_binding_repair_diagnostic(diagnostic: &Diagnostic) -> bool {
+    // A replacement execution binding must be declarable while the old
+    // nominal request signature still fails. This is not permission to
+    // suppress any other persistent/closed-flow proof failure.
+    if diagnostic.check == "structure.persistent-async-binding" {
+        return diagnostic.message
+            .strip_suffix(" request parameter must be the exact EffectEnvelope")
+            .filter(|symbol| !symbol.chars().any(char::is_whitespace))
+            .and_then(|symbol| symbol.split_once('#'))
+            .is_some_and(|(path, symbol)| path.ends_with(".rs")
+                && !symbol.is_empty() && !symbol.contains('#'));
+    }
     matches!(
         diagnostic.check.as_str(),
         "structure.declared-variant-not-represented"
@@ -113415,6 +113426,47 @@ semantic_functions: []
         );
         assert!(validate_route_receipt(&root, receipt, "add-binding", &module, None).is_err());
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn owner_local_binding_repair_accepts_only_exact_envelope_signature_debt() {
+        let root = copy_minimal_fixture("next-envelope-signature-repair");
+        let module = root.join("module.yaml");
+        let implementation = fs::canonicalize(root.join("implementation.yaml")).unwrap();
+        let profile = build_repository_profile(&root).unwrap();
+        let task = "Repair the existing machine execution-binding declaration by adopting closed envelope-flow; preserve product semantics.";
+        let owner = resolve_next_owner(&root, Some(&module), task, &profile.modules, true).unwrap();
+        let signature = error("structure.persistent-async-binding", &implementation,
+            "src/read.rs#execute request parameter must be the exact EffectEnvelope");
+        assert!(owner_local_binding_repair_ready(&root, Some(&module), task,
+            std::slice::from_ref(&signature), &owner));
+        assert!(owner_local_binding_repair_ready(&root, Some(&module),
+            "Adopt the existing machine execution binding declaration; preserve product semantics.",
+            std::slice::from_ref(&signature), &owner));
+        assert!(!owner_local_binding_repair_ready(&root, None, task,
+            std::slice::from_ref(&signature), &owner));
+        assert!(!owner_local_binding_repair_ready(&root, Some(&module), "implement product behavior",
+            std::slice::from_ref(&signature), &owner));
+        for message in [
+            "envelope-flow proof failed: forged status",
+            "src/read.rs#execute must return a future of the exact EffectResultEnvelope",
+            "Runtime must retain the exact State",
+            "request parameter must be the exact EffectEnvelope",
+            "#execute request parameter must be the exact EffectEnvelope",
+            "src/read.rs# request parameter must be the exact EffectEnvelope",
+            "envelope-flow proof failed: src/read.rs#execute request parameter must be the exact EffectEnvelope",
+        ] {
+            let invalid = error("structure.persistent-async-binding", &implementation, message);
+            assert!(!owner_local_binding_repair_ready(&root, Some(&module), task, &[signature.clone(), invalid], &owner), "{message}");
+        }
+        for check in ["schema.validate", "semantic.revision-drift", "effects.transitive-purity"] {
+            let invalid = error(check, &implementation, "unrelated error");
+            assert!(!owner_local_binding_repair_ready(&root, Some(&module), task, &[signature.clone(), invalid], &owner));
+        }
+        let mut unrelated = signature.clone();
+        unrelated.path = root.join("other/implementation.yaml").display().to_string();
+        assert!(!owner_local_binding_repair_ready(&root, Some(&module), task, &[signature, unrelated], &owner));
         fs::remove_dir_all(root).unwrap();
     }
 
