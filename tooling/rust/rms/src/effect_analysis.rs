@@ -1508,6 +1508,22 @@ struct RustCallCollector {
 }
 
 impl<'ast> Visit<'ast> for RustCallCollector {
+    fn visit_expr_await(&mut self, node: &'ast syn::ExprAwait) {
+        // Await inserts a poll call. A concrete outer async body must not hide
+        // dispatch to an erased, generic, or otherwise unknown inner future.
+        let concrete = match node.base.as_ref() {
+            Expr::Async(_) => true,
+            Expr::Call(call) if self.type_index.standard_poll_fn(call) => true,
+            _ => self.type_index.expression_type(&node.base, &self.value_types)
+                .is_some_and(|value| value.is_concrete_future()),
+        };
+        if !concrete {
+            self.calls.insert("<dynamic-call>".into());
+            self.dynamic_sites.insert(format!("await {}", rust_expr_label(&node.base)));
+        }
+        visit::visit_expr_await(self, node);
+    }
+
     fn visit_expr_struct(&mut self, node: &'ast syn::ExprStruct) {
         if node.qself.is_some() || !self.type_index.git_index_entry(&node.path) {
             visit::visit_expr_struct(self, node);
@@ -2182,7 +2198,7 @@ impl<'ast> Visit<'ast> for RustCallCollector {
     }
 
     fn visit_local(&mut self, node: &'ast Local) {
-        let inferred = self.type_index.sequence_annotation(&node.pat).or_else(|| node.init.as_ref().and_then(|init| {
+        let inferred = self.type_index.local_annotation(&node.pat).or_else(|| node.init.as_ref().and_then(|init| {
             self.type_index
                 .expression_type(&init.expr, &self.value_types)
         })).or_else(|| {
@@ -2841,7 +2857,9 @@ fn rust_exact_function_reference(
             let (owner_path, owner_name) = owner.split_once('#')?;
             let file = syn::parse_file(sources.get(owner_path)?).ok()?;
             let methods = file.items.iter().filter_map(|item| match item {
-                syn::Item::Impl(item) if item.trait_.is_none() && matches!(item.self_ty.as_ref(), Type::Path(owner) if owner.path.get_ident().is_some_and(|name| name == owner_name)) => Some(item),
+                syn::Item::Impl(item) if item.trait_.is_none() && matches!(item.self_ty.as_ref(), Type::Path(owner)
+                    if owner.qself.is_none() && owner.path.segments.len() == 1
+                        && owner.path.segments[0].ident == owner_name) => Some(item),
                 _ => None,
             }).flat_map(|item| item.items.iter()).filter(|item| matches!(item, syn::ImplItem::Fn(function) if function.sig.ident == method)).count();
             if methods == 1 {
@@ -7366,6 +7384,54 @@ fn ready(data: &Data) -> bool {
         let result = report("rust", "src/array.rs", &unknown, expectation("src/array.rs#ready", "pure", &[]));
         assert_eq!(result.result, AnalysisResult::Fail);
         assert!(result.functions[0].transitive_authorities.contains(&"dynamic-dispatch".into()), "{result:#?}");
+    }
+
+    #[test]
+    fn rust_typed_local_mutex_is_monomorphic_and_keeps_payload_authority() {
+        let glob = analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+            sources: BTreeMap::from([
+                ("src/lib.rs".into(), "mod values; mod ops;".into()),
+                ("src/values.rs".into(), "#[allow(non_camel_case_types)] #[repr(u8)] pub enum Value { ready }".into()),
+                ("src/ops.rs".into(), "use crate::values::*; fn run(value: &std::sync::Mutex<Value>) { let local: &std::sync::Mutex<Value> = value; local.lock(); }".into()),
+            ]),
+            semantic_functions: vec![expectation("src/ops.rs#run", "pure", &[])],
+            authority_facades: vec![], trusted_external_calls: BTreeSet::new(),
+        });
+        assert_eq!(glob.result, AnalysisResult::Pass, "{glob:#?}");
+        for (imports, ty) in [("", "std::sync::Mutex<T>"), ("use std::sync::Mutex as Lock;", "Lock<T>")] {
+            let source = format!("{imports} fn run<T>(value: &{ty}) {{ let local: &{ty} = value; local.lock(); }}");
+            let result = report("rust", "src/lib.rs", &source, expectation("src/lib.rs#run", "pure", &[]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        let source = "struct Owner { mutex: std::sync::Mutex<u8> } impl Owner { fn run(&self) { let local: &std::sync::Mutex<u8> = &self.mutex; local.lock(); } }";
+        assert_eq!(report("rust", "src/lib.rs", source, expectation("src/lib.rs#Owner::run", "pure", &[])).result, AnalysisResult::Pass);
+        for source in [
+            "fn run<Lock>(value: &Lock) { let local: &Lock = value; local.lock(); }",
+            "struct Mutex; impl Mutex { fn lock(&self) { std::fs::read(\"x\"); } } fn run(value: &Mutex) { let local: &Mutex = value; local.lock(); }",
+            "fn run(value: &std::sync::Mutex<Box<dyn Fn()>>) { let local: &std::sync::Mutex<Box<dyn Fn()>> = value; (local.lock().unwrap())(); }",
+        ] {
+            assert_eq!(report("rust", "src/lib.rs", source, expectation("src/lib.rs#run", "pure", &[])).result, AnalysisResult::Fail, "{source}");
+        }
+    }
+
+    #[test]
+    fn rust_concrete_pinned_async_future_keeps_body_effects_and_erasure() {
+        let source = "use std::future::Future; async fn task() -> u8 { 1 } fn run(cx: &mut std::task::Context<'_>) { let mut future = Box::pin(task()); future.as_mut().poll(cx); }";
+        assert_eq!(report("rust", "src/lib.rs", source, expectation("src/lib.rs#run", "pure", &[])).result, AnalysisResult::Pass);
+        let alias = source.replace("use std::future::Future;", "use std::future::Future; use std::boxed::Box as Heap;").replace("Box::pin", "Heap::pin");
+        assert_eq!(report("rust", "src/lib.rs", &alias, expectation("src/lib.rs#run", "pure", &[])).result, AnalysisResult::Pass);
+        let lifetime_method = "struct Owner<'a> { value: &'a u8 } impl<'a> Owner<'a> { async fn task(&self) -> u8 { *self.value } } fn run(owner: &Owner<'_>, cx: &mut std::task::Context<'_>) { let mut future = Box::pin(Owner::task(owner)); future.as_mut().poll(cx); }";
+        assert_eq!(report("rust", "src/lib.rs", lifetime_method, expectation("src/lib.rs#run", "pure", &[])).result, AnalysisResult::Pass);
+        for changed in [
+            source.replace("{ 1 }", "{ std::fs::read(\"x\"); 1 }"),
+            source.replace("let mut future =", "let mut future: std::pin::Pin<Box<dyn Future<Output = u8>>> ="),
+            "fn run<F: std::future::Future>(mut future: std::pin::Pin<Box<F>>, cx: &mut std::task::Context<'_>) { future.as_mut().poll(cx); }".into(),
+            "async fn task(future: std::pin::Pin<Box<dyn std::future::Future<Output = u8>>>) -> u8 { future.await } fn run(future: std::pin::Pin<Box<dyn std::future::Future<Output = u8>>>, cx: &mut std::task::Context<'_>) { let mut outer = Box::pin(task(future)); outer.as_mut().poll(cx); }".into(),
+            "fn run(callback: fn()) { callback(); }".into(),
+        ] {
+            assert_eq!(report("rust", "src/lib.rs", &changed, expectation("src/lib.rs#run", "pure", &[])).result, AnalysisResult::Fail, "{changed}");
+        }
     }
 
     #[test]

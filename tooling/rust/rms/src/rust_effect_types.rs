@@ -29,6 +29,8 @@ pub(super) enum RustValueType {
     MutexGuard(Box<Self>),
     PoisonError(Box<Self>),
     FutureValue(Box<Self>),
+    ConcreteFuture(Box<Self>),
+    Pinned(Box<Self>),
     Poll(Box<Self>),
     Tuple(Vec<Self>),
 }
@@ -99,6 +101,9 @@ impl ExternalType {
 }
 
 impl RustValueType {
+    pub(super) fn is_concrete_future(&self) -> bool {
+        matches!(self.deref_value(), Self::ConcreteFuture(_))
+    }
     pub(super) fn is_dynamic_receiver(&self) -> bool {
         matches!(self.deref_value(), Self::Dynamic)
     }
@@ -110,7 +115,7 @@ impl RustValueType {
     }
     fn deref_value(&self) -> &Self {
         match self {
-            Self::Shared(value) | Self::Boxed(value) | Self::MutexGuard(value) => value.deref_value(),
+            Self::Shared(value) | Self::Boxed(value) | Self::MutexGuard(value) | Self::Pinned(value) => value.deref_value(),
             _ => self,
         }
     }
@@ -438,6 +443,13 @@ impl RustTypeIndex {
     }
 
     pub(super) fn external_method_marker(&self, value: &RustValueType, method: &str, arity: usize) -> Option<&'static str> {
+        // Only source-created, concrete async futures carry this provenance.
+        // Erased futures and arbitrary pinned pointers do not acquire it.
+        if matches!((value, method, arity), (RustValueType::Pinned(inner), "as_mut", 0)
+            if matches!(inner.as_ref(), RustValueType::Boxed(_)))
+            || (method == "poll" && arity == 1 && matches!(value.deref_value(), RustValueType::ConcreteFuture(_))) {
+            return Some("<rust-memory-operation>");
+        }
         if matches!((value, method, arity),
             (RustValueType::StandardMutex(_), "lock", 0)
             | (RustValueType::PoisonError(_), "into_inner", 0)
@@ -558,7 +570,7 @@ impl RustTypeIndex {
             named_type_memo: Rc::default(),
             path: String::new(),
         };
-        let mut signatures = BTreeMap::<String, Vec<(String, Type)>>::new();
+        let mut signatures = BTreeMap::<String, Vec<(String, Type, bool)>>::new();
         for (path, file) in &files {
             for item in &file.items {
                 let derived = match item {
@@ -577,7 +589,7 @@ impl RustTypeIndex {
                         // This is a return-type fact, not a purity exemption.
                         // Competing inherent clone signatures remain ambiguous.
                         signatures.entry(format!("{path}#{name}::clone")).or_default()
-                            .push(((*path).clone(), syn::parse_str("Self").unwrap()));
+                            .push(((*path).clone(), syn::parse_str("Self").unwrap(), false));
                     }
                 }
                 if let Item::Struct(item) = item {
@@ -629,7 +641,13 @@ impl RustTypeIndex {
                             index.for_path(path).parse_type(&reference.elem).filter(|value| matches!(value, RustValueType::Sequence(_)))
                         }).collect();
                         index.mutable_sequences.insert(format!("{path}#{}", function.sig.ident), parameters);
-                        if let ReturnType::Type(_, result) = &function.sig.output {
+                        if function.sig.asyncness.is_some() {
+                            let output = match &function.sig.output {
+                                ReturnType::Type(_, result) => index.for_path(path).parse_type(result).unwrap_or(RustValueType::Unknown),
+                                ReturnType::Default => RustValueType::Tuple(Vec::new()),
+                            };
+                            index.function_returns.insert(format!("{path}#{}", function.sig.ident), RustValueType::ConcreteFuture(Box::new(output)));
+                        } else if let ReturnType::Type(_, result) = &function.sig.output {
                             if let Some(value) = index.for_path(path).parse_type(result) {
                                 index
                                     .function_returns
@@ -639,15 +657,18 @@ impl RustTypeIndex {
                     }
                 }
                 let Item::Impl(item) = item else { continue };
-                if item.trait_.is_some() || !item.generics.params.is_empty() {
+                if item.trait_.is_some() || !item.generics.params.iter().all(|parameter| matches!(parameter, syn::GenericParam::Lifetime(_))) {
                     continue;
                 }
                 let Type::Path(owner) = item.self_ty.as_ref() else {
                     continue;
                 };
-                let Some(owner) = owner.path.get_ident() else {
+                let Some(segment) = owner.path.segments.first().filter(|_| owner.qself.is_none() && owner.path.segments.len() == 1) else {
                     continue;
                 };
+                if !matches!(&segment.arguments, PathArguments::None)
+                    && !matches!(&segment.arguments, PathArguments::AngleBracketed(arguments) if arguments.args.iter().all(|argument| matches!(argument, GenericArgument::Lifetime(_)))) { continue; }
+                let owner = &segment.ident;
                 let owner = format!("{path}#{owner}");
                 if !index.unique_types.contains(&owner) {
                     continue;
@@ -656,7 +677,7 @@ impl RustTypeIndex {
                     let syn::ImplItem::Fn(function) = member else {
                         continue;
                     };
-                    if !function.sig.generics.params.is_empty() {
+                    if !function.sig.generics.params.iter().all(|parameter| matches!(parameter, syn::GenericParam::Lifetime(_))) {
                         continue;
                     }
                     let key = format!("{owner}::{}", function.sig.ident);
@@ -667,17 +688,19 @@ impl RustTypeIndex {
                     signatures
                         .entry(key)
                         .or_default()
-                        .push(((*path).clone(), result));
+                        .push(((*path).clone(), result, function.sig.asyncness.is_some()));
                 }
             }
         }
         for (key, values) in signatures {
             if values.len() == 1 {
-                // Only the unique nongeneric inherent impl supplies this owner.
+                // Only a unique inherent impl without type generics supplies this owner.
                 // Preserve it recursively inside Result, Option, and references.
                 let mut context = index.for_path(&values[0].0);
                 context.self_type = key.rsplit_once("::").map(|(owner, _)| owner.to_string());
-                let value = context.parse_type(&values[0].1);
+                let value = if values[0].2 {
+                    Some(RustValueType::ConcreteFuture(Box::new(context.parse_type(&values[0].1).unwrap_or(RustValueType::Unknown))))
+                } else { context.parse_type(&values[0].1) };
                 if let Some(value) = value {
                     index.returns.insert(key, value);
                 }
@@ -890,6 +913,7 @@ impl RustTypeIndex {
                             let wrapper = match external.as_str() {
                                 "std::sync::Arc" => Some(RustValueType::Shared(inner)),
                                 "std::boxed::Box" => Some(RustValueType::Boxed(inner)),
+                                "std::pin::Pin" => Some(RustValueType::Pinned(inner)),
                                 "std::sync::Mutex" => Some(RustValueType::StandardMutex(inner)),
                                 "tokio::sync::Mutex" => Some(RustValueType::TokioMutex(inner)),
                                 "std::sync::MutexGuard" | "tokio::sync::MutexGuard" => Some(RustValueType::MutexGuard(inner)),
@@ -1138,7 +1162,9 @@ impl RustTypeIndex {
                         _ => continue,
                     };
                     for attr in attrs {
-                        if attr.path().is_ident("doc") || attr.path().is_ident("cfg") { continue; }
+                        // Built-in lint/layout attributes do not create exports.
+                        // Procedural attributes and macros still fail closed.
+                        if ["doc", "cfg", "allow", "warn", "deny", "forbid", "repr"].iter().any(|name| attr.path().is_ident(name)) { continue; }
                         if !attr.path().is_ident("derive") { return false; }
                         let Ok(paths) = attr.parse_args_with(syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated) else { return false; };
                         for path in paths {
@@ -1500,9 +1526,11 @@ impl RustTypeIndex {
             .then(|| RustValueType::MapValues(Box::new(first.clone())))
     }
 
-    pub(super) fn sequence_annotation(&self, pattern: &Pat) -> Option<RustValueType> {
+    pub(super) fn local_annotation(&self, pattern: &Pat) -> Option<RustValueType> {
         let Pat::Type(pattern) = pattern else { return None; };
-        self.parse_type(&pattern.ty).filter(|value| matches!(value, RustValueType::Sequence(_)))
+        // An annotation may erase a concrete initializer. Never infer through
+        // an unsupported annotation and thereby resurrect concrete provenance.
+        Some(self.parse_type(&pattern.ty).unwrap_or(RustValueType::Unknown))
     }
 
     pub(super) fn inherent_self_type(&self, ty: &Type) -> Option<RustValueType> {
@@ -1585,7 +1613,7 @@ impl RustTypeIndex {
             Expr::Reference(reference) => self.expression_type(&reference.expr, values),
             Expr::Paren(paren) => self.expression_type(&paren.expr, values),
             Expr::Await(value) => match self.expression_type(&value.base, values)? {
-                RustValueType::FutureValue(output) => Some(*output),
+                RustValueType::FutureValue(output) | RustValueType::ConcreteFuture(output) => Some(*output),
                 _ => None,
             },
             Expr::Unary(value) if matches!(value.op, syn::UnOp::Deref(_)) => match self.expression_type(&value.expr, values)? {
@@ -1642,12 +1670,13 @@ impl RustTypeIndex {
                             ("std::process::Stdio::piped" | "std::process::Stdio::null", 0) => Some(RustValueType::External(Stdio)),
                             ("std::time::Duration::from_millis", 1) => Some(RustValueType::External(Duration)),
                             ("std::future::Future::poll", 2) => Some(RustValueType::Poll(Box::new(RustValueType::Unknown))),
-                            ("std::sync::Mutex::new" | "tokio::sync::Mutex::new" | "std::sync::Arc::new" | "std::boxed::Box::new", 1) => {
+                            ("std::sync::Mutex::new" | "tokio::sync::Mutex::new" | "std::sync::Arc::new" | "std::boxed::Box::new" | "std::boxed::Box::pin", 1) => {
                                 let value = Box::new(self.expression_type(&call.args[0], values).unwrap_or(RustValueType::Unknown));
                                 Some(match external.as_str() {
                                     "std::sync::Mutex::new" => RustValueType::StandardMutex(value),
                                     "tokio::sync::Mutex::new" => RustValueType::TokioMutex(value),
                                     "std::sync::Arc::new" => RustValueType::Shared(value),
+                                    "std::boxed::Box::pin" => RustValueType::Pinned(Box::new(RustValueType::Boxed(value))),
                                     _ => RustValueType::Boxed(value),
                                 })
                             }
@@ -1679,6 +1708,7 @@ impl RustTypeIndex {
                 let method = call.method.to_string();
                 if call.turbofish.is_none() && call.args.is_empty() {
                     match (&receiver, method.as_str()) {
+                        (RustValueType::Pinned(inner), "as_mut") if matches!(inner.as_ref(), RustValueType::Boxed(_)) => return Some(receiver),
                         (RustValueType::Shared(_), "clone") => return Some(receiver),
                         (RustValueType::StandardMutex(inner), "lock") => {
                             let guard = Box::new(RustValueType::MutexGuard(inner.clone()));
