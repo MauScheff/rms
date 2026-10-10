@@ -27746,6 +27746,10 @@ fn append_nested_owning_crate_aliases(manifest: &LoadedManifest, sources: &mut B
     let owner_prefix = library_path.strip_suffix("src/lib.rs").unwrap_or("").trim_end_matches('/');
     let library_name = cargo.get("lib").and_then(|value| value.get("name")).and_then(TomlValue::as_str)
         .unwrap_or(package).replace('-', "_");
+    let integration_prefix = library_path.strip_suffix("src/lib.rs").unwrap_or("");
+    if sources.keys().any(|path| path.starts_with(&format!("{integration_prefix}tests/")) && path.ends_with(".rs")) {
+        sources.insert(format!("rms-metadata/rust-integration-library/{integration_prefix}{library_name}"), library_path.clone());
+    }
     let callers = sources.keys().filter_map(|path| path.split_once("/src/").map(|(prefix, _)| prefix.to_string())).collect::<BTreeSet<_>>();
     for caller in callers {
         let caller_dir = base.join(&caller);
@@ -101146,6 +101150,25 @@ architecture:
             assert!(summary.functions.contains("fixture"), "test-only symbols must remain inspectable");
             let item: syn::ItemFn = syn::parse_str(&format!("#[cfg({cfg})] fn fixture() {{}} ")).unwrap();
             assert_eq!(has_cfg_test_attr(&item.attrs), test_only, "item {cfg}");
+        }
+    }
+
+    #[test]
+    fn integration_library_metadata_uses_exact_cargo_facade_only() {
+        let root = unique_test_dir("integration-library-metadata");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname='package-name'\nversion='0.1.0'\n[workspace]\n[lib]\nname='exact_facade'\n").unwrap();
+        fs::write(root.join("src/lib.rs"), "pub struct Value;").unwrap();
+        let manifest = LoadedManifest { path: root.join("implementation.yaml"), value: YamlValue::Null };
+        let mut sources = BTreeMap::from([("src/lib.rs".into(), "pub struct Value;".into()), ("tests/run.rs".into(), "use exact_facade::*;".into())]);
+        append_nested_owning_crate_aliases(&manifest, &mut sources);
+        assert_eq!(sources.get("rms-metadata/rust-integration-library/exact_facade").map(String::as_str), Some("src/lib.rs"));
+        assert!(!sources.contains_key("rms-metadata/rust-integration-library/package_name"));
+        for source in [BTreeMap::from([("src/lib.rs".into(), "pub struct Value;".into())]),
+            BTreeMap::from([("tests/run.rs".into(), "use exact_facade::*;".into())])] {
+            let mut source = source;
+            append_nested_owning_crate_aliases(&manifest, &mut source);
+            assert!(!source.keys().any(|key| key.starts_with("rms-metadata/rust-integration-library/")));
         }
     }
 

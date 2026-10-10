@@ -465,7 +465,7 @@ impl RustTypeIndex {
         match (exact.as_str(), call.args.len()) {
             ("tokio::runtime::Handle::try_current", 0) => Some("<rust-runtime-context>"),
             ("tokio::process::Command::new", 1) if self.standard_process_argument(&call.args[0], values) => Some("<rust-memory-operation>"),
-            ("tokio::task::yield_now", 0) => Some("<dynamic-call>"),
+            ("tokio::task::yield_now", 0) => Some("<rust-tokio-yield>"),
             ("tokio::time::sleep", 1) if self.expression_type(&call.args[0], values) == Some(RustValueType::External(ExternalType::Duration)) => Some("<rust-tokio-time>"),
             ("std::future::Future::poll", 2) => Some("<dynamic-call>"),
             ("std::sync::Mutex::new" | "tokio::sync::Mutex::new" | "std::sync::Arc::new" | "std::boxed::Box::new" | "std::boxed::Box::pin", 1)
@@ -957,6 +957,17 @@ impl RustTypeIndex {
                     return None;
                 }
                 let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
+                // A cleanup timer may carry the standard duration through an
+                // Option field before constructing sleep. Preserve only this
+                // exact payload when source-owned globs prove no shadowing.
+                if name == "Option" && self.unshadowed_external_root("Option")
+                    && self.unshadowed_external_root("Some") {
+                    if let GenericArgument::Type(element) = &arguments.args[0] {
+                        if self.parse_type(element) == Some(RustValueType::External(ExternalType::Duration)) {
+                            return Some(RustValueType::Optional(Box::new(RustValueType::External(ExternalType::Duration))));
+                        }
+                    }
+                }
                 fn has_glob(tree: &syn::UseTree) -> bool {
                     match tree {
                         syn::UseTree::Glob(_) => true,
@@ -1076,20 +1087,38 @@ impl RustTypeIndex {
             syn::UseTree::Glob(_) => {
                 // A flat, source-owned crate module can prove absence. Unknown
                 // exports, macros, inline modules and re-export cycles cannot.
-                if prefix.len() != 2 || prefix[0] != "crate" { return false; }
-                let source_root = self.path.split_once("/src/").map_or("src".to_string(), |(prefix, _)| format!("{prefix}/src"));
-                let Some(library) = self.sources.get(&format!("{source_root}/lib.rs")).and_then(|source| syn::parse_file(source).ok()) else { return false; };
-                let declarations = library.items.iter().filter_map(|item| match item {
-                    Item::Mod(module) if module.ident == prefix[1] => Some(module), _ => None,
-                }).collect::<Vec<_>>();
-                let [module] = declarations.as_slice() else { return false; };
-                if module.content.is_some() || module.attrs.iter().any(|attr| !attr.path().is_ident("doc")) { return false; }
-                let candidates = [format!("{source_root}/{}.rs", prefix[1]), format!("{source_root}/{}/mod.rs", prefix[1])];
-                let sources = candidates.iter().filter_map(|path| self.sources.get(path).map(|source| (path, source))).collect::<Vec<_>>();
-                let [(target_path, source)] = sources.as_slice() else { return false; };
+                let target_path = if prefix.len() == 1 {
+                    // Cargo binds this facade only in this owner's integration
+                    // test crate. Do not infer a crate from the glob spelling.
+                    let Some((owner, _)) = self.path.split_once("tests/") else { return false; };
+                    if !owner.is_empty() && !owner.ends_with('/') { return false; }
+                    let expected = format!("{owner}src/lib.rs");
+                    if self.sources.get(&format!("rms-metadata/rust-integration-library/{owner}{}", prefix[0])) != Some(&expected) { return false; }
+                    // A local module, renamed extern crate or another import
+                    // must not replace the Cargo-selected facade. When checking
+                    // the facade's own name, inspect exports without recursing
+                    // through that same name again.
+                    if self.is_generic(&prefix[0]) || (root != prefix[0]
+                        && !self.unshadowed_external_root_at(&prefix[0], depth + 1)) { return false; }
+                    expected
+                } else {
+                    if prefix.len() != 2 || prefix[0] != "crate" { return false; }
+                    let source_root = self.path.split_once("/src/").map_or("src".to_string(), |(prefix, _)| format!("{prefix}/src"));
+                    let Some(library) = self.sources.get(&format!("{source_root}/lib.rs")).and_then(|source| syn::parse_file(source).ok()) else { return false; };
+                    let declarations = library.items.iter().filter_map(|item| match item {
+                        Item::Mod(module) if module.ident == prefix[1] => Some(module), _ => None,
+                    }).collect::<Vec<_>>();
+                    let [module] = declarations.as_slice() else { return false; };
+                    if module.content.is_some() || module.attrs.iter().any(|attr| !attr.path().is_ident("doc")) { return false; }
+                    let candidates = [format!("{source_root}/{}.rs", prefix[1]), format!("{source_root}/{}/mod.rs", prefix[1])];
+                    let sources = candidates.iter().filter_map(|path| self.sources.get(path).map(|source| (path, source))).collect::<Vec<_>>();
+                    let [(target_path, _)] = sources.as_slice() else { return false; };
+                    (*target_path).clone()
+                };
+                let Some(source) = self.sources.get(&target_path) else { return false; };
                 let Ok(file) = syn::parse_file(source) else { return false; };
                 if !file.attrs.is_empty() { return false; }
-                let target = self.for_path(target_path);
+                let target = self.for_path(&target_path);
                 let mut derives = BTreeSet::new();
                 for item in &file.items {
                     let attrs = match item {

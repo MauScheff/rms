@@ -12,8 +12,8 @@ mod rust_effect_types;
 use rust_effect_types::{RustTypeIndex, RustValueType};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
-pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.9";
-pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.7";
+pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.10";
+pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.8";
 
 #[derive(Clone, Debug)]
 pub(crate) struct SemanticFunctionExpectation {
@@ -869,6 +869,7 @@ fn authority_for_call(binding: &str, call: &str) -> Option<String> {
         match call {
             "<rust-tokio-process>" => return Some("native-process".into()),
             "<rust-tokio-time>" => return Some("clock".into()),
+            "<rust-tokio-yield>" => return Some("environment".into()),
             "<rust-runtime-context>" => return Some("environment".into()),
             _ => {}
         }
@@ -1737,7 +1738,13 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 return;
             }
             if let Some(marker) = self.type_index.external_function_marker(node, &self.value_types) {
-                if marker == "<dynamic-call>" { self.dynamic_sites.insert(rust_expr_label(&node.func)); }
+                if matches!(marker, "<rust-tokio-time>" | "<rust-tokio-yield>") {
+                    // The pinned implementation reads runtime context. Its
+                    // future can clone, drop or invoke the caller's raw waker.
+                    self.calls.insert("<rust-runtime-context>".into());
+                    self.calls.insert("<dynamic-call>".into());
+                }
+                if matches!(marker, "<dynamic-call>" | "<rust-tokio-time>" | "<rust-tokio-yield>") { self.dynamic_sites.insert(rust_expr_label(&node.func)); }
                 self.calls.insert(marker.into());
                 visit::visit_expr_call(self, node);
                 return;
@@ -7331,6 +7338,63 @@ fn ready(data: &Data) -> bool {
     }
 
     #[test]
+    fn rust_tokio_sleep_keeps_exact_optional_duration_payload() {
+        let check = |values: &str, runtime: &str| analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+            sources: BTreeMap::from([
+                ("src/lib.rs".into(), "mod values; mod runtime;".into()),
+                ("src/values.rs".into(), values.into()),
+                ("src/runtime.rs".into(), runtime.into()),
+                ("rms-metadata/rust-external-api/tokio-1.53.1".into(), "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed".into()),
+            ]),
+            semantic_functions: vec![expectation("src/runtime.rs#Root::run", "effectful", &["clock", "environment", "dynamic-dispatch"])],
+            authority_facades: vec![], trusted_external_calls: BTreeSet::new(),
+        });
+        let source = "use crate::values::*; struct Root { delay: Option<std::time::Duration> } impl Root { fn run(&self) { if let Some(timeout) = self.delay { tokio::time::sleep(timeout); } } }";
+        let result = check("pub struct Value;", source);
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        for values in ["pub struct Option<T>(T);", "pub use unknown::*;", "#[cfg(feature = \"optional\")] pub struct Option<T>(T);", "pub use other::Some;"] {
+            assert_eq!(check(values, source).result, AnalysisResult::Fail, "{values}");
+        }
+        assert_eq!(check("pub struct Value;", &source.replace("std::time::Duration", "Unknown")).result, AnalysisResult::Fail);
+    }
+
+    #[test]
+    fn rust_tokio_functions_through_exact_integration_facade_keep_authority() {
+        let run = "use fixture::*; async fn run() { tokio::task::yield_now().await; tokio::time::sleep(std::time::Duration::from_millis(10)).await; }";
+        let check = |library: &str, source: &str, metadata: bool, purity: &str, authorities: &[&str]| {
+            let mut sources = BTreeMap::from([
+                ("src/lib.rs".into(), library.into()),
+                ("src/values.rs".into(), "#[derive(Clone, Debug)] pub struct Value;".into()),
+                ("tests/runtime.rs".into(), source.into()),
+                ("rms-metadata/rust-external-api/tokio-1.53.1".into(), "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed".into()),
+            ]);
+            if metadata { sources.insert("rms-metadata/rust-integration-library/fixture".into(), "src/lib.rs".into()); }
+            analyze(AnalysisInput { binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(), sources,
+                semantic_functions: vec![expectation("tests/runtime.rs#run", purity, authorities)],
+                authority_facades: vec![], trusted_external_calls: BTreeSet::new() })
+        };
+        let library = "mod values; pub use crate::values::*;";
+        let result = check(library, run, true, "effectful", &["clock", "dynamic-dispatch", "environment"]);
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert_eq!(result.functions[0].transitive_authorities, vec!["clock", "dynamic-dispatch", "environment"]);
+        for (library, source, metadata, purity, authorities) in [
+            (library.to_string(), run.to_string(), false, "effectful", vec!["clock", "dynamic-dispatch", "environment"]),
+            (format!("{library} pub mod tokio {{}}"), run.to_string(), true, "effectful", vec!["clock", "dynamic-dispatch", "environment"]),
+            (format!("{library} pub use unknown::*;"), run.to_string(), true, "effectful", vec!["clock", "dynamic-dispatch", "environment"]),
+            (library.to_string(), run.replace("fixture::*", "other::*"), true, "effectful", vec!["clock", "dynamic-dispatch", "environment"]),
+            (library.to_string(), format!("mod fixture {{ pub mod tokio {{}} }} {run}"), true, "effectful", vec!["clock", "dynamic-dispatch", "environment"]),
+            (library.to_string(), format!("extern crate other as fixture; {run}"), true, "effectful", vec!["clock", "dynamic-dispatch", "environment"]),
+            (library.to_string(), run.replace("tokio::time::sleep", "tokio::time::unknown"), true, "effectful", vec!["clock", "dynamic-dispatch", "environment"]),
+            (library.to_string(), run.replace("std::time::Duration::from_millis(10)", "unknown()"), true, "effectful", vec!["clock", "dynamic-dispatch", "environment"]),
+            (library.to_string(), run.to_string(), true, "pure", vec![]),
+            (library.to_string(), run.to_string(), true, "effectful", vec!["clock"]),
+            (library.to_string(), run.to_string(), true, "effectful", vec!["dynamic-dispatch"]),
+            (library.to_string(), run.to_string(), true, "effectful", vec!["clock", "dynamic-dispatch"]),
+        ] { assert_eq!(check(&library, &source, metadata, purity, &authorities).result, AnalysisResult::Fail, "{library}: {source}"); }
+    }
+
+    #[test]
     fn rust_concrete_tokio_catalog_requires_pin_and_preserves_authority() {
         for path in ["tests/runtime.rs", "other/tests/runtime.rs", "notests/runtime.rs"] {
             let result = analyze(AnalysisInput {
@@ -7340,7 +7404,7 @@ fn ready(data: &Data) -> bool {
                     (path.into(), "async fn run() { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }".into()),
                     ("rms-metadata/rust-external-api/tokio-1.53.1".into(), "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed".into()),
                 ]),
-                semantic_functions: vec![expectation(&format!("{path}#run"), "effectful", &["clock"])],
+                semantic_functions: vec![expectation(&format!("{path}#run"), "effectful", &["clock", "dynamic-dispatch", "environment"])],
                 authority_facades: vec![], trusted_external_calls: BTreeSet::new(),
             });
             assert_eq!(result.result, if path == "tests/runtime.rs" { AnalysisResult::Pass } else { AnalysisResult::Fail }, "{result:#?}");
@@ -7356,12 +7420,13 @@ fn ready(data: &Data) -> bool {
             ("async fn run() { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }", "clock"),
             ("fn run() { tokio::runtime::Handle::try_current().is_err(); }", "environment"),
         ] {
-            let result = check(source, "effectful", &[authority], true);
+            let authorities = if authority == "clock" { vec!["clock", "environment", "dynamic-dispatch"] } else { vec![authority] };
+            let result = check(source, "effectful", &authorities, true);
             assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
             assert!(result.functions[0].transitive_authorities.contains(&authority.into()));
             assert_eq!(check(source, "pure", &[], true).result, AnalysisResult::Fail);
             assert_eq!(check(source, "effectful", &[], true).result, AnalysisResult::Fail);
-            assert_eq!(check(source, "effectful", &[authority], false).result, AnalysisResult::Fail);
+            assert_eq!(check(source, "effectful", &authorities, false).result, AnalysisResult::Fail);
         }
         let source = "struct Leaf; impl Leaf { fn check(&self) -> bool { true } } struct Root { value: tokio::sync::Mutex<Leaf> } async fn run(root: &Root) { let guard = root.value.lock().await; guard.check(); }";
         assert_eq!(check(source, "effectful", &["dynamic-dispatch"], true).result, AnalysisResult::Pass);
