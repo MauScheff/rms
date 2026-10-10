@@ -1218,6 +1218,10 @@ enum Commands {
         /// Print the command without executing it.
         #[arg(long)]
         dry_run: bool,
+
+        /// Maximum duration for each RMS probe, trace, or property proof command.
+        #[arg(long, visible_alias = "timeout-seconds", default_value_t = DEFAULT_PROOF_TIMEOUT_SECONDS, value_parser = clap::value_parser!(u64).range(1..))]
+        proof_timeout_seconds: u64,
     },
 
     /// Print a focused inner-structure report for an implementation binding.
@@ -10777,7 +10781,7 @@ fn run_main() -> Result<()> {
             dry_run,
             force,
         ),
-        Commands::Verify { target, dry_run } => run_verify(&target, dry_run),
+        Commands::Verify { target, dry_run, proof_timeout_seconds } => run_verify_with_timeout(&target, dry_run, proof_timeout_seconds),
         Commands::Structure {
             implementation,
             json,
@@ -18003,6 +18007,7 @@ fn execute_property_realizations_with_batch_and_cache(
                 continue;
             }
             let cache_key = verification::ProofCache::key(&[
+                &timeout_seconds.to_string(),
                 "property-execution-evidence/v2",
                 realization.strategy.as_str(),
                 implementation.to_string_lossy().as_ref(),
@@ -25862,9 +25867,17 @@ fn verify_declared_trace_bundles(
     manifest: &LoadedManifest,
     module_root: &Path,
 ) -> Result<Vec<TraceReport>> {
+    verify_declared_trace_bundles_with_timeout(manifest, module_root, DEFAULT_PROOF_TIMEOUT_SECONDS)
+}
+
+fn verify_declared_trace_bundles_with_timeout(
+    manifest: &LoadedManifest,
+    module_root: &Path,
+    timeout_seconds: u64,
+) -> Result<Vec<TraceReport>> {
     let mut reports = Vec::new();
     for bundle in implementation_trace_bundle_paths(manifest, module_root) {
-        if probe::verify_evidence(&bundle, DEFAULT_PROOF_TIMEOUT_SECONDS)?.is_some() {
+        if probe::verify_evidence(&bundle, timeout_seconds)?.is_some() {
             continue;
         }
         let report = if let Some(producer) = trace_producers_from_implementation(manifest).iter()
@@ -73178,16 +73191,22 @@ fn diagnostic_category(check: &str) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn run_verify(target: &Path, dry_run: bool) -> Result<()> {
+    run_verify_with_timeout(target, dry_run, DEFAULT_PROOF_TIMEOUT_SECONDS)
+}
+
+fn run_verify_with_timeout(target: &Path, dry_run: bool, timeout_seconds: u64) -> Result<()> {
+    if timeout_seconds == 0 { bail!("verify proof timeout must be positive"); }
     if dry_run {
-        return run_verify_unlocked(target, true);
+        return run_verify_unlocked(target, true, timeout_seconds);
     }
     let project_root = rms_root_for(target);
     let source_revision =
         source_revision(&project_root).unwrap_or_else(|| "uncommitted".to_string());
     let repository_digest = release_input_digest(&project_root, false)?;
     let input_digest =
-        sha256_bytes(format!("{}\0{}", repository_digest, target.display()).as_bytes());
+        sha256_bytes(format!("{}\0{}\0{}", repository_digest, target.display(), timeout_seconds).as_bytes());
     let executable = std::env::current_exe()?;
     let tool_digest = release_tool_digest(&executable)?;
     let mut session = verification::VerificationSession::acquire(
@@ -73203,18 +73222,18 @@ fn run_verify(target: &Path, dry_run: bool) -> Result<()> {
     )?;
     eprintln!("verification run identity: {}", session.identity());
     session.run_phase("target", &target.display().to_string(), || {
-        run_verify_unlocked(target, false)
+        run_verify_unlocked(target, false, timeout_seconds)
     })
 }
 
-fn run_verify_unlocked(target: &Path, dry_run: bool) -> Result<()> {
+fn run_verify_unlocked(target: &Path, dry_run: bool, timeout_seconds: u64) -> Result<()> {
     let manifest = load_manifest(target)?;
     match get_str(&manifest.value, &["spec"]) {
         Some(IMPLEMENTATION_V1_SPEC | IMPLEMENTATION_V2_SPEC) => {
-            run_verify_implementation(target, dry_run)
+            run_verify_implementation_with_timeout(target, dry_run, timeout_seconds)
         }
         Some("rms/module/v0.1") if is_composite_module(&manifest.value) => {
-            run_verify_composite_module(target, &manifest, dry_run)
+            run_verify_composite_module(target, &manifest, dry_run, timeout_seconds)
         }
         Some("rms/module/v0.1") => bail!(
             "module `{}` is not a composite module; verify its implementation binding instead",
@@ -73293,7 +73312,12 @@ fn join_capture_relay_reader(
         .map_err(|_| anyhow!("verify command {label} reader panicked"))?
 }
 
+#[cfg(test)]
 fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()> {
+    run_verify_implementation_with_timeout(implementation, dry_run, DEFAULT_PROOF_TIMEOUT_SECONDS)
+}
+
+fn run_verify_implementation_with_timeout(implementation: &Path, dry_run: bool, timeout_seconds: u64) -> Result<()> {
     let manifest = load_manifest(implementation)?;
     ensure_implementation_manifest_valid_for_verify(&manifest)?;
     let command = get_str(&manifest.value, &["commands", "verify"])
@@ -73301,6 +73325,7 @@ fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()>
     let root = implementation.parent().unwrap_or_else(|| Path::new("."));
 
     if dry_run {
+        println!("RMS proof timeout: {timeout_seconds} second(s) per command");
         println!("{command}");
         if let Some(probe_command) = get_str(&manifest.value, &["commands", "probe"]) {
             println!(
@@ -73316,7 +73341,7 @@ fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()>
             implementation,
             &manifest,
             true,
-            DEFAULT_PROOF_TIMEOUT_SECONDS,
+            timeout_seconds,
             None,
         )?;
         return Ok(());
@@ -73335,11 +73360,11 @@ fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()>
     let batch_evidence =
         RustBatchProofEvidence::from_successful_verify(&manifest, command, &output);
 
-    if let Some(summary) = verify_probe_handshake(implementation, DEFAULT_PROOF_TIMEOUT_SECONDS)? {
+    if let Some(summary) = verify_probe_handshake(implementation, timeout_seconds)? {
         println!("{summary}");
     }
 
-    for report in verify_declared_trace_bundles(&manifest, root)? {
+    for report in verify_declared_trace_bundles_with_timeout(&manifest, root, timeout_seconds)? {
         println!(
             "trace bundle checked: {} ({})",
             report.bundle, report.result
@@ -73350,7 +73375,7 @@ fn run_verify_implementation(implementation: &Path, dry_run: bool) -> Result<()>
         implementation,
         &manifest,
         false,
-        DEFAULT_PROOF_TIMEOUT_SECONDS,
+        timeout_seconds,
         batch_evidence.as_ref(),
     )? {
         println!("{summary}");
@@ -73499,6 +73524,7 @@ fn run_verify_composite_module(
     module_path: &Path,
     manifest: &LoadedManifest,
     dry_run: bool,
+    timeout_seconds: u64,
 ) -> Result<()> {
     let module_name = get_str(&manifest.value, &["module", "name"]).unwrap_or("<unknown>");
     let root = rms_root_for(module_path);
@@ -73545,7 +73571,7 @@ fn run_verify_composite_module(
         manifest,
         PropertyProfile::Smoke,
         dry_run,
-        DEFAULT_PROOF_TIMEOUT_SECONDS,
+        timeout_seconds,
     )?;
     if dry_run {
         for command in &property_report.commands {
@@ -73578,11 +73604,11 @@ fn run_verify_composite_module(
         if implementation.exists() {
             if dry_run {
                 println!(
-                    "rms verify {}",
+                    "rms verify {} --proof-timeout-seconds {timeout_seconds}",
                     shell_arg(&implementation.display().to_string())
                 );
             } else {
-                run_verify_implementation(&implementation, false).with_context(|| {
+                run_verify_implementation_with_timeout(&implementation, false, timeout_seconds).with_context(|| {
                     format!(
                         "contained child `{}` failed implementation verification",
                         child.name
@@ -93788,6 +93814,38 @@ realizations:
                 report.diagnostics
             );
         }
+    }
+
+    #[test]
+    fn verify_accepts_an_explicit_positive_proof_budget() {
+        let default = Cli::try_parse_from(["rms", "verify", "implementation.yaml"]).unwrap();
+        assert!(matches!(default.command, Commands::Verify { proof_timeout_seconds: DEFAULT_PROOF_TIMEOUT_SECONDS, .. }));
+        assert!(Cli::try_parse_from(["rms", "verify", "implementation.yaml", "--proof-timeout-seconds", "1800"]).is_ok());
+        assert!(Cli::try_parse_from(["rms", "verify", "implementation.yaml", "--timeout-seconds", "1800"]).is_ok());
+        assert!(Cli::try_parse_from(["rms", "verify", "implementation.yaml", "--proof-timeout-seconds", "0"]).is_err());
+    }
+
+    #[test]
+    fn verify_proof_budget_preserves_timeout_failure_and_budget_identity() {
+        let root = unique_test_dir("verify-proof-budget");
+        run_add_module(add_module_request(&root, "budget", "Verify the complete declared proof within an explicit time bound.", "library", &[], Some(ScaffoldShape::DomainEngine), Some("rust")), &no_provider_options()).unwrap();
+        record_generated_traces(&root);
+        let target = root.join("implementation.yaml");
+        let mut manifest = load_manifest(&target).unwrap();
+        set_yaml_string_path(&mut manifest.value, &["commands", "verify"], "true");
+        // Preserve the generated semantic runners, oracles, and evidence. Only
+        // delay their existing exact selection to exercise the time bound.
+        set_yaml_string_path(&mut manifest.value, &["commands", "properties"], "sleep 2; cargo test --manifest-path Cargo.toml \"${RMS_PROPERTY_RUNNER##*#}\" -- --nocapture");
+        write_yaml_manifest(&manifest).unwrap();
+        initialize_test_git_repository(&root);
+        run_verify_with_timeout(&target, false, 5).unwrap();
+        let failure = run_verify_with_timeout(&target, false, 1).unwrap_err().to_string();
+        assert!(failure.contains("proof.command-timeout") && failure.contains("exceeded 1 second(s)"), "{failure}");
+        let property = execute_property_realizations(&target, PropertyProfile::Smoke, false, 1).unwrap();
+        assert_eq!(property.result, "fail");
+        assert!(property.diagnostics.iter().any(|item| item.check == "proof.command-timeout"));
+        assert!(run_verify_with_timeout(&target, false, 0).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
