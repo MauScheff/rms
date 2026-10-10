@@ -127,6 +127,8 @@ The proof checks the complete inspected Rust source corpus. Each registered sour
 
 Flow-participating files use explicit, unaliased imports. Context, payload, identity, and result type aliases are unsupported. Proof types must have unique declarations, including nested scopes. Additional context signatures, fields, constructors, implementations, callable aliases, and unregistered executor or split/observe references are rejected. Conservative same-name collisions also require source clarification; the proof does not guess an owner.
 
+Explicit imports and re-exports may retain unqualified built-in `doc` attributes, including documentation comments, `#[doc = "text"]`, `#[doc(hidden)]`, and `#[doc(alias = "name")]`. These attributes do not grant identity or provenance. All other import attributes remain unsupported, including `cfg`, `cfg_attr`, `path`, custom attributes, and procedural attributes. Aliases, globs, and ambiguous import names remain rejected. An import refusal identifies the source file, its top-level import scope, exact import spelling, and actual cause. Derive and macro checks retain this cause instead of replacing it with a generic identity failure.
+
 Source-generating macros and unsupported attributes are rejected. This includes arbitrary procedural derives, `cfg_attr`, `include!`, and custom test attributes. The checker permits a closed set of ordinary standard macros only when their identity is unshadowed and their tokens contain no flow type or registered callable. Unsupported syntax remains a blocker.
 
 ## Proof boundary and evidence

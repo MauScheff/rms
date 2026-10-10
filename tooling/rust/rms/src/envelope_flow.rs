@@ -31,6 +31,23 @@ fn plain(path: &syn::Path) -> Option<String> {
             .join("::")
     })
 }
+fn import_spelling(tree: &syn::UseTree) -> String {
+    match tree {
+        syn::UseTree::Path(value) => format!("{}::{}", value.ident, import_spelling(&value.tree)),
+        syn::UseTree::Name(value) => value.ident.to_string(),
+        syn::UseTree::Rename(value) => format!("{} as {}", value.ident, value.rename),
+        syn::UseTree::Glob(_) => "*".into(),
+        syn::UseTree::Group(value) => format!(
+            "{{{}}}",
+            value
+                .items
+                .iter()
+                .map(import_spelling)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
 fn atom(expr: &Expr, name: &str) -> bool {
     matches!(expr, Expr::Path(path) if path.qself.is_none() && path.path.is_ident(name))
 }
@@ -246,8 +263,22 @@ impl<'a> Checker<'a> {
             .items
         {
             if let Item::Use(item) = item {
-                need(item.attrs.is_empty(), "conditional imports are unsupported")?;
-                collect(&item.tree, "", &mut imports)?;
+                let scope = format!(
+                    "{file}: file-level import `{}`",
+                    import_spelling(&item.tree)
+                );
+                if let Some(attr) = item.attrs.iter().find(|attr| !attr.path().is_ident("doc")) {
+                    let name = attr
+                        .path()
+                        .segments
+                        .iter()
+                        .map(|part| part.ident.to_string())
+                        .collect::<Vec<_>>()
+                        .join("::");
+                    return Err(format!("{scope}: unsupported import attribute `{name}`; only built-in documentation attributes are supported"));
+                }
+                collect(&item.tree, "", &mut imports)
+                    .map_err(|reason| format!("{scope}: {reason}"))?;
             }
         }
         Ok(imports)
@@ -1268,7 +1299,11 @@ struct Closure<'a, 'b> {
 impl Closure<'_, '_> {
     fn refuse(&mut self, reason: &str) {
         if self.reason.is_none() {
-            self.reason = Some(format!("{}: {reason}", self.file));
+            self.reason = Some(if reason.starts_with(&format!("{}: ", self.file)) {
+                reason.into()
+            } else {
+                format!("{}: {reason}", self.file)
+            });
         }
     }
     fn sensitive(&self, path: &syn::Path) -> bool {
@@ -1302,6 +1337,20 @@ impl<'ast> Visit<'ast> for Closure<'_, '_> {
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
         self.declaration(&node.ident);
         visit::visit_item_mod(self, node);
+    }
+    fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
+        // Validate the root import scope before visiting its attributes. This
+        // preserves the actual import error even for a custom attribute.
+        if self.checker.index.files[&self.file]
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Use(item) if address(item) == address(node)))
+        {
+            if let Err(reason) = self.checker.imports(&self.file) {
+                self.refuse(&reason);
+            }
+        }
+        visit::visit_item_use(self, node);
     }
     fn visit_type_param(&mut self, node: &'ast syn::TypeParam) {
         if self.checker.protected.contains(&node.ident.to_string()) {
@@ -1404,25 +1453,28 @@ impl<'ast> Visit<'ast> for Closure<'_, '_> {
             self.refuse("unsupported source-transforming attribute in flow source closure");
         }
         if node.path().is_ident("derive") {
-            if self.checker.imports(&self.file).is_err() {
-                self.refuse("open imports prevent standard derive identity proof");
-            }
-            if let Ok(imports) = self.checker.imports(&self.file) {
-                for name in [
-                    "Clone",
-                    "Copy",
-                    "Debug",
-                    "Eq",
-                    "PartialEq",
-                    "Ord",
-                    "PartialOrd",
-                    "Hash",
-                    "Default",
-                ] {
-                    if imports.get(name).is_some_and(|target| {
-                        !target.starts_with("std::") && !target.starts_with("core::")
-                    }) {
-                        self.refuse("standard derive is shadowed by an imported macro");
+            match self.checker.imports(&self.file) {
+                Err(reason) => self.refuse(&reason),
+                Ok(imports) => {
+                    for name in [
+                        "Clone",
+                        "Copy",
+                        "Debug",
+                        "Eq",
+                        "PartialEq",
+                        "Ord",
+                        "PartialOrd",
+                        "Hash",
+                        "Default",
+                    ] {
+                        if imports.get(name).is_some_and(|target| {
+                            !target.starts_with("std::") && !target.starts_with("core::")
+                        }) {
+                            self.refuse(&format!(
+                                "standard derive `{name}` is shadowed by file-level import `{}`",
+                                imports[name]
+                            ));
+                        }
                     }
                 }
             }
@@ -1454,6 +1506,7 @@ impl<'ast> Visit<'ast> for Closure<'_, '_> {
                     self.refuse("macro identity is open or shadowed");
                 }
             }
+            Err(reason) => self.refuse(&reason),
             _ => self.refuse("macro identity is open or shadowed"),
         }
         if !matches!(
@@ -1710,6 +1763,80 @@ envelope_flow:
         assert!(!check(&invalid_sync, &sync_binding, &contract()).is_empty());
     }
     #[test]
+    fn envelope_flow_accepts_documented_explicit_imports() {
+        for attr in [
+            "#[doc(hidden)]",
+            "#[doc = \"Import documentation\"]",
+            "/// Import documentation",
+            "#[doc(alias = \"DocumentedPort\")]",
+        ] {
+            let mut sources = sources();
+            sources.get_mut("src/lib.rs").unwrap().push_str(&format!(
+                "\n{attr}\npub(crate) use crate::io::Ports;\n#[derive(Default)] struct DocumentationProbe;\n"));
+            assert!(check(&sources, BINDING, &contract()).is_empty(), "{attr}");
+        }
+    }
+
+    #[test]
+    fn envelope_flow_import_refusals_keep_the_exact_import_scope_and_cause() {
+        let mut module_sources = sources();
+        module_sources
+            .get_mut("src/io.rs")
+            .unwrap()
+            .push_str("\n#[cfg(test)] use std::sync::Arc;\n");
+        let module_errors = check(&module_sources, BINDING, &contract());
+        assert!(
+            module_errors.iter().any(|reason| reason
+                .contains("src/io.rs: file-level import `std::sync::Arc`")
+                && reason.contains("cfg")),
+            "{module_errors:?}"
+        );
+        for (attr, cause) in [
+            ("#[cfg(test)]", "cfg"),
+            ("#[cfg_attr(test, doc(hidden))]", "cfg_attr"),
+            ("#[path = \"other.rs\"]", "path"),
+            ("#[foreign::generate]", "foreign::generate"),
+            ("#[derive(Clone)]", "derive"),
+        ] {
+            let mut sources = sources();
+            sources.get_mut("src/lib.rs").unwrap().push_str(&format!(
+                "\n{attr}\nuse crate::io::Ports;\n#[derive(Default)] struct DocumentationProbe;\n"
+            ));
+            let errors = check(&sources, BINDING, &contract());
+            assert!(
+                errors.iter().any(|reason| reason.contains("src/lib.rs")
+                    && reason.contains("file-level import `crate::io::Ports`")
+                    && reason.contains(cause)),
+                "{errors:?}"
+            );
+            assert!(
+                errors
+                    .iter()
+                    .all(|reason| !reason.contains("open imports prevent standard derive")),
+                "{errors:?}"
+            );
+        }
+        for import in [
+            "use crate::io::*;",
+            "use crate::io::Ports as Renamed;",
+            "use crate::io::Ports; use crate::other::Ports;",
+        ] {
+            let mut sources = sources();
+            sources.get_mut("src/lib.rs").unwrap().push_str(&format!(
+                "\n{import}\n#[derive(Default)] struct DocumentationProbe;\n"
+            ));
+            let errors = check(&sources, BINDING, &contract());
+            assert!(
+                errors
+                    .iter()
+                    .any(|reason| reason.contains("src/lib.rs")
+                        && reason.contains("file-level import")),
+                "{errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn envelope_flow_refuses_forgery_aliases_copies_and_unproven_calls() {
         let cases = [
             ("src/types.rs", "effect_id: request.effect_id", "effect_id: request.correlation_id"),
@@ -1865,6 +1992,8 @@ pub(crate) fn inspected(result: ResultEnvelope) -> (u64, &'static str, u64, Opti
 }
 "#);
         sources.get_mut("src/lib.rs").unwrap().push_str(r#"
+#[doc(hidden)]
+#[doc = "Native replay retains its documentation attributes."]
 use std::future::Future;
 struct Wake;
 impl std::task::Wake for Wake { fn wake(self: std::sync::Arc<Self>) {} }
