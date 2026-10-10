@@ -322,6 +322,10 @@ enum Commands {
         #[arg(long = "intent-file", conflicts_with_all = ["intent_json", "intent_yaml", "ai"])]
         intent_file: Option<PathBuf>,
 
+        /// Preflight one complete authority-declaration amendment against unchanged source.
+        #[arg(long, requires = "module")]
+        semantic_change_file: Option<PathBuf>,
+
         /// Ask the configured read-only provider to extract the typed intent model.
         #[arg(long)]
         ai: bool,
@@ -9825,6 +9829,7 @@ fn run_main() -> Result<()> {
             intent_json,
             intent_yaml,
             intent_file,
+            semantic_change_file,
             ai,
             refresh_intent,
             codex_profile,
@@ -9871,6 +9876,7 @@ fn run_main() -> Result<()> {
                 options.as_ref(),
                 json,
                 details,
+                semantic_change_file.as_deref(),
             )
         }
         Commands::Check {
@@ -42866,8 +42872,13 @@ fn run_next(
     options: Option<&PromptRunOptions>,
     json_output: bool,
     details: bool,
+    semantic_change_file: Option<&Path>,
 ) -> Result<()> {
-    let report = build_next_report_with_intent(root, explicit_module, task, input, options)?;
+    let report = if semantic_change_file.is_some() {
+        build_next_report_with_candidate(root, explicit_module, task, input, options, None, semantic_change_file)?
+    } else {
+        build_next_report_with_intent(root, explicit_module, task, input, options)?
+    };
     let surface = project_next_report(&report, details)?;
     if json_output {
         println!("{}", serde_json::to_string_pretty(&surface)?);
@@ -42970,6 +42981,18 @@ fn build_next_report_with_optional_program(
     options: Option<&PromptRunOptions>,
     provider_program: Option<&Path>,
 ) -> Result<NextReport> {
+    build_next_report_with_candidate(root, explicit_module, task, input, options, provider_program, None)
+}
+
+fn build_next_report_with_candidate(
+    root: &Path,
+    explicit_module: Option<&Path>,
+    task: &str,
+    input: RawIntentInput,
+    options: Option<&PromptRunOptions>,
+    provider_program: Option<&Path>,
+    semantic_change_file: Option<&Path>,
+) -> Result<NextReport> {
     let task = task.trim();
     if task.is_empty() {
         bail!("task intent must contain a nonblank prospective intent");
@@ -42998,7 +43021,7 @@ fn build_next_report_with_optional_program(
         .as_ref()
         .map(classify_intent_model)
         .unwrap_or_else(undetermined_task_classification);
-    let native_existing_realization = classification.lane == TaskLane::ImplementationCandidate
+    let native_existing_realization = semantic_change_file.is_none() && classification.lane == TaskLane::ImplementationCandidate
         && task_requests_existing_contract_native_realization(task);
     if native_existing_realization {
         classification.confidence = "deterministic".to_string();
@@ -43008,7 +43031,7 @@ fn build_next_report_with_optional_program(
         ];
     }
     let external_rust_crate_declaration = task_requests_external_rust_crate_declaration(task);
-    let authority_alignment_requested = task_requests_authority_alignment(task)
+    let authority_alignment_requested = semantic_change_file.is_none() && task_requests_authority_alignment(task)
         && intent.as_ref().is_some_and(|intent| intent.change_scope == IntentChangeScope::ExistingModule
             && intent.facts.domain_decisions.disposition == IntentDisposition::Absent
             && intent.facts.lifecycle.disposition == IntentDisposition::Absent);
@@ -43156,6 +43179,20 @@ fn build_next_report_with_optional_program(
         )
     };
     let mut context = build_next_context(&root, &profile.report, owner.selected_module())?;
+    let candidate_repair = if let Some(proposal) = semantic_change_file {
+        if explicit_module.is_none() || !intent.as_ref().is_some_and(|model| model.change_scope == IntentChangeScope::ExistingModule) {
+            bail!("complete authority candidate requires explicit --module and existing-module typed intent");
+        }
+        let selected = owner.selected_module().ok_or_else(|| anyhow!("complete authority candidate requires an explicitly selected owner"))?;
+        let target = load_spec_target(Path::new(&selected.path))?;
+        let change = parse_semantic_change(None, None, Some(proposal))?;
+        let repair = build_complete_authority_candidate_repair(&root, &target, &change)?;
+        classification.lane = TaskLane::Semantic;
+        classification.confidence = "deterministic".into();
+        classification.reasons = vec!["the explicit complete authority candidate passes ordinary validation and unchanged-source preflight".into()];
+        context.edit_authority = "Only the exact source-pinned complete authority-declaration candidate may be applied through its receipt. Source, pure rows, contracts, machine, roles, dependencies and public behavior remain unchanged. Evidence obligations and all final gates remain required.".into();
+        Some(repair)
+    } else { None };
     let authority_alignment_repair = if authority_alignment_requested {
         owner.selected_module().and_then(|selected| load_spec_target(Path::new(&selected.path)).ok())
             .and_then(|context| build_authority_alignment_repair(&context).ok())
@@ -43167,7 +43204,7 @@ fn build_next_report_with_optional_program(
         context.edit_authority = "The selected RMS owner supplies canonical meaning only. This route grants no canonical edit authority. Native implementation paths remain governed by the project workflow and are reported as native or outside RMS coverage by progressive checks."
             .to_string();
     }
-    let machine_repair = if legacy_machine_migration_ready(
+    let machine_repair = if candidate_repair.is_some() { None } else if legacy_machine_migration_ready(
         &root,
         explicit_module,
         &validation.diagnostics,
@@ -43185,13 +43222,13 @@ fn build_next_report_with_optional_program(
     } else {
         None
     };
-    let spec_repair = contract_behavior_case_repair_ready(
+    let spec_repair = (candidate_repair.is_none() && contract_behavior_case_repair_ready(
         &root,
         task,
         intent.as_ref(),
         &validation.diagnostics,
         &owner,
-    )
+    ))
     .then_some(SpecRepairRoute::ContractBehaviorCases);
     let bounded_observation_source_repair =
         exact_public_observation_source_repair_ready(task, &owner);
@@ -43315,7 +43352,7 @@ fn build_next_report_with_optional_program(
                         unresolved_owner_route_hard_blocker(&root, diagnostic)
                     } else if bounded_binding_metadata {
                         bounded_binding_metadata_route_hard_blocker(&root, diagnostic, &owner)
-                    } else if authority_alignment_repair.is_some() {
+                    } else if candidate_repair.is_some() || authority_alignment_repair.is_some() {
                         authority_alignment_route_hard_blocker(&root, diagnostic, &owner)
                     } else if bounded_proof_support_roles {
                         bounded_owner_scoped_semantic_route_hard_blocker(&root, diagnostic, &owner)
@@ -43414,7 +43451,7 @@ fn build_next_report_with_optional_program(
     };
 
     enforce_non_ready_ownerlessness(result, &mut owner, &mut context);
-    let steps = build_next_steps(
+    let mut steps = build_next_steps(
         &root,
         task,
         result,
@@ -43489,6 +43526,8 @@ fn build_next_report_with_optional_program(
         allowed_actions.push("spec-repair-apply");
     } else if machine_repair.is_some() {
         allowed_actions.extend(["machine-apply", "binding-migrate"]);
+    } else if result == NextResult::Ready && candidate_repair.is_some() {
+        allowed_actions.push("authority-candidate-apply");
     } else if result == NextResult::Ready && authority_alignment_repair.is_some() {
         allowed_actions.push("authority-alignment");
     } else if result == NextResult::Ready {
@@ -43541,7 +43580,7 @@ fn build_next_report_with_optional_program(
         (Some(SpecRepairRoute::ContractBehaviorCases), Some(target)) => Some(
             build_contract_behavior_case_repair_authority(&root, target, &validation.diagnostics)?,
         ),
-        _ => authority_alignment_repair,
+        _ => candidate_repair.or(authority_alignment_repair),
     };
     let route = issue_route_receipt(
         &root,
@@ -43561,6 +43600,22 @@ fn build_next_report_with_optional_program(
         None,
         repair_authority,
     )?;
+    if result == NextResult::Ready {
+        if let Some(proposal) = semantic_change_file {
+            for group in &mut steps {
+                if group.phase == ActionPhase::Declare {
+                    group.steps = vec![executable_next_step(
+                        "Dry-run the exact preflighted authority candidate; apply only after review",
+                        "rms",
+                        vec!["spec".into(), "apply".into(), owner_path.as_ref().unwrap().display().to_string(),
+                            "--change-file".into(), proposal.display().to_string(), "--route-receipt".into(),
+                            route.run_id.clone(), "--dry-run".into()], Some(root.display().to_string()))];
+                } else if group.phase == ActionPhase::Implement {
+                    group.steps = vec![manual_next_step("Preserve source. Replace the declared containment evidence obligations with observed proof. This receipt does not certify boundary behavior or waive any final gate.", None)];
+                }
+            }
+        }
+    }
     let report = NextReport {
         result,
         task: task.to_string(),
@@ -88717,6 +88772,15 @@ fn validate_spec_change_route_receipt(
         Ok(receipt) => return Ok(receipt),
         Err(error) => error,
     };
+    if let Ok(receipt) = validate_route_receipt(root, reference, "authority-candidate-apply", target, None) {
+        let context = load_spec_target(target)?;
+        let change = parse_semantic_change(change_json, change_yaml, change_file)?;
+        let current = build_complete_authority_candidate_repair(root, &context, &change)?;
+        if receipt.payload.repair_authority.as_ref() != Some(&current) {
+            bail!("complete authority candidate, source or canonical snapshot changed; reroute the exact proposal");
+        }
+        return Ok(receipt);
+    }
     if let Ok(receipt) = validate_route_receipt(root, reference, "authority-alignment", target, None) {
         let context = load_spec_target(target)?;
         let current = build_authority_alignment_repair(&context)?;
@@ -88785,6 +88849,147 @@ fn validate_spec_change_route_receipt(
     );
     validate_contract_behavior_case_repair_change(root, &context, &change, expected)?;
     Ok(receipt)
+}
+
+fn build_complete_authority_candidate_repair(
+    root: &Path,
+    context: &SpecTargetContext,
+    change: &SemanticChange,
+) -> Result<SpecRepairAuthority> {
+    let module = context.module.as_ref().ok_or_else(|| anyhow!("complete authority candidate requires a module"))?;
+    let implementation = context.implementation.as_ref().ok_or_else(|| anyhow!("complete authority candidate requires an implementation"))?;
+    if get_str(&implementation.value, &["binding"]) != Some("rust")
+        || get_str(&implementation.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC)
+        || get_str(&implementation.value, &["architecture", "static_inspection"]) == Some("opaque") {
+        bail!("complete authority candidate requires an inspectable Rust v0.2 binding");
+    }
+    let mut checks = Vec::new();
+    append_semantic_revision_audit_check(implementation, true, &mut checks);
+    if checks.iter().any(|check| check.result != "pass") { bail!("complete authority candidate requires an intact prior semantic revision"); }
+    for (field, value) in serde_json::to_value(change)?.as_object().unwrap() {
+        if !matches!(field.as_str(), "spec" | "module" | "intent" | "semantic_functions" | "authorities" | "authority_bindings" | "evidence")
+            && json_value_has_material_operation(value) { bail!("complete authority candidate forbids `{field}` changes"); }
+    }
+    if let Some(reference) = change.module.as_deref() {
+        if !fs::canonicalize(root.join(reference)).is_ok_and(|requested| fs::canonicalize(&module.path).is_ok_and(|owner| owner == requested)) {
+            bail!("complete authority candidate owner mismatch");
+        }
+    }
+    let functions = change.semantic_functions.as_ref().ok_or_else(|| anyhow!("complete authority candidate requires semantic functions"))?;
+    if !functions.remove.is_empty() || functions.replace.is_empty() { bail!("complete authority candidate must preserve all functions and repair existing rows"); }
+    let existing = typed_yaml_sequence::<SemanticFunctionChange>(&implementation.value, &["semantic_functions"]);
+    for proposed in &functions.replace {
+        let matches = existing.iter().filter(|function| function.id == proposed.id).collect::<Vec<_>>();
+        let [original] = matches.as_slice() else { bail!("complete authority candidate requires one existing row `{}`", proposed.id); };
+        let mut expected = (*original).clone();
+        expected.authorities = proposed.authorities.clone();
+        if original.purity != "effectful" || serde_json::to_value(expected)? != serde_json::to_value(proposed)? {
+            bail!("complete authority candidate may change only the authority row of existing effectful function `{}`", proposed.id);
+        }
+    }
+    for proposed in &functions.add {
+        if proposed.purity != "effectful" || proposed.trust.as_deref() != Some("boundary") || proposed.authorities.is_empty()
+            || proposed.authorities.iter().any(|authority| !effect_analysis::is_raw_authority(authority))
+            || existing.iter().any(|function| function.symbol == proposed.symbol) {
+            bail!("new authority function `{}` requires a distinct exact effectful boundary with raw authority", proposed.id);
+        }
+    }
+    if let Some(authorities) = &change.authorities {
+        if authorities.replace.is_some() || !authorities.remove.is_empty()
+            || authorities.add.iter().any(|authority| !effect_analysis::is_raw_authority(&authority.id)) {
+            bail!("complete authority candidate permits only added raw authorities");
+        }
+    }
+    if change.authority_bindings.as_ref().is_some_and(|bindings| bindings.replace.is_some() || !bindings.remove.is_empty())
+        || change.evidence.as_ref().is_some_and(|evidence| !evidence.remove.is_empty()) {
+        bail!("complete authority candidate preserves existing containment and evidence");
+    }
+    let prepared = prepare_semantic_change_for_apply(context, change.clone());
+    // Preparation may close history, but must not widen the approved proposal.
+    let mut normalized = prepared.clone();
+    normalized.supersedes.clear();
+    if serde_json::to_value(&normalized)? != serde_json::to_value(change)? {
+        bail!("complete authority candidate preparation changes the proposed semantics");
+    }
+    let mut diagnostics = validate_semantic_change(context, &prepared);
+    let candidate = spec_apply_candidate_context(context, &prepared, None)?;
+    for manifest in [candidate.module.as_ref(), candidate.implementation.as_ref()].into_iter().flatten() {
+        validate_against_embedded_schema(manifest, &mut diagnostics);
+    }
+    validate_candidate_contract_artifacts(&candidate, &prepared, &mut diagnostics);
+    validate_spec_candidate_capability_contracts(&candidate, &prepared, &mut diagnostics);
+    validate_spec_candidate_composite_export_contracts(&candidate, &prepared, &mut diagnostics);
+    validate_spec_candidate_proof_delegations(&candidate, &prepared, &mut diagnostics);
+    validate_spec_candidate_property_realizations(&candidate, &prepared, &mut diagnostics);
+    validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
+    validate_removed_implementation_command_references(&candidate, &prepared, &mut diagnostics);
+    validate_spec_candidate_property_evidence_writes(context, &prepared, &mut diagnostics);
+    if diagnostics.iter().any(|item| item.severity == Severity::Error
+        || (item.severity == Severity::Warning && item.check != "semantic.evidence-obligation-only")) {
+        bail!("complete authority candidate failed ordinary validation: {}", serde_json::to_string(&diagnostics)?);
+    }
+    let before = build_effect_analysis(implementation)?;
+    if before.result == effect_analysis::AnalysisResult::Unsupported || before.functions.is_empty()
+        || before.functions.iter().any(|function| if function.declared_purity == "effectful" {
+            !function.authority_alignment_eligible
+        } else { function.verdict != effect_analysis::FunctionVerdict::Pass }) {
+        bail!("complete authority candidate cannot waive unresolved calls, invalid facades or pure-function violations");
+    }
+    let final_implementation = candidate.implementation.as_ref().unwrap();
+    let after = build_effect_analysis(final_implementation)?;
+    if before.source_digest != after.source_digest || after.result != effect_analysis::AnalysisResult::Pass {
+        bail!("complete authority candidate does not close every source authority row: {}", serde_json::to_string(&after)?);
+    }
+    let bindings = typed_yaml_sequence::<AuthorityBinding>(&final_implementation.value, &["architecture", "authority_bindings"]);
+    if let Some(request) = &change.authorities {
+        for authority in &request.add {
+            if !after.functions.iter().any(|row| row.transitive_authorities.contains(&authority.id)) {
+                bail!("added raw authority `{}` is not observed in unchanged source", authority.id);
+            }
+        }
+    }
+    if let Some(request) = &change.authority_bindings {
+        for binding in &request.add {
+            if !effect_analysis::is_raw_authority(&binding.authority)
+                || !after.functions.iter().any(|row| row.symbol == binding.safe_facade
+                    && row.declared_purity == "effectful" && row.transitive_authorities.contains(&binding.authority))
+                || !binding_reference_parts(&binding.safe_facade).is_some_and(|(path, _)| binding.roles.iter()
+                    .any(|role| structure_role_paths(final_implementation, role).contains(&path.to_string()))) {
+                bail!("added containment must bind actual raw authority to an exact effectful facade in its own role");
+            }
+        }
+    }
+    for function in &functions.add {
+        let poll = get_str(&implementation.value, &["architecture", "machine", "execution_binding", "input_poll"]);
+        let driver = get_str(&implementation.value, &["architecture", "machine", "driver_function"]);
+        for authority in &function.authorities {
+            if !bindings.iter().any(|binding| binding.authority == *authority
+                && (binding.safe_facade == function.symbol || (poll == Some(function.symbol.as_str())
+                    && driver.is_some_and(|driver| driver == binding.safe_facade || (!driver.contains('#') && driver == semantic_symbol_name(&binding.safe_facade)))
+                    && binding.roles.iter().any(|role| role == "machine_driver")))
+                // Rust method roots are already resolved by final source analysis.
+                // The generic binding selector grammar does not accept `Type::method`.
+                && function.symbol.rsplit_once('#').filter(|(path, _)| is_safe_relative_artifact_path(path)).is_some_and(|(path, _)| binding.roles.iter()
+                    .any(|role| structure_role_paths(final_implementation, role).contains(&path.to_string())))) {
+                bail!("new boundary `{}` requires exact authority containment in its declared role", function.id);
+            }
+        }
+    }
+    let driver = get_str(&implementation.value, &["architecture", "machine", "driver_function"]);
+    for function in &after.functions {
+        if driver.is_some_and(|driver| driver == function.symbol || (!driver.contains('#') && driver == semantic_symbol_name(&function.symbol)))
+            && functions.replace.iter().any(|proposed| proposed.id == function.id)
+            && function.transitive_authorities.iter().any(|authority| authority == "dynamic-dispatch") {
+            validate_persistent_driver_authority_alignment(final_implementation, &after, function)?;
+        }
+    }
+    let mut contracts = BTreeMap::new();
+    for reference in module_contract_references(&module.value) {
+        contracts.insert(reference.clone(), sha256_bytes(&fs::read(spec_target_base(context).join(reference))?));
+    }
+    let fingerprint = serde_json::to_vec(&json!({"before":before,"after":after,"module":module.value,
+        "implementation":implementation.value,"proposal":change,"prepared":prepared,"contracts":contracts}))?;
+    Ok(SpecRepairAuthority { kind: "complete-authority-candidate".into(), diagnostic_fingerprint: sha256_bytes(&fingerprint), contracts: Vec::new() })
 }
 
 fn authority_alignment_analysis(context: &SpecTargetContext) -> Result<effect_analysis::EffectAnalysis> {
@@ -107026,6 +107231,120 @@ executors:
             function.transitive_authorities.contains(&"dynamic-dispatch".into())
                 && function.verdict == effect_analysis::FunctionVerdict::Fail));
         println!("effect diagnostics preserved: {}", serde_json::to_string(&after).unwrap());
+    }
+
+    #[test]
+    #[ignore = "requires RMS_COMPLETE_CANDIDATE_ROOT, RMS_COMPLETE_CANDIDATE_CHANGE and RMS_COMPLETE_CANDIDATE_PINS"]
+    fn complete_authority_candidate_consumer_preflight() {
+        // Read-only maintainer reproducer. The consumer owns the proposal;
+        // this test neither repairs its semantics nor issues mutation authority.
+        let root = PathBuf::from(std::env::var("RMS_COMPLETE_CANDIDATE_ROOT").unwrap());
+        let proposal = PathBuf::from(std::env::var("RMS_COMPLETE_CANDIDATE_CHANGE").unwrap());
+        let pins: serde_json::Value = serde_json::from_slice(&fs::read(std::env::var("RMS_COMPLETE_CANDIDATE_PINS").unwrap()).unwrap()).unwrap();
+        let proposal_bytes = fs::read(&proposal).unwrap();
+        assert_eq!(sha256_bytes(&proposal_bytes), pins["amendment_sha256"].as_str().unwrap());
+        for (path, digest) in pins["file_sha256"].as_object().unwrap() {
+            assert_eq!(sha256_bytes(&fs::read(root.join(path)).unwrap()), digest.as_str().unwrap(), "stale pin: {path}");
+        }
+        let context = load_spec_target(&root.join("modules/speech-provider/module.yaml")).unwrap();
+        let change = prepare_semantic_change_for_apply(&context,
+            parse_semantic_change(None, None, Some(&proposal)).unwrap());
+        let mut diagnostics = validate_semantic_change(&context, &change);
+        let machine = semantic_machine_change_to_machine_change(&change, context.implementation.as_ref());
+        if let (Some(implementation), Some(machine)) = (context.implementation.as_ref(), machine.as_ref()) {
+            diagnostics.extend(validate_machine_change(&implementation_with_semantic_commands(implementation, &change), machine));
+        }
+        let candidate = spec_apply_candidate_context(&context, &change, machine.as_ref()).unwrap();
+        for manifest in [candidate.module.as_ref(), candidate.implementation.as_ref()].into_iter().flatten() {
+            validate_against_embedded_schema(manifest, &mut diagnostics);
+        }
+        validate_candidate_contract_artifacts(&candidate, &change, &mut diagnostics);
+        validate_spec_candidate_capability_contracts(&candidate, &change, &mut diagnostics);
+        validate_spec_candidate_composite_export_contracts(&candidate, &change, &mut diagnostics);
+        validate_spec_candidate_proof_delegations(&candidate, &change, &mut diagnostics);
+        validate_spec_candidate_property_realizations(&candidate, &change, &mut diagnostics);
+        validate_spec_candidate_property_explorations(&candidate, &mut diagnostics);
+        validate_removed_implementation_command_references(&candidate, &change, &mut diagnostics);
+        validate_spec_candidate_property_evidence_writes(&context, &change, &mut diagnostics);
+        println!("ordinary candidate diagnostics: {}", serde_json::to_string_pretty(&diagnostics).unwrap());
+        assert!(!diagnostics.iter().any(|item| item.severity == Severity::Error), "ordinary candidate rejected: {diagnostics:#?}");
+        let before = build_effect_analysis(context.implementation.as_ref().unwrap()).unwrap();
+        assert_eq!(before.source_digest, pins["source_digest"].as_str().unwrap());
+        let after = build_effect_analysis(candidate.implementation.as_ref().unwrap()).unwrap();
+        assert_eq!(before.source_digest, after.source_digest, "candidate changed source");
+        println!("final candidate source analysis: {}", serde_json::to_string_pretty(&after).unwrap());
+        assert_eq!(after.result, effect_analysis::AnalysisResult::Pass);
+        let proposal = parse_semantic_change(None, None, Some(&proposal)).unwrap();
+        let repair = build_complete_authority_candidate_repair(&root, &context, &proposal).unwrap();
+        println!("complete candidate pinned repair: {}", serde_json::to_string(&repair).unwrap());
+    }
+
+    #[test]
+    fn complete_authority_candidate_is_exact_and_source_pinned() {
+        assert!(Cli::try_parse_from(["rms", "next", "Declare existing authority", "--semantic-change-file", "change.json"]).is_err());
+        assert!(Cli::try_parse_from(["rms", "next", "Declare existing authority", "--module", "module.yaml", "--semantic-change-file", "change.json", "--ai"]).is_ok());
+        let root = copy_minimal_fixture("complete-authority-candidate");
+        let module_path = root.join("module.yaml");
+        let path = root.join("implementation.yaml");
+        let mut module = load_manifest(&module_path).unwrap();
+        set_yaml_sequence_path(&mut module.value, &["invariants"], Vec::new());
+        set_yaml_sequence_path(&mut module.value, &["authorities"], vec![serde_yaml::to_value(json!({
+            "id":"dynamic-dispatch", "kind":"foreign", "capabilities":["invoke-adapter"], "rationale":"The caller selects one native adapter."
+        })).unwrap()]);
+        write_yaml_manifest(&module).unwrap();
+        let row = json!({"id":"invoke", "symbol":"src/lib.rs#invoke", "kind":"adapter", "purity":"effectful", "trust":"boundary", "authorities":[], "evidence":{"laws":["verification/laws/example_is_valid"]}});
+        let mut machine = serde_json::to_value(get_path(&load_manifest(&path).unwrap().value, &["architecture","machine"]).unwrap()).unwrap();
+        machine["initial_state"] = json!("Ready");
+        let value = json!({"spec":IMPLEMENTATION_V2_SPEC,"module":"example","binding":"rust",
+            "source":{"root":"src","public_entrypoint":"src/lib.rs"},"commands":{"build":"true","verify":"true","probe":"true"},
+            "architecture":{"shape":"boundary-adapter","machine":machine,"probe":{"protocol":"rms/machine-probe/v0.1","command":"probe","runner":"src/lib.rs#pure"},"roles":{"external_port":["src/lib.rs"],"probe_adapter":["src/lib.rs"]}},
+            "semantic_functions":[row.clone(),{"id":"pure","symbol":"src/lib.rs#pure","kind":"decision","purity":"pure","trust":"internal","authorities":[]}]});
+        fs::write(&path, serde_yaml::to_string(&value).unwrap()).unwrap();
+        let source = "trait Native { fn bind(&self); }\nfn bind_adapter(port: &dyn Native) { port.bind(); }\nfn invoke(port: &dyn Native) { bind_adapter(port); }\nfn pure() {}\n";
+        fs::write(root.join("src/lib.rs"), source).unwrap();
+        fs::write(root.join("prior.yaml"), "prior: immutable\n").unwrap();
+        seal_implementation_semantics(&mut load_manifest(&path).unwrap(), &root.join("prior.yaml"), SemanticRevisionAuthority::SpecApply).unwrap();
+        initialize_test_git_repository(&root);
+        let context = load_spec_target(&module_path).unwrap();
+        let mut repaired = row;
+        repaired["authorities"] = json!(["dynamic-dispatch"]);
+        let change: SemanticChange = serde_json::from_value(json!({"spec":"rms/semantic-change/v0.1", "module":"module.yaml",
+            "semantic_functions":{"set":[repaired],"add":[{"id":"bind","symbol":"src/lib.rs#bind_adapter","kind":"adapter","purity":"effectful","trust":"boundary","authorities":["dynamic-dispatch"],"evidence":{"laws":["verification/laws/example_is_valid"]}}]},
+            "authority_bindings":{"add":[{"authority":"dynamic-dispatch","roles":["external_port"],"safe_facade":"src/lib.rs#bind_adapter","evidence":["verification/laws/example_is_valid"]}]}})).unwrap();
+        let repair = build_complete_authority_candidate_repair(&root, &context, &change).unwrap();
+        let task = "Declare existing native binding authority";
+        let run = prepare_route_run_record(&root, "next", task, &render_intent_extraction_prompt(task), None, None).unwrap();
+        let receipt = issue_route_receipt(&root, &run, task, None, "ready", "semantic",
+            Some(&module_path), Some(&path), vec!["authority-candidate-apply".into()], vec![module_path.clone(), path.clone()], None, Some(repair.clone())).unwrap();
+        let validate = |change: &SemanticChange| validate_spec_change_route_receipt(&root, &receipt.receipt_path, &module_path,
+            Some(&serde_json::to_string(change).unwrap()), None, None);
+        validate(&change).unwrap();
+        let mut changed = change.clone();
+        changed.intent = Some(serde_json::from_value(json!({"summary":"A different exact proposal"})).unwrap());
+        assert!(validate(&changed).is_err(), "candidate drift must be rejected");
+        let mut incomplete = change.clone();
+        incomplete.semantic_functions.as_mut().unwrap().add.clear();
+        assert!(build_complete_authority_candidate_repair(&root, &context, &incomplete).is_err());
+        for (field, value) in [("implementation_commands", json!({"set":{"build":"false"}})), ("semantic_functions", json!({"set":[{"id":"pure","symbol":"src/lib.rs#pure","kind":"adapter","purity":"effectful","authorities":["dynamic-dispatch"]}]}))] {
+            let mut widened = serde_json::to_value(&change).unwrap();
+            widened[field] = value;
+            let widened: SemanticChange = serde_json::from_value(widened).unwrap();
+            assert!(build_complete_authority_candidate_repair(&root, &context, &widened).is_err());
+        }
+        for invalid_source in [source.replace("fn pure() {}", "fn pure() { std::fs::read(\"x\"); }"),
+            source.replace("port.bind();", "missing();"), source.replace("port.bind();", "port.bind(); mystery();"),
+            format!("{source}\nfn bind_adapter() {{}}\n")] {
+            fs::write(root.join("src/lib.rs"), invalid_source).unwrap();
+            assert!(validate(&change).is_err(), "invalid/stale source must be rejected");
+        }
+        fs::write(root.join("src/lib.rs"), format!("{source}\n// unchanged behavior, changed source\n")).unwrap();
+        assert!(validate(&change).is_err(), "even behavior-neutral source drift must reroute");
+        fs::write(root.join("src/lib.rs"), source).unwrap();
+        let mut stale = context.clone();
+        set_yaml_string_path(&mut stale.module.as_mut().unwrap().value, &["module","purpose"], "A changed canonical snapshot");
+        assert_ne!(repair, build_complete_authority_candidate_repair(&root, &stale, &change).unwrap());
+        validate(&change).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn effect_owner_v02_change() -> SemanticChange {
