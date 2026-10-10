@@ -44614,7 +44614,8 @@ fn owner_local_binding_repair_ready(
     };
     let errors = diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .filter(|diagnostic| diagnostic.severity == Severity::Error
+            && bounded_owner_scoped_semantic_route_hard_blocker(root, diagnostic, owner))
         .collect::<Vec<_>>();
     !errors.is_empty()
         && errors.iter().all(|diagnostic| {
@@ -113431,9 +113432,12 @@ semantic_functions: []
 
     #[test]
     fn owner_local_binding_repair_accepts_only_exact_envelope_signature_debt() {
-        let root = copy_minimal_fixture("next-envelope-signature-repair");
-        let module = root.join("module.yaml");
-        let implementation = fs::canonicalize(root.join("implementation.yaml")).unwrap();
+        let root = unique_test_dir("next-envelope-signature-repair");
+        fs::create_dir_all(root.join("modules")).unwrap();
+        let owner_root = root.join("modules/owner");
+        fs::rename(copy_minimal_fixture("envelope-signature-owner"), &owner_root).unwrap();
+        let module = owner_root.join("module.yaml");
+        let implementation = fs::canonicalize(owner_root.join("implementation.yaml")).unwrap();
         let profile = build_repository_profile(&root).unwrap();
         let task = "Repair the existing machine execution-binding declaration by adopting closed envelope-flow; preserve product semantics.";
         let owner = resolve_next_owner(&root, Some(&module), task, &profile.modules, true).unwrap();
@@ -113466,7 +113470,12 @@ semantic_functions: []
         }
         let mut unrelated = signature.clone();
         unrelated.path = root.join("other/implementation.yaml").display().to_string();
-        assert!(!owner_local_binding_repair_ready(&root, Some(&module), task, &[signature, unrelated], &owner));
+        assert!(!owner_local_binding_repair_ready(&root, Some(&module), task, std::slice::from_ref(&unrelated), &owner));
+        assert!(owner_local_binding_repair_ready(&root, Some(&module), task, &[signature.clone(), unrelated], &owner));
+        let root_error = error("schema.validate", &root.join("system.yaml"), "invalid root");
+        assert!(!owner_local_binding_repair_ready(&root, Some(&module), task, &[signature.clone(), root_error], &owner));
+        let foreign_debt = error("effects.transitive-purity", &root.join("other/implementation.yaml"), "unrelated source debt");
+        assert!(owner_local_binding_repair_ready(&root, Some(&module), task, &[signature, foreign_debt], &owner));
         fs::remove_dir_all(root).unwrap();
     }
 
