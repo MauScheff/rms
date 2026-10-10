@@ -88799,16 +88799,67 @@ fn authority_alignment_analysis(context: &SpecTargetContext) -> Result<effect_an
     if checks.iter().any(|check| check.result != "pass") { bail!("authority alignment requires an intact prior semantic revision"); }
     let analysis = build_effect_analysis(implementation)?;
     if analysis.result == effect_analysis::AnalysisResult::Unsupported || analysis.functions.is_empty()
-        || analysis.functions.iter().any(|function| !function.unresolved_calls.is_empty()
-            || function.transitive_authorities.iter().any(|authority| authority == "dynamic-dispatch")
-            || (function.declared_purity != "effectful" && function.verdict != effect_analysis::FunctionVerdict::Pass)) {
-        bail!("authority alignment cannot waive unknown calls, dynamic dispatch, or pure-function violations");
+        || analysis.functions.iter().any(|function| if function.declared_purity == "effectful" {
+            !function.authority_alignment_eligible
+        } else { function.verdict != effect_analysis::FunctionVerdict::Pass }) {
+        bail!("authority alignment cannot waive unresolved or ambiguous calls, invalid facades, or pure-function violations");
+    }
+    for function in &analysis.functions {
+        if function.transitive_authorities.iter().any(|authority| authority == "dynamic-dispatch")
+            && function.declared_authorities != function.transitive_authorities {
+            validate_persistent_driver_authority_alignment(implementation, &analysis, function)?;
+        }
     }
     if !analysis.functions.iter().any(|function| function.declared_purity == "effectful"
         && function.declared_authorities != function.transitive_authorities) {
         bail!("authority alignment requires an existing effectful authority-row mismatch");
     }
     Ok(analysis)
+}
+
+fn validate_persistent_driver_authority_alignment(
+    implementation: &LoadedManifest,
+    analysis: &effect_analysis::EffectAnalysis,
+    function: &effect_analysis::FunctionAnalysis,
+) -> Result<()> {
+    let binding = get_path(&implementation.value, &["architecture", "machine", "execution_binding"])
+        .ok_or_else(|| anyhow!("dynamic row alignment requires a registered persistent-async driver"))?;
+    let binding: persistent_async::ExecutionBinding = serde_yaml::from_value(binding.clone())?;
+    let driver = get_str(&implementation.value, &["architecture", "machine", "driver_function"]).unwrap_or("");
+    if !binding.is_persistent() || !(driver == function.symbol
+        || (!driver.contains('#') && driver == semantic_symbol_name(&function.symbol))) {
+        bail!("dynamic row alignment is restricted to the exact registered persistent-async driver");
+    }
+    let mut allowed = BTreeSet::new();
+    let input_poll = get_str(&implementation.value, &["architecture", "machine", "execution_binding", "input_poll"])
+        .ok_or_else(|| anyhow!("persistent input poll is missing"))?;
+    allowed.insert(input_poll.to_string());
+    for protocol in existing_effect_protocols(implementation) {
+        if let Some(symbol) = protocol.executor_symbol {
+            if analysis.functions.iter().any(|row| row.symbol == symbol && row.declared_purity == "effectful"
+                && row.verdict == effect_analysis::FunctionVerdict::Pass) {
+                allowed.insert(symbol);
+            }
+        }
+    }
+    if function.dynamic_origins.is_empty() || function.dynamic_origins.iter().any(|symbol| !allowed.contains(symbol)) {
+        bail!("driver dynamic dispatch must originate only in the registered input poll or already-conformant exact executors; observed [{}], permitted [{}]", function.dynamic_origins.join(", "), allowed.into_iter().collect::<Vec<_>>().join(", "));
+    }
+    let base = implementation.path.parent().unwrap_or_else(|| Path::new("."));
+    let source_root = get_str(&implementation.value, &["source", "root"])
+        .ok_or_else(|| anyhow!("persistent driver alignment requires an explicit source root"))?;
+    let mut summary = RustTypingSummary::default();
+    let mut diagnostics = Vec::new();
+    for path in rust_source_files(&base.join(source_root)) {
+        let parsed = syn::parse_file(&fs::read_to_string(&path)?)?;
+        inspect_rust_typing_file(implementation, &mut diagnostics, &path, &parsed, &mut summary);
+    }
+    validate_rust_machine_execution_path(implementation, &mut diagnostics, &summary);
+    if diagnostics.iter().any(|diagnostic| diagnostic.severity == Severity::Error) {
+        bail!("persistent driver alignment requires structural conformance: {}", diagnostics.iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error).map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; "));
+    }
+    Ok(())
 }
 
 fn build_authority_alignment_repair(context: &SpecTargetContext) -> Result<SpecRepairAuthority> {
@@ -90415,6 +90466,96 @@ mod tests {
         change.supersedes.push("unrelated.yaml".into());
         assert!(validate_integration_package_rebind(&root, &context, &change).is_err());
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn authority_alignment_accepts_only_registered_persistent_driver_dispatch() {
+        let root = unique_test_dir("authority-alignment-persistent-driver");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("module.yaml"), "spec: rms/module/v0.1\nmodule: {name: owner}\n").unwrap();
+        let source = r#"
+use std::{future::Future, pin::Pin, task::{Context, Poll}};
+struct State;
+enum Input { Result(ResultEnvelope) }
+enum Effect { Start }
+enum EffectResult { Started }
+struct RequestEnvelope { effect: Effect }
+struct ResultEnvelope { result: EffectResult }
+struct Output { effects: Vec<RequestEnvelope> }
+struct Record { state_after: State, output: Output }
+type Pending = Pin<Box<dyn Future<Output = ResultEnvelope>>>;
+struct Runtime { state: State, records: Vec<Record>, pending: Vec<Pending> }
+trait Native { fn start(&self, request: RequestEnvelope) -> Pending; }
+struct Adapters;
+impl Adapters {
+    fn poll_input(&self, cx: &mut Context<'_>, pending: &mut Pending) -> Poll<Option<Input>> {
+        match pending.as_mut().poll(cx) {
+            Poll::Ready(result) => Poll::Ready(Some(Input::Result(result))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+fn execute(port: &dyn Native, request: RequestEnvelope) -> Pending { port.start(request) }
+fn transition_record(state: State, input: Input) -> Record {
+    Record { state_after: state, output: Output { effects: Vec::new() } }
+}
+async fn drive(runtime: &mut Runtime, port: &dyn Native, adapters: &Adapters, cx: &mut Context<'_>) {
+    let record = transition_record(State, Input::Result(ResultEnvelope { result: EffectResult::Started }));
+    for request in record.output.effects { runtime.pending.push(execute(port, request)); }
+    runtime.state = record.state_after;
+    runtime.records.push(record);
+    adapters.poll_input(cx, &mut runtime.pending[0]);
+}
+"#;
+        let driver = json!({"id":"driver","symbol":"src/lib.rs#drive","kind":"adapter","purity":"effectful","authorities":[]});
+        let value = json!({"spec":IMPLEMENTATION_V2_SPEC,"module":"owner","binding":"rust","source":{"root":"src"},
+            "semantic_functions":[driver.clone(),
+                {"id":"record","symbol":"src/lib.rs#transition_record","kind":"transition","purity":"pure","authorities":[]},
+                {"id":"execute","symbol":"src/lib.rs#execute","kind":"effect-executor","purity":"effectful","authorities":["dynamic-dispatch"]}],
+            "architecture":{"roles":{"machine_driver":["src/lib.rs"],"transition":["src/lib.rs"],"effect_executor":["src/lib.rs"]},
+                "machine":{"mode":"workflow-effect-machine","effects":["Start"],"transition_function":"transition_record",
+                    "transition_record_function":"src/lib.rs#transition_record","driver_function":"src/lib.rs#drive",
+                    "types":{"state":"State","input":"Input","transition_record":"Record","effect":"Effect","effect_result":"EffectResult","effect_envelope":"RequestEnvelope","effect_result_envelope":"ResultEnvelope"},
+                    "effect_protocols":[{"effect":"Start","executor_role":"effect_executor","executor_symbol":"src/lib.rs#execute","atomicity":"one-request-one-result","results":["Started"]}],
+                    "execution_binding":{"kind":"persistent-async","runtime":"src/lib.rs#Runtime","state_field":"state","records_field":"records","pending_field":"pending","input_poll":"src/lib.rs#Adapters::poll_input","executors":[{"symbol":"src/lib.rs#execute","request_parameter":1}]}}}});
+        let path = root.join("implementation.yaml");
+        fs::write(root.join("prior.yaml"), "prior: immutable\n").unwrap();
+        let context_for = |value: &JsonValue, source: &str| {
+            fs::write(root.join("src/lib.rs"), source).unwrap();
+            fs::write(&path, serde_yaml::to_string(value).unwrap()).unwrap();
+            seal_implementation_semantics(&mut load_manifest(&path).unwrap(), &root.join("prior.yaml"), SemanticRevisionAuthority::SpecApply).unwrap();
+            load_spec_target(&path).unwrap()
+        };
+        let context = context_for(&value, source);
+        let repair = build_authority_alignment_repair(&context).expect("registered persistent driver row must be repairable");
+        let mut aligned = driver;
+        aligned["authorities"] = json!(["dynamic-dispatch"]);
+        let change: SemanticChange = serde_json::from_value(json!({"spec":"rms/semantic-change/v0.1","module":"owner","semantic_functions":{"set":[aligned.clone()]}})).unwrap();
+        validate_authority_alignment_change(&root, &context, &change).unwrap();
+        let mut bare_driver = value.clone();
+        bare_driver["architecture"]["machine"]["driver_function"] = json!("drive");
+        build_authority_alignment_repair(&context_for(&bare_driver, source)).unwrap();
+        let mut combined = change.clone();
+        combined.semantic_functions.as_mut().unwrap().add.push(serde_json::from_value(aligned.clone()).unwrap());
+        assert!(validate_authority_alignment_change(&root, &context, &combined).is_err());
+        for invalid_source in [
+            source.replace("async fn drive(", "fn drive("),
+            source.replace("records: Vec<Record>", "records: Vec<State>"),
+            source.replace("    let record =", "    let callback: fn() = unknown; callback();\n    let record ="),
+            source.replace("    let record =", "    helper();\n    let record =") + "\nfn helper(callback: fn()) { callback(); }",
+            source.replace("    let record =", "    unknown_call();\n    let record ="),
+            source.to_string() + "\nasync fn drive() {}",
+            source.replace("Record { state_after: state", "std::fs::read(\"x\"); Record { state_after: state"),
+        ] {
+            let context = context_for(&value, &invalid_source);
+            assert!(build_authority_alignment_repair(&context).is_err(), "accepted invalid source: {invalid_source}");
+        }
+        let mut unregistered = value.clone();
+        unregistered["architecture"]["machine"]["execution_binding"]["kind"] = json!("synchronous");
+        assert!(build_authority_alignment_repair(&context_for(&unregistered, source)).is_err());
+        let context = context_for(&value, &(source.to_string() + "\nfn unused() {}"));
+        assert_ne!(repair, build_authority_alignment_repair(&context).unwrap(), "source fingerprint must remain pinned");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

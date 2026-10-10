@@ -60,6 +60,11 @@ pub(crate) enum AnalysisResult {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct FunctionAnalysis {
+    // Internal repair facts. Public report diagnostics are not mutation authority.
+    #[serde(skip)]
+    pub(crate) authority_alignment_eligible: bool,
+    #[serde(skip)]
+    pub(crate) dynamic_origins: Vec<String>,
     pub(crate) id: String,
     pub(crate) symbol: String,
     pub(crate) declared_purity: String,
@@ -114,6 +119,8 @@ pub(crate) fn analyze(input: AnalysisInput) -> EffectAnalysis {
                 .semantic_functions
                 .into_iter()
                 .map(|function| FunctionAnalysis {
+                    authority_alignment_eligible: false,
+                    dynamic_origins: Vec::new(),
                     id: function.id,
                     symbol: function.symbol,
                     declared_purity: function.purity,
@@ -233,6 +240,8 @@ fn analyze_function(
     let candidates = symbol_candidates(&expectation.symbol, nodes);
     if candidates.len() != 1 {
         return FunctionAnalysis {
+            authority_alignment_eligible: false,
+            dynamic_origins: Vec::new(),
             id: expectation.id.clone(),
             symbol: expectation.symbol.clone(),
             declared_purity: expectation.purity.clone(),
@@ -282,7 +291,7 @@ fn analyze_function(
     if ambient_memberships.len() > 1 && ambient_memberships.iter().any(|authority| !is_raw_authority(authority)) {
         reasons.push(format!(
             "semantic function is contained by multiple authority facades [{}]",
-            memberships.into_iter().collect::<Vec<_>>().join(", ")
+            memberships.iter().cloned().collect::<Vec<_>>().join(", ")
         ));
     }
     if expectation.purity == "pure" {
@@ -331,7 +340,10 @@ fn analyze_function(
     } else {
         reasons.push(format!("unsupported purity `{}`", expectation.purity));
     }
-    if !reasons.is_empty() && transitive_authorities.contains("dynamic-dispatch") {
+    let authority_alignment_eligible = expectation.purity == "effectful" && unresolved.is_empty()
+        && !(ambient_memberships.len() > 1 && ambient_memberships.iter().any(|authority| !is_raw_authority(authority)));
+    let mut dynamic_origins = Vec::new();
+    if transitive_authorities.contains("dynamic-dispatch") {
         for index in &visited {
             let contributor = &nodes[*index];
             let open_calls = contributor.calls.iter().filter(|call|
@@ -342,6 +354,8 @@ fn analyze_function(
                     && resolve_local_call(*index, call, nodes).is_empty()
                     && call_is_open(call)).collect::<Vec<_>>();
             if !open_calls.is_empty() {
+                dynamic_origins.push(format!("{}#{}", contributor.path, contributor.qualified_name));
+                if reasons.is_empty() { continue; }
                 reasons.push(format!("dynamic dispatch originates in {}#{}",
                     contributor.path, contributor.qualified_name));
                 for site in &contributor.rust_dynamic_sites {
@@ -365,6 +379,8 @@ fn analyze_function(
         }
     }
     FunctionAnalysis {
+        authority_alignment_eligible,
+        dynamic_origins,
         id: expectation.id.clone(),
         symbol: expectation.symbol.clone(),
         declared_purity: expectation.purity.clone(),

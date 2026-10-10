@@ -253,6 +253,8 @@ mod tests {
             tool_digest: "tool".to_string(),
             result: AnalysisResult::Fail,
             functions: vec![FunctionAnalysis {
+                authority_alignment_eligible: false,
+                dynamic_origins: Vec::new(),
                 id: "read".to_string(),
                 symbol: "src/lib.rs#read".to_string(),
                 declared_purity: "effectful".to_string(),

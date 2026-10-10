@@ -347,6 +347,19 @@ Do not hand-edit canonical manifests, contracts, semantic functions, behavior bi
 
 If the CLI cannot express a required semantic change, report the RMS gap rather than bypassing the declaration gate.
 
+### Existing authority-row repair
+
+An exact existing owner may request `rms next "Align only canonical authority rows in existing OWNER. No new behavior." --root . --ai`. A ready `authority-alignment` receipt permits only exact inferred row updates on existing effectful functions and the supported raw authority declarations. It preserves source, purity, symbols, contracts, topology, existing facades, and sealed prior revisions. It rejects unresolved or ambiguous symbols and pure-function violations.
+
+A mismatched `dynamic-dispatch` row is repairable only on the exact registered, structurally conformant `persistent-async` driver. Every dynamic contributor must be the exact registered input poll or an already-conformant registered executor. Existing conformant dynamic rows remain unchanged. Arbitrary callbacks outside those boundaries remain blocked. This repair does not authorize new dynamic authority declarations, bindings, semantic functions, or evidence.
+
+When a driver row blocks a normal semantic amendment, use two fresh receipts:
+
+1. Route the row-only task. Dry-run and apply only `semantic_functions.set` with that `authority-alignment` receipt. Preserve every function field except its exact inferred `authorities` row.
+2. Route the subsequent semantic task after alignment. Use the new normal `spec-apply` receipt to declare the exact registered poll function, containment binding, and evidence. Dry-run, apply, and run all prescribed proof.
+
+Do not reuse the blocked or alignment receipt for the second task. Each receipt pins its source and canonical snapshot. This recovery sequence removes no final candidate or release gate.
+
 A focused probe-capable machine change uses the same `rms/machine-change/v0.1` object for the command binding, initial state, probe protocol, and adapter role:
 
 ```yaml
