@@ -1,7 +1,11 @@
 //! Closed, source-owned envelope projection proof. No IO or scheduling authority.
 use super::{EnvelopeFlow, ExecutorBinding, FlowContract, Index, Types};
+use proc_macro2::{TokenStream, TokenTree};
 use std::collections::{BTreeMap, BTreeSet};
 use syn::{
+    ext::IdentExt,
+    parse::Parser,
+    spanned::Spanned,
     visit::{self, Visit},
     Expr, FnArg, Item, Pat, ReturnType, Stmt, Type,
 };
@@ -16,6 +20,101 @@ fn need(value: bool, reason: &str) -> Proof<()> {
 }
 fn address<T>(value: &T) -> usize {
     value as *const T as usize
+}
+
+// Only replacement fields carry implicit references. Prose and escaped braces
+// remain data. Unknown field/specification grammar is refused, never skipped.
+fn format_capture_names(text: &str) -> Proof<Vec<(String, usize)>> {
+    fn argument(text: &str, names: &mut Vec<(String, usize)>, offset: usize) -> Proof<()> {
+        if text.is_empty() || text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Ok(());
+        }
+        need(
+            text != "_" && syn::Ident::parse_any.parse_str(text).is_ok(),
+            "unsupported format argument",
+        )?;
+        names.push((text.into(), offset));
+        Ok(())
+    }
+    fn count(spec: &mut &str, names: &mut Vec<(String, usize)>, offset: usize) -> Proof<bool> {
+        let digits = spec.bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 {
+            *spec = &spec[digits..];
+            if spec.starts_with('$') {
+                *spec = &spec[1..];
+            }
+            return Ok(true);
+        }
+        if !spec.starts_with('.') {
+            if let Some(end) = spec.find('$') {
+                argument(&spec[..end], names, offset)?;
+                need(end > 0, "empty format count")?;
+                *spec = &spec[end + 1..];
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    let mut names = Vec::new();
+    let mut cursor = 0;
+    while cursor < text.len() {
+        let rest = &text[cursor..];
+        if rest.starts_with("{{") || rest.starts_with("}}") {
+            cursor += 2;
+            continue;
+        }
+        if rest.starts_with('}') {
+            return Err("unmatched format closing brace".into());
+        }
+        if !rest.starts_with('{') {
+            cursor += rest.chars().next().unwrap().len_utf8();
+            continue;
+        }
+        let end = rest.find('}').ok_or("unclosed format replacement field")?;
+        let field = rest[1..end].trim_end();
+        need(!field.contains('{'), "nested format replacement field")?;
+        let (arg, mut spec) = field.split_once(':').unwrap_or((field, ""));
+        argument(arg, &mut names, cursor)?;
+        let mut chars = spec.char_indices();
+        let first = chars.next();
+        let second = chars.next();
+        if second.is_some_and(|(_, ch)| matches!(ch, '<' | '^' | '>')) {
+            let (index, ch) = second.unwrap();
+            spec = &spec[index + ch.len_utf8()..];
+        } else if first.is_some_and(|(_, ch)| matches!(ch, '<' | '^' | '>')) {
+            spec = &spec[1..];
+        }
+        if spec.starts_with(['+', '-']) {
+            spec = &spec[1..];
+        }
+        if spec.starts_with('#') {
+            spec = &spec[1..];
+        }
+        if spec.starts_with('0') && !spec.starts_with("0$") {
+            spec = &spec[1..];
+        }
+        count(&mut spec, &mut names, cursor)?;
+        if spec.starts_with('.') {
+            spec = &spec[1..];
+            if spec.starts_with('*') {
+                spec = &spec[1..];
+            } else {
+                need(
+                    count(&mut spec, &mut names, cursor)?,
+                    "missing format precision",
+                )?;
+            }
+        }
+        need(
+            matches!(
+                spec,
+                "" | "?" | "x?" | "X?" | "o" | "x" | "X" | "p" | "b" | "e" | "E"
+            ),
+            "unsupported format specification",
+        )?;
+        cursor += end + 1;
+    }
+    Ok(names)
 }
 fn plain(path: &syn::Path) -> Option<String> {
     (path.leading_colon.is_none()
@@ -1488,13 +1587,33 @@ impl<'ast> Visit<'ast> for Closure<'_, '_> {
         self.refuse("extern-crate aliases prevent source identity closure");
     }
     fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        self.inspect_macro(node);
+    }
+}
+impl Closure<'_, '_> {
+    fn macro_refuse(&mut self, node: &syn::Macro, cause: &str) {
+        let location = node.path.span().start();
+        let path = node
+            .path
+            .segments
+            .iter()
+            .map(|part| part.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        self.refuse(&format!(
+            "macro `{path}!` at {}:{} token path `{path}`: {cause}",
+            location.line,
+            location.column + 1
+        ));
+    }
+    fn inspect_macro(&mut self, node: &syn::Macro) {
         let spelling = plain(&node.path).unwrap_or_default();
         let leaf = spelling.rsplit("::").next().unwrap_or_default();
         if self.checker.index.named_items("std").len()
             + self.checker.index.named_items("core").len()
             > 0
         {
-            self.refuse("macro standard root is shadowed");
+            self.macro_refuse(node, "macro standard root is shadowed");
         }
         match self.checker.imports(&self.file) {
             Ok(imports) if !imports.contains_key("std") && !imports.contains_key("core") => {
@@ -1503,11 +1622,11 @@ impl<'ast> Visit<'ast> for Closure<'_, '_> {
                         !target.starts_with("std::") && !target.starts_with("core::")
                     })
                 {
-                    self.refuse("macro identity is open or shadowed");
+                    self.macro_refuse(node, "macro identity is open or shadowed");
                 }
             }
-            Err(reason) => self.refuse(&reason),
-            _ => self.refuse("macro identity is open or shadowed"),
+            Err(reason) => self.macro_refuse(node, &reason),
+            _ => self.macro_refuse(node, "macro identity is open or shadowed"),
         }
         if !matches!(
             leaf,
@@ -1546,17 +1665,99 @@ impl<'ast> Visit<'ast> for Closure<'_, '_> {
             && !spelling.starts_with("std::")
             && !spelling.starts_with("core::"))
         {
-            self.refuse("unsupported macro in flow source closure");
+            self.macro_refuse(node, "unsupported macro in flow source closure");
         }
-        let tokens = node.tokens.to_string();
-        if tokens
-            .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
-            .any(|token| {
-                self.checker.protected.contains(token)
-                    || self.checker.callable_leaves.contains(token)
-            })
-        {
-            self.refuse("macro hides a flow type or registered callable");
+        self.inspect_macro_tokens(node, node.tokens.clone(), "input");
+        let format_index = match leaf {
+            "format" | "format_args" | "print" | "println" | "eprint" | "eprintln" | "panic"
+            | "todo" | "unreachable" => Some(0),
+            "write" | "writeln" | "assert" | "debug_assert" => Some(1),
+            "assert_eq" | "assert_ne" | "debug_assert_eq" | "debug_assert_ne" => Some(2),
+            _ => None,
+        };
+        if let Some(index) = format_index {
+            match syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated
+                .parse2(node.tokens.clone())
+            {
+                Ok(arguments) => {
+                    if let Some(expr) = arguments.iter().nth(index) {
+                        if let Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(literal),
+                            ..
+                        }) = expr
+                        {
+                            match format_capture_names(&literal.value()) {
+                                Ok(names) => {
+                                    for (name, offset) in names {
+                                        if self.protected_macro_identifier(&name) {
+                                            self.macro_refuse(node, &format!("format argument token {index}, decoded field byte {offset}: capture `{name}` hides a flow type or registered callable"));
+                                        }
+                                    }
+                                }
+                                Err(reason) => self.macro_refuse(
+                                    node,
+                                    &format!("format argument token {index}: {reason}"),
+                                ),
+                            }
+                        } else {
+                            self.macro_refuse(node, &format!("format argument token {index}: require a literal format string; constructed formats are unsupported"));
+                        }
+                    }
+                }
+                Err(_) => self.macro_refuse(node, "unsupported formatting argument tokens"),
+            }
+        }
+    }
+    fn protected_macro_identifier(&self, name: &str) -> bool {
+        let name = name.strip_prefix("r#").unwrap_or(name);
+        self.checker.protected.contains(name) || self.checker.callable_leaves.contains(name)
+    }
+    fn inspect_macro_tokens(&mut self, owner: &syn::Macro, stream: TokenStream, position: &str) {
+        let tokens = stream.into_iter().collect::<Vec<_>>();
+        for (index, token) in tokens.iter().enumerate() {
+            match token {
+                TokenTree::Ident(ident) if self.protected_macro_identifier(&ident.to_string()) => {
+                    let location = ident.span().start();
+                    self.macro_refuse(owner, &format!("{position}[{index}] identifier `{ident}` at {}:{} hides a flow type or registered callable", location.line, location.column + 1));
+                }
+                TokenTree::Group(group) => {
+                    let bang = |token: &TokenTree| matches!(token, TokenTree::Punct(punct) if punct.as_char() == '!');
+                    let colon = |token: &TokenTree| matches!(token, TokenTree::Punct(punct) if punct.as_char() == ':');
+                    if index >= 2
+                        && bang(&tokens[index - 1])
+                        && matches!(tokens[index - 2], TokenTree::Ident(_))
+                    {
+                        let mut start = index - 2;
+                        while start >= 3
+                            && colon(&tokens[start - 1])
+                            && colon(&tokens[start - 2])
+                            && matches!(tokens[start - 3], TokenTree::Ident(_))
+                        {
+                            start -= 3;
+                        }
+                        if start >= 2 && colon(&tokens[start - 1]) && colon(&tokens[start - 2]) {
+                            start -= 2;
+                        }
+                        let nested = tokens[start..=index].iter().cloned().collect();
+                        match syn::parse2::<syn::Macro>(nested) {
+                            Ok(nested) => self.inspect_macro(&nested),
+                            Err(_) => self.macro_refuse(
+                                owner,
+                                &format!("{position}[{index}]: unsupported nested macro tokens"),
+                            ),
+                        }
+                    } else {
+                        self.inspect_macro_tokens(
+                            owner,
+                            group.stream(),
+                            &format!("{position}[{index}]"),
+                        );
+                    }
+                }
+                // Literals are data. Only an actual formatter's selected
+                // literal is separately parsed for implicit identifier captures.
+                _ => {}
+            }
         }
     }
 }
@@ -1762,6 +1963,103 @@ envelope_flow:
         );
         assert!(!check(&invalid_sync, &sync_binding, &contract()).is_empty());
     }
+    #[test]
+    fn format_capture_grammar_separates_references_from_prose_and_fill() {
+        for (text, expected) in [
+            ("observed {{observed}}", vec![]),
+            ("{result:?}", vec!["result"]),
+            ("{result:0observed$}", vec!["result", "observed"]),
+            (
+                "{result:width$.observed$}",
+                vec!["result", "width", "observed"],
+            ),
+            ("{result:🦀>+#010.2x?}", vec!["result"]),
+            ("{0:0$.1$}", vec![]),
+            ("{result:.*}", vec!["result"]),
+            ("{result   }", vec!["result"]),
+        ] {
+            let names = format_capture_names(text)
+                .unwrap()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>();
+            assert_eq!(names, expected, "{text}");
+        }
+        for text in [
+            "{",
+            "}",
+            "{result:.}",
+            "{result:unknown}",
+            "{nested{observed}}",
+            "{_}",
+        ] {
+            assert!(format_capture_names(text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn envelope_flow_macro_literals_are_not_callable_identifiers() {
+        for body in [
+            "panic!(\"long pressured stream ended before observed frame: {result:?}\")",
+            "panic!(r###\"observed Context {result:?}\"###)",
+            "format!(\"observed {{observed}} {result:width$.precision$}\")",
+            "vec![\"{observed}\", r#\"Context observed\"#]",
+            "assert_eq!(\"{observed}\", \"{observed}\", \"observed {result:?}\")",
+            "write!(sink, \"observed {result:?}\")",
+        ] {
+            let mut source = sources();
+            source
+                .get_mut("src/lib.rs")
+                .unwrap()
+                .push_str(&format!("\nfn diagnostic() {{ {body}; }}\n"));
+            assert!(check(&source, BINDING, &contract()).is_empty(), "{body}");
+        }
+    }
+
+    #[test]
+    fn envelope_flow_macro_identifiers_and_format_captures_remain_closed() {
+        for body in [
+            "panic!(\"{observed:?}\")",
+            "panic!(r#\"{observed}\"#)",
+            "panic!(\"{\\u{6f}bserved}\")",
+            "format!(\"{result:0observed$}\")",
+            "format!(\"{result:.observed$}\")",
+            "assert!(true, \"{observed}\")",
+            "write!(sink, \"{observed}\")",
+            "vec![format!(\"{observed}\")]",
+            "assert_eq!(r#observed, result)",
+            "matches!(result, crate::types::Context { .. })",
+            "vec![foreign::hidden!(\"plain prose\")]",
+            "format!(concat!(\"{\", \"observed\", \"}\"))",
+        ] {
+            let mut source = sources();
+            source
+                .get_mut("src/lib.rs")
+                .unwrap()
+                .push_str(&format!("\nfn diagnostic() {{ {body}; }}\n"));
+            let errors = check(&source, BINDING, &contract());
+            assert!(
+                errors.iter().any(|reason| reason.contains("src/lib.rs")
+                    && reason.contains("macro `")
+                    && reason.contains("token")),
+                "{body}: {errors:?}"
+            );
+        }
+        let mut source = sources();
+        source
+            .get_mut("src/lib.rs")
+            .unwrap()
+            .push_str("\nfn diagnostic() { panic!(\"{observed}\"); }\n");
+        let errors = check(&source, BINDING, &contract());
+        assert!(
+            errors.iter().any(
+                |reason| reason.contains("src/lib.rs: macro `panic!` at 2:19")
+                    && reason.contains("capture `observed`")
+            ),
+            "{errors:?}"
+        );
+    }
+
     #[test]
     fn envelope_flow_accepts_documented_explicit_imports() {
         for attr in [
@@ -1998,6 +2296,8 @@ use std::future::Future;
 struct Wake;
 impl std::task::Wake for Wake { fn wake(self: std::sync::Arc<Self>) {} }
 fn main() {
+    let result = 0usize;
+    if result != 0 { panic!("long pressured stream ended before observed frame: {result:?}"); }
     let bytes = vec![1, 2, 3, 4];
     let allocation = bytes.as_ptr();
     let request = types::issued(bytes);

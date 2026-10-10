@@ -131,6 +131,8 @@ Explicit imports and re-exports may retain unqualified built-in `doc` attributes
 
 Source-generating macros and unsupported attributes are rejected. This includes arbitrary procedural derives, `cfg_attr`, `include!`, and custom test attributes. The checker permits a closed set of ordinary standard macros only when their identity is unshadowed and their tokens contain no flow type or registered callable. Unsupported syntax remains a blocker.
 
+Macro closure uses recursive token-tree identifiers, not words inside literals. Ordinary string and raw-string prose is data. Formatting macros separately check literal replacement fields, including named value, width, and precision references. Escaped braces are data. The checked format grammar follows [Rust format syntax](https://doc.rust-lang.org/std/fmt/index.html#syntax). Nonliteral or constructed format strings and unsupported formatting argument forms fail closed. Nested macros retain the same identity and identifier checks. Refusals identify the source file, macro path, source line and column, and offending identifier token or decoded format-field reference. The existing `proc-macro2` dependency is direct for token identity and source-span diagnostics; no additional package or canonical state is introduced.
+
 ## Proof boundary and evidence
 
 The proof covers header and payload provenance within one dispatcher invocation. It proves that each matched branch uses the original context once and preserves exact result identity. It does not prove globally unique request issuance, fairness, cancellation, drop safety, stale-result policy, or the external operation's semantics.
