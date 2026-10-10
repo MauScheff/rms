@@ -22,6 +22,42 @@ fn address<T>(value: &T) -> usize {
     value as *const T as usize
 }
 
+// This exception is derived from syntax, never from a module name or path.
+// No runtime source owner can be reached through this declaration.
+fn test_only_module(item: &syn::ItemMod) -> bool {
+    let mut conditions = 0;
+    let mut paths = 0;
+    for attr in &item.attrs {
+        if attr.path().is_ident("doc") {
+            continue;
+        }
+        if attr.path().is_ident("cfg")
+            && attr
+                .parse_args::<syn::Path>()
+                .is_ok_and(|path| path.is_ident("test"))
+        {
+            conditions += 1;
+        } else if attr.path().is_ident("path") {
+            let syn::Meta::NameValue(value) = &attr.meta else {
+                return false;
+            };
+            let Expr::Lit(value) = &value.value else {
+                return false;
+            };
+            let syn::Lit::Str(value) = &value.lit else {
+                return false;
+            };
+            if value.value().is_empty() {
+                return false;
+            }
+            paths += 1;
+        } else {
+            return false;
+        }
+    }
+    conditions == 1 && paths <= 1
+}
+
 // Only replacement fields carry implicit references. Prose and escaped braces
 // remain data. Unknown field/specification grammar is refused, never skipped.
 fn format_capture_names(text: &str) -> Proof<Vec<(String, usize)>> {
@@ -245,7 +281,7 @@ struct Checker<'a> {
     context_impl: usize,
 }
 impl<'a> Checker<'a> {
-    fn modules(&self, required: &BTreeSet<&str>) -> Proof<()> {
+    fn modules(&self, required: &BTreeSet<&str>) -> Proof<BTreeSet<String>> {
         let roots = ["src/lib.rs", "src/main.rs"]
             .into_iter()
             .filter(|root| self.index.files.contains_key(*root))
@@ -256,6 +292,7 @@ impl<'a> Checker<'a> {
         )?;
         let mut pending = vec![roots[0].to_string()];
         let mut reached = BTreeSet::new();
+        let mut test_sources = BTreeSet::new();
         while let Some(file) = pending.pop() {
             need(
                 reached.insert(file.clone()),
@@ -268,6 +305,37 @@ impl<'a> Checker<'a> {
                         names.insert(item.ident.to_string()),
                         "duplicate module declaration",
                     )?;
+                    if test_only_module(item) {
+                        if item.content.is_none() {
+                            if let Some(attr) = item.attrs.iter().find(|attr| attr.path().is_ident("path")) {
+                                let syn::Meta::NameValue(value) = &attr.meta else { unreachable!() };
+                                let Expr::Lit(value) = &value.value else { unreachable!() };
+                                let syn::Lit::Str(value) = &value.lit else { unreachable!() };
+                                let parent = std::path::Path::new(&file).parent().unwrap();
+                                let joined = parent.join(value.value());
+                                let mut parts = Vec::new();
+                                for component in joined.components() {
+                                    match component {
+                                        std::path::Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+                                        std::path::Component::CurDir => {},
+                                        std::path::Component::ParentDir if !parts.is_empty() => { parts.pop(); },
+                                        _ => return Err("test module path escapes the inspected relative source scope".into()),
+                                    }
+                                }
+                                test_sources.insert(parts.join("/"));
+                            } else {
+                                let stem = file.strip_suffix(".rs").unwrap();
+                                let directory = if matches!(file.as_str(), "src/lib.rs" | "src/main.rs") {
+                                    "src"
+                                } else {
+                                    stem.strip_suffix("/mod").unwrap_or(stem)
+                                };
+                                test_sources.insert(format!("{directory}/{}.rs", item.ident));
+                                test_sources.insert(format!("{directory}/{}/mod.rs", item.ident));
+                            }
+                        }
+                        continue;
+                    }
                     if item.content.is_some() {
                         continue;
                     }
@@ -327,7 +395,10 @@ impl<'a> Checker<'a> {
         need(
             required.iter().all(|file| reached.contains(*file)),
             "registered source is not wired through the inspected crate root",
-        )
+        )?;
+        // A source reached through production wiring remains production even
+        // when another declaration also uses it for tests.
+        Ok(test_sources.difference(&reached).cloned().collect())
     }
     fn imports(&self, file: &str) -> Proof<BTreeMap<String, String>> {
         fn collect(
@@ -738,7 +809,7 @@ pub(super) fn prove<'a>(
                 .ok_or("every flow symbol requires exact source path".into())
         })
         .collect::<Proof<BTreeSet<_>>>()?;
-    checker.modules(&required)?;
+    let test_sources = checker.modules(&required)?;
     let (file, context) = checker.source_type(context_name)?;
     need(
         file == context_file
@@ -1342,6 +1413,9 @@ pub(super) fn prove<'a>(
         reason: None,
     };
     for (name, file) in index.files {
+        if test_sources.contains(name) {
+            continue;
+        }
         closure.file = name.clone();
         closure.visit_file(file);
     }
@@ -1435,6 +1509,23 @@ impl<'ast> Visit<'ast> for Closure<'_, '_> {
     }
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
         self.declaration(&node.ident);
+        if test_only_module(node) {
+            // Ignore only the inert test placement attribute. Keep any inspected
+            // inline contents in the same strict provenance closure as before.
+            for attr in &node.attrs {
+                if !attr.path().is_ident("path") {
+                    self.visit_attribute(attr);
+                }
+            }
+            self.visit_visibility(&node.vis);
+            self.visit_ident(&node.ident);
+            if let Some((_, items)) = &node.content {
+                for item in items {
+                    self.visit_item(item);
+                }
+            }
+            return;
+        }
         visit::visit_item_mod(self, node);
     }
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
@@ -1924,6 +2015,82 @@ envelope_flow:
             &types(),
             Some(contract),
         )
+    }
+    #[test]
+    fn test_only_module_exception_has_a_closed_attribute_grammar() {
+        for declaration in [
+            "#[cfg(test)] mod arbitrary_name;",
+            "#[doc(hidden)] #[path = \"support.rs\"] #[cfg(test)] mod tests;",
+            "#[cfg(test)] mod tests { #[test] fn smoke() {} }",
+        ] {
+            assert!(test_only_module(&syn::parse_str(declaration).unwrap()));
+        }
+        for declaration in [
+            "mod tests;",
+            "#[cfg(test)] #[cfg(test)] mod tests;",
+            "#[cfg(test)] #[path = \"\"] mod tests;",
+            "#[cfg(test)] #[path = 1] mod tests;",
+            "#[cfg(test)] #[path = \"a.rs\"] #[path = \"b.rs\"] mod tests;",
+            "#[other::cfg(test)] mod tests;",
+            "#[cfg(test)] #[other::path = \"a.rs\"] mod tests;",
+        ] {
+            assert!(!test_only_module(&syn::parse_str(declaration).unwrap()));
+        }
+    }
+    #[test]
+    fn test_only_module_placement_preserves_production_flow_and_test_closure() {
+        let mut moved = sources();
+        moved.get_mut("src/io.rs").unwrap().push_str(
+            "\n#[cfg(test)] #[path = \"../tests/support/io_support_unit.rs\"] mod tests;",
+        );
+        moved.insert("tests/support/io_support_unit.rs".into(),
+            "use super::*; #[test] fn private_parent_access() { let _ = Ports; }".into());
+        let errors = check(&moved, BINDING, &contract());
+        assert!(errors.is_empty(), "{errors:?}");
+
+        let mut ordinary = sources();
+        ordinary.get_mut("src/io.rs").unwrap().push_str("\n#[cfg(test)] mod tests;");
+        ordinary.insert("src/io/tests.rs".into(), "use super::*; #[test] fn smoke() {}".into());
+        assert!(check(&ordinary, BINDING, &contract()).is_empty());
+        let mut inline = sources();
+        inline.get_mut("src/io.rs").unwrap().push_str(
+            "\n#[cfg(test)] mod tests { use super::*; #[test] fn smoke() {} }",
+        );
+        assert!(check(&inline, BINDING, &contract()).is_empty());
+
+        // A test reference cannot exempt a file that production also reaches.
+        let mut dual = sources();
+        dual.get_mut("src/lib.rs").unwrap().push_str(
+            "\n#[cfg(test)] #[path = \"io.rs\"] mod tests;",
+        );
+        dual.get_mut("src/io.rs").unwrap().push_str(
+            "\nfn bypass() { crate::types::Context::split(request); }",
+        );
+        assert!(!check(&dual, BINDING, &contract()).is_empty());
+
+        for attrs in [
+            "#[path = \"../tests/support/io_support_unit.rs\"]",
+            "#[cfg(feature = \"tests\")] #[path = \"../tests/support/io_support_unit.rs\"]",
+            "#[cfg(any(test, feature = \"tests\"))] #[path = \"../tests/support/io_support_unit.rs\"]",
+            "#[cfg_attr(test, path = \"../tests/support/io_support_unit.rs\")]",
+            "#[cfg(test)] #[custom] #[path = \"../tests/support/io_support_unit.rs\"]",
+            "#[cfg(test)] #[path = \"/tmp/tests.rs\"]",
+            "#[cfg(test)] #[path = \"../../tests.rs\"]",
+        ] {
+            let mut invalid = moved.clone();
+            invalid.insert("src/io.rs".into(), format!("{IO}\n{attrs} mod tests;"));
+            assert!(!check(&invalid, BINDING, &contract()).is_empty(), "{attrs}");
+        }
+        let mut hidden_owner = moved.clone();
+        hidden_owner.insert("src/lib.rs".into(),
+            "mod types; mod runtime; #[cfg(test)] mod read; mod stop; mod io;".into());
+        assert!(check(&hidden_owner, BINDING, &contract()).iter()
+            .any(|reason| reason.contains("registered source is not wired")));
+
+        // An unrelated inspected file is not test-only merely by its path.
+        moved.insert("tests/unregistered.rs".into(),
+            "fn bypass() { crate::types::Context::split(request); }".into());
+        assert!(!check(&moved, BINDING, &contract()).is_empty());
     }
     #[test]
     fn closed_envelope_flow_preserves_owned_headers_payload_and_actual_status() {
