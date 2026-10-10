@@ -6,6 +6,7 @@ use syn::{Expr, FnArg, GenericArgument, Item, Pat, PathArguments, ReturnType, Si
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum RustValueType {
     Unknown,
+    Dynamic,
     Text,
     Character,
     Byte,
@@ -98,6 +99,9 @@ impl ExternalType {
 }
 
 impl RustValueType {
+    pub(super) fn is_dynamic_receiver(&self) -> bool {
+        matches!(self.deref_value(), Self::Dynamic)
+    }
     pub(super) fn name(&self) -> Option<&String> {
         match self.deref_value() {
             Self::Named(name) => Some(name),
@@ -128,7 +132,7 @@ impl RustValueType {
             (Self::Optional(element), "map_or_else", 1) => Some(vec![(**element).clone()]),
             (Self::Iterator(element), "fold", 1) => Some(vec![Self::Unknown, (**element).clone()]),
             (Self::Iterator(element), "flat_map", 0) => Some(vec![(**element).clone()]),
-            (_, "map" | "filter" | "filter_map" | "find_map" | "any" | "all" | "find" | "and_then" | "is_some_and" | "max_by_key" | "min_by_key", 0) => {
+            (_, "map" | "filter" | "filter_map" | "find_map" | "any" | "all" | "find" | "position" | "and_then" | "is_some_and" | "max_by_key" | "min_by_key", 0) => {
                 self.element().map(|element| vec![element.clone()])
             }
             _ => None,
@@ -864,6 +868,9 @@ impl RustTypeIndex {
     fn parse_type(&self, value: &Type) -> Option<RustValueType> {
         match value {
             Type::Reference(reference) => self.parse_type(&reference.elem),
+            // This is negative dispatch evidence, not a concrete owner or a
+            // purity fact. Preserve it through standard pointer wrappers.
+            Type::TraitObject(_) => Some(RustValueType::Dynamic),
             Type::Array(array) => Some(RustValueType::Sequence(Box::new(
                 self.parse_type(&array.elem).unwrap_or(RustValueType::Unknown)))),
             Type::Tuple(tuple) => Some(RustValueType::Tuple(tuple.elems.iter()
@@ -957,14 +964,14 @@ impl RustTypeIndex {
                     return None;
                 }
                 let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
-                // A cleanup timer may carry the standard duration through an
-                // Option field before constructing sleep. Preserve only this
-                // exact payload when source-owned globs prove no shadowing.
+                // Preserve a proven payload through the standard Option even
+                // with source-owned globs. Both standard roots must be closed;
+                // the element still requires its own exact type proof.
                 if name == "Option" && self.unshadowed_external_root("Option")
                     && self.unshadowed_external_root("Some") {
                     if let GenericArgument::Type(element) = &arguments.args[0] {
-                        if self.parse_type(element) == Some(RustValueType::External(ExternalType::Duration)) {
-                            return Some(RustValueType::Optional(Box::new(RustValueType::External(ExternalType::Duration))));
+                        if let Some(element) = self.parse_type(element) {
+                            return Some(RustValueType::Optional(Box::new(element)));
                         }
                     }
                 }
@@ -1610,6 +1617,7 @@ impl RustTypeIndex {
             Expr::Try(value) => match self.expression_type(&value.expr, values)? {
                 RustValueType::ResultOk(value) => Some(*value),
                 RustValueType::ResultKnown(value, _) => Some(*value),
+                RustValueType::Optional(value) => Some(*value),
                 _ => None,
             },
             Expr::Call(call) => {
@@ -1696,6 +1704,10 @@ impl RustTypeIndex {
                     RustValueType::ResultOk(element) if method == "map_err" && call.args.len() == 1 =>
                         Some(RustValueType::ResultOk(element)),
                     RustValueType::Text => match method.as_str() {
+                        "strip_prefix" | "strip_suffix" if call.args.len() == 1
+                            && call.turbofish.is_none()
+                            && matches!(&call.args[0], Expr::Lit(value) if matches!(value.lit, syn::Lit::Str(_) | syn::Lit::Char(_))) =>
+                            Some(RustValueType::Optional(Box::new(RustValueType::Text))),
                         "len" if call.args.is_empty() && call.turbofish.is_none() => Some(RustValueType::Usize),
                         "bytes" if call.args.is_empty() && call.turbofish.is_none() =>
                             Some(RustValueType::Iterator(Box::new(RustValueType::Byte))),

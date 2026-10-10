@@ -12,8 +12,8 @@ mod rust_effect_types;
 use rust_effect_types::{RustTypeIndex, RustValueType};
 
 pub(crate) const EFFECT_ANALYSIS_SPEC: &str = "rms/effect-analysis/v0.1";
-pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.10";
-pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.8";
+pub(crate) const PURE_ALLOWLIST_VERSION: &str = "rms/pure-call-allowlist/v0.11";
+pub(crate) const AUTHORITY_ROOT_VERSION: &str = "rms/authority-root-allowlist/v0.9";
 
 #[derive(Clone, Debug)]
 pub(crate) struct SemanticFunctionExpectation {
@@ -675,6 +675,12 @@ fn call_is_open(call: &str) -> bool {
 fn resolve_local_call(index: usize, call: &str, nodes: &[FunctionNode]) -> Vec<usize> {
     let name = symbol_name(call);
     let expected_path = symbol_path(call);
+    if nodes[index].binding == "rust" && expected_path.is_none() && call.contains('.') {
+        // Proven source receivers are emitted as exact path#Owner::method.
+        // A dotted expression label has no owner identity. Its receiver/factory
+        // evaluation is separately visited; never guess a same-leaf callee.
+        return Vec::new();
+    }
     if nodes[index].binding == "rust" {
         if let Some(path) = expected_path {
             let qualified = symbol_qualified_name(call);
@@ -1898,6 +1904,14 @@ impl<'ast> Visit<'ast> for RustCallCollector {
         let inferred_receiver = self
             .type_index
             .expression_type(&node.receiver, &self.value_types);
+        if inferred_receiver.as_ref().is_some_and(RustValueType::is_dynamic_receiver) {
+            // A trait-object field never borrows the body of an unrelated
+            // concrete method or free function with the same leaf name.
+            self.dynamic_sites.insert(format!("{receiver}.{}", node.method));
+            self.calls.insert("<dynamic-call>".into());
+            visit::visit_expr_method_call(self, node);
+            return;
+        }
         let inferred_name = inferred_receiver.as_ref().and_then(RustValueType::name);
         let external_marker = inferred_receiver.as_ref().and_then(|value| {
             node.turbofish.is_none().then(|| self.type_index.external_method_marker(value, &node.method.to_string(), node.args.len())).flatten()
@@ -1915,6 +1929,16 @@ impl<'ast> Visit<'ast> for RustCallCollector {
                 .filter(|name| !self.type_index.is_generic(name) && !self.type_index.is_declared_type(name)),
             _ => None,
         });
+        if node.method == "bytes" && inferred_receiver != Some(RustValueType::Text)
+            && inferred_name.is_none()
+        {
+            // The standard text iterator is closed only for a proven text
+            // receiver. An unsupported pattern must not borrow its purity.
+            self.dynamic_sites.insert(format!("{receiver}.{}", node.method));
+            self.calls.insert("<dynamic-call>".into());
+            visit::visit_expr_method_call(self, node);
+            return;
+        }
         let call = if let Some(marker) = external_marker {
             marker.to_string()
         } else if matches!(&inferred_receiver, Some(RustValueType::ResultKnown(_, error))
@@ -5174,6 +5198,31 @@ fn decide() {
     }
 
     #[test]
+    fn rust_dynamic_fields_never_borrow_same_leaf_concrete_authority() {
+        for extra in ["", "fn read() {} fn accept() {}"] {
+            let source = format!("trait Source {{ fn read(&self); }} trait Sink {{ fn accept(&self); }} struct Ports {{ source: Box<dyn Source>, sink: Box<dyn Sink> }} impl Ports {{ fn read_source(&self) {{ self.source.read(); }} fn deliver_frame(&self) {{ self.sink.accept(); }} }} struct Decoder; impl Decoder {{ fn read(&self) {{ std::fs::read_to_string(\"x\"); }} }} fn concrete(decoder: &Decoder) {{ decoder.read(); }} {extra}");
+            for name in ["Ports::read_source", "Ports::deliver_frame"] {
+                let result = report("rust", "src/lib.rs", &source, expectation(&format!("src/lib.rs#{name}"), "effectful", &["dynamic-dispatch"]));
+                assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+                assert_eq!(result.functions[0].transitive_authorities, vec!["dynamic-dispatch"]);
+                assert!(!result.functions[0].resolved_callees.iter().any(|name| matches!(name.as_str(), "Decoder::read" | "read" | "accept")));
+                assert_eq!(report("rust", "src/lib.rs", &source, expectation(&format!("src/lib.rs#{name}"), "pure", &[])).result, AnalysisResult::Fail);
+            }
+            let result = report("rust", "src/lib.rs", &source, expectation("src/lib.rs#concrete", "effectful", &["filesystem"]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        }
+        for source in [
+            "struct Concrete; impl Concrete { fn read(&self) { std::fs::read_to_string(\"x\"); } } fn run(value: Unknown) { value.read(); }",
+            "fn read() {} fn run(value: Unknown) { value.read(); }",
+            "fn bytes() {} fn run(value: Unknown) { value.bytes(); }",
+        ] {
+            let result = report("rust", "src/lib.rs", source, expectation("src/lib.rs#run", "effectful", &["dynamic-dispatch"]));
+            assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+            assert!(!result.functions[0].resolved_callees.iter().any(|name| matches!(name.as_str(), "Concrete::read" | "read")));
+        }
+    }
+
+    #[test]
     fn rust_typed_local_methods_resolve_exact_receiver() {
         let result = report(
             "rust",
@@ -7357,6 +7406,45 @@ fn ready(data: &Data) -> bool {
             assert_eq!(check(values, source).result, AnalysisResult::Fail, "{values}");
         }
         assert_eq!(check("pub struct Value;", &source.replace("std::time::Duration", "Unknown")).result, AnalysisResult::Fail);
+    }
+
+    #[test]
+    fn rust_optional_source_fields_with_closed_globs_keep_exact_owner() {
+        let declarations = "pub struct Payload; impl Payload { pub fn check(&self) {} } pub struct Request { pub effect: Payload }";
+        let source = "use crate::values::*; struct Root { pending: Option<Request> } fn run(root: &Root) { if let Some(request) = &root.pending { request.effect.check(); } }";
+        let check = |values: &str, runtime: &str| analyze(AnalysisInput {
+            binding: "rust".into(), source_digest: "source".into(), tool_digest: "tool".into(),
+            sources: BTreeMap::from([
+                ("src/lib.rs".into(), "mod values; mod runtime;".into()),
+                ("src/values.rs".into(), values.into()),
+                ("src/runtime.rs".into(), runtime.into()),
+            ]),
+            semantic_functions: vec![expectation("src/runtime.rs#run", "pure", &[])],
+            authority_facades: vec![], trusted_external_calls: BTreeSet::new(),
+        });
+        let result = check(declarations, source);
+        assert_eq!(result.result, AnalysisResult::Pass, "{result:#?}");
+        assert!(result.functions[0].resolved_callees.contains(&"Payload::check".into()));
+        for values in [
+            format!("{declarations} pub struct Option<T>(T);"),
+            format!("{declarations} pub use unknown::*;"),
+            format!("{declarations} pub use custom::Some;"),
+            declarations.replace("fn check(&self) {}", "fn check(&self) { std::process::abort(); }"),
+        ] { assert_eq!(check(&values, source).result, AnalysisResult::Fail, "{values}"); }
+        assert_eq!(check(declarations, &source.replace("Option<Request>", "Option<Unknown>")).result, AnalysisResult::Fail);
+        let sequence = source.replace("use crate::values::*;", "use crate::values::Request;").replace("Option<Request>", "Vec<Request>").replace("if let Some(request) = &root.pending { request.effect.check(); }", "root.pending.iter().position(|request| { request.effect.check(); true });");
+        assert_eq!(check(declarations, &sequence).result, AnalysisResult::Pass);
+        for values in [
+            declarations.replace("fn check(&self) {}", "fn check(&self) { std::process::abort(); }"),
+        ] { assert_eq!(check(&values, &sequence).result, AnalysisResult::Fail, "{values}"); }
+        assert_eq!(check(declarations, &sequence.replace("request.effect.check();", "let request = unknown(); request.effect.check();")).result, AnalysisResult::Fail);
+        for source in [
+            "fn run(value: &str) { let rest = value.strip_prefix('+')?; rest.bytes(); }",
+            "fn run(value: &str) { let rest = value.strip_suffix(\"!\")?; rest.bytes(); }",
+        ] {
+            assert_eq!(report("rust", "src/lib.rs", source, expectation("run", "pure", &[])).result, AnalysisResult::Pass);
+            assert_eq!(report("rust", "src/lib.rs", &source.replace("value: &str", "value: Unknown"), expectation("run", "pure", &[])).result, AnalysisResult::Fail);
+        }
     }
 
     #[test]
