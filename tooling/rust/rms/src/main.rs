@@ -41,6 +41,7 @@ mod proof_certificate;
 mod property;
 mod retirement;
 mod retained_structural;
+mod rust_import_resolution;
 mod rust_proof_calls;
 mod schema_generator;
 mod semantic_graph;
@@ -34353,6 +34354,7 @@ fn validate_rust_source_boundaries(
     .into_iter()
     .collect();
 
+    let mut parsed_sources = BTreeMap::new();
     for path in rust_source_files(source_root) {
         let source = match fs::read_to_string(&path) {
             Ok(source) => source,
@@ -34383,8 +34385,14 @@ fn validate_rust_source_boundaries(
             }
         };
 
-        for import in collect_rust_imports(&parsed) {
-            match rust_import_root_kind(&import.root, &local_modules) {
+        parsed_sources.insert(path, parsed);
+    }
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let library = cargo.get("lib").and_then(|lib| lib.get("path")).and_then(TomlValue::as_str).unwrap_or("src/lib.rs");
+    let resolver = rust_import_resolution::Resolver::new(&parsed_sources, &base.join(library), &rust_local_crate_names(cargo));
+    for path in parsed_sources.keys() {
+        for (import, kind) in resolver.imports(path, &local_modules) {
+            match kind {
                 RustImportRootKind::External => {
                     if !allowed_external_crates.contains(&canonical_rust_crate_name(&import.root)) {
                         diagnostics.push(error(
@@ -34426,6 +34434,10 @@ fn validate_rust_source_boundaries(
                     }
                 }
                 RustImportRootKind::Standard | RustImportRootKind::SelfQualified => {}
+                RustImportRootKind::Unresolved => diagnostics.push(error(
+                    "implementation.rust.imports.unresolved", &manifest.path,
+                    format!("Rust source `{}` cannot resolve import binding `{}` from lexical declarations or inspectable exports; do not add a fictitious external crate", path.display(), import.root),
+                )),
             }
         }
     }
@@ -35185,6 +35197,7 @@ enum RustImportRootKind {
     LocalModule,
     Standard,
     SelfQualified,
+    Unresolved,
 }
 
 fn rust_import_root_kind(root: &str, local_modules: &BTreeSet<String>) -> RustImportRootKind {
@@ -35214,6 +35227,7 @@ fn path_has_component(path: &Path, component: &str) -> bool {
         .any(|part| matches!(part, Component::Normal(value) if value == component))
 }
 
+#[cfg(test)]
 fn collect_rust_imports(file: &syn::File) -> Vec<RustImport> {
     let mut imports = Vec::new();
     for item in &file.items {
@@ -36294,6 +36308,7 @@ fn has_cfg_test_attr(attrs: &[Attribute]) -> bool {
     })
 }
 
+#[cfg(test)]
 fn collect_use_tree_roots(
     tree: &UseTree,
     prefix: Option<String>,
@@ -92699,6 +92714,7 @@ pub enum CheckoutBoundaryReply { Accepted }
 pub enum CheckoutBoundaryRejection { Rejected }
 pub struct CheckoutBoundaryTransition { rejection: Option<CheckoutBoundaryRejection> }
 pub enum CheckoutBoundaryTransitionRecord { Accepted }
+pub enum CheckoutBoundaryEffectResult { Done }
 pub struct CheckoutBoundaryMachine;
 
 pub fn transition(
@@ -92717,6 +92733,8 @@ pub fn run() {}
             "use checkout_boundary::run;\nfn main() { run(); }\n",
         )
         .unwrap();
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(root.join("tests/aliases.rs"), "use checkout_boundary::*; use CheckoutBoundaryCommand as C; use CheckoutBoundaryEffectResult as F; use CheckoutBoundaryInput as I;\n").unwrap();
         fs::write(
             root.join("implementation.yaml"),
             r#"spec: rms/implementation/v0.1
@@ -92788,6 +92806,58 @@ architecture:
             diagnostics
         );
         assert_no_error_diagnostics(&diagnostics);
+    }
+
+    #[test]
+    fn rust_source_boundaries_resolve_glob_type_aliases_before_crates() {
+        let root = unique_test_dir("rust-import-lexical-binding");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("tests")).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        fs::write(root.join("src/lib.rs"), "mod types; pub use crate::types::*;\n").unwrap();
+        fs::write(root.join("src/types.rs"), "pub enum Command { Start }\npub enum Input { Command(Command) }\npub enum EffectResult { Done }\n").unwrap();
+        let path = root.join("implementation.yaml");
+        fs::write(&path, "spec: rms/implementation/v0.2\nmodule: provider\nbinding: rust\nsource: {root: ., public_entrypoint: src/lib.rs}\ndependencies: {allowed_external_crates: []}\n").unwrap();
+        let manifest = load_manifest(&path).unwrap();
+        let cargo: TomlValue = "[package]\nname='speech-provider'\n[lib]\npath='src/lib.rs'\n".parse().unwrap();
+        fs::write(root.join("tests/probe.rs"), "use speech_provider::*; use Command as C; use EffectResult as F; use Input as I;\n").unwrap();
+        let mut diagnostics = Vec::new();
+        validate_rust_source_boundaries(&manifest, &mut diagnostics, &root, &cargo);
+        assert_no_error_diagnostics(&diagnostics);
+        // The same validator diagnostic is a hard route blocker for an exact
+        // owner. Lexical aliases must not create it, real foreign imports must.
+        let owner = OwnerResolution::selected("exact owner".into(), RouteModuleSummary {
+            name:"provider".into(), path:root.join("module.yaml").display().to_string(), kind:"adapter".into(), shape:"boundary-adapter".into(), visibility:None,
+        }, Vec::new(), Vec::new(), Vec::new());
+        fs::write(root.join("tests/probe.rs"), "use speech_provider::*; use Command as C; use undeclared_real::Thing; use undeclared_real as renamed; pub use renamed::Other;\n").unwrap();
+        diagnostics.clear();
+        validate_rust_source_boundaries(&manifest, &mut diagnostics, &root, &cargo);
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic.check == "implementation.rust.imports.declared" && diagnostic.message.contains("undeclared_real")
+            && bounded_owner_scoped_semantic_route_hard_blocker(&root, diagnostic, &owner)), "{diagnostics:#?}");
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic.check == "implementation.rust.reexports.external" && diagnostic.message.contains("undeclared_real")));
+        assert!(!diagnostics.iter().any(|diagnostic| diagnostic.message.contains("crate `Command`") || diagnostic.message.contains("crate `renamed`")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires RMS_RUST_IMPORT_REPRODUCER naming the authorized consumer implementation"]
+    fn rust_lexical_import_consumer_reproducer() {
+        let path = PathBuf::from(std::env::var("RMS_RUST_IMPORT_REPRODUCER").unwrap());
+        let manifest = load_manifest(&path).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_loaded_manifest(&manifest, &mut diagnostics);
+        println!("consumer validator diagnostics: {}", serde_json::to_string_pretty(&diagnostics).unwrap());
+        assert_no_error_diagnostics(&diagnostics);
+        if let Ok(baseline) = std::env::var("RMS_RUST_IMPORT_BASELINE") {
+            let baseline: Vec<JsonValue> = serde_json::from_slice(&fs::read(baseline).unwrap()).unwrap();
+            let mut retained = baseline.into_iter().filter(|diagnostic| !diagnostic["check"].as_str().unwrap().starts_with("implementation.rust.imports.")).map(|value| serde_json::to_string(&value).unwrap()).collect::<Vec<_>>();
+            let mut actual = diagnostics.iter().map(|diagnostic| serde_json::to_string(diagnostic).unwrap()).collect::<Vec<_>>();
+            // Compare values rather than JSON object's serialized key order.
+            retained = retained.iter().map(|value| serde_json::to_string(&serde_json::from_str::<JsonValue>(value).unwrap()).unwrap()).collect();
+            actual = actual.iter().map(|value| serde_json::to_string(&serde_json::from_str::<JsonValue>(value).unwrap()).unwrap()).collect();
+            retained.sort(); actual.sort();
+            assert_eq!(actual, retained, "the bounded import fix changed another consumer diagnostic");
+        }
     }
 
     #[test]
