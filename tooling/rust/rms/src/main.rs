@@ -62436,6 +62436,9 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     )?;
     writeln!(out, "```")?;
     writeln!(out, "Operation choice is target-aware: put a property ID already present in the bounded canonical context under `properties.set`, and put every newly introduced property ID under `properties.add`. Never put a new ID under `set` or an existing ID under `add`.")?;
+    writeln!(out, "Assembly `coverage.fault_families` items require `id`, `owner_module`, and `generator`. The generator names an existing stimulus, substitute, or configured route fault. It is not a `path#symbol` runner. A coverage declaration does not prove execution. `faults.route` accepts a route, protocol-route, or substitute ID; fault evidence must come from actual execution.")?;
+    writeln!(out, "Schema for each `coverage.fault_families[].generator`:")?;
+    writeln!(out, "```json\n{}\n```", serde_json::to_string_pretty(&probe::fault_family_generator_schema()?)?)?;
     writeln!(out)?;
     writeln!(out, "A bounded response measured in nominal transitions uses this exact executable shape inside `properties.add[]` or `properties.set[]`:")?;
     writeln!(out, "```yaml")?;
@@ -75791,12 +75794,23 @@ fn validate_json_against_schema(instance: &JsonValue, source: &str, label: &str)
         .with_context(|| format!("embedded {label} schema did not compile"))?;
     let errors = validator
         .iter_errors(instance)
-        .map(|error| format!("{error} at `{}`", error.instance_path()))
+        .map(|error| format_schema_validation_error(&error, &schema))
         .collect::<Vec<_>>();
     if !errors.is_empty() {
         bail!("generated {label} is invalid: {}", errors.join("; "));
     }
     Ok(())
+}
+
+fn format_schema_validation_error(error: &jsonschema::ValidationError<'_>, schema: &JsonValue) -> String {
+    let message = format!("{error} at `{}`", error.instance_path());
+    let path = error.schema_path().to_string();
+    if path.ends_with("/oneOf") {
+        if let Some(alternatives) = schema.pointer(&path).and_then(JsonValue::as_array) {
+            return format!("{message}; expected oneOf schemas: {}", json!(alternatives));
+        }
+    }
+    message
 }
 
 fn seed_from_digest(digest: &str) -> u64 {
@@ -115264,6 +115278,9 @@ verification:
         let implementation = load_manifest(&root.join("implementation.yaml")).unwrap();
         let semantic =
             render_spec_plan_prompt(&context, &root, "replace scaffold semantics").unwrap();
+        assert!(semantic.contains("Schema for each `coverage.fault_families[].generator`"));
+        assert!(semantic.contains(&serde_json::to_string_pretty(&probe::fault_family_generator_schema().unwrap()).unwrap()));
+        assert!(semantic.contains("A coverage declaration does not prove execution"));
         let machine =
             render_machine_plan_prompt(&implementation, &root, "replace scaffold semantics")
                 .unwrap();

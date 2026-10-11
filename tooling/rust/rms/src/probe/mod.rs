@@ -788,6 +788,14 @@ fn validate_assembly_schema(value: &Value) -> Result<()> {
     validate_schema(value, schema, "probe assembly")
 }
 
+pub(super) fn fault_family_generator_schema() -> Result<Value> {
+    let schema: Value = serde_json::from_str(include_str!("../../../../../schemas/probe-assembly-v0.3.schema.json"))?;
+    let mut generator = schema.pointer("/properties/coverage/properties/fault_families/items/properties/generator")
+        .cloned().ok_or_else(|| anyhow!("embedded assembly schema has no fault-family generator"))?;
+    generator["$defs"] = json!({"id":schema["$defs"]["id"]});
+    Ok(generator)
+}
+
 pub(super) fn validate_assembly_declaration(path: &Path, timeout_seconds: u64) -> Result<()> {
     validate_assembly_declaration_with_overlay(path, timeout_seconds, None)
 }
@@ -4759,12 +4767,42 @@ fn validate_schema(value: &Value, source: &str, label: &str) -> Result<()> {
         .with_context(|| format!("embedded {label} schema could not be compiled"))?;
     let errors = validator
         .iter_errors(value)
-        .map(|error| format!("{error} at `{}`", error.instance_path()))
+        .map(|error| super::format_schema_validation_error(&error, &schema))
         .collect::<Vec<_>>();
     if !errors.is_empty() {
         bail!("invalid {label}: {}", errors.join("; "));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod schema_discovery_tests {
+    use super::*;
+
+    #[test]
+    fn fault_generator_schema_errors_show_supported_alternatives() {
+        let mut assembly = json!({"spec":ASSEMBLY_SPEC_V3, "stimuli":[],
+            "instances":[{"id":"provider","implementation":"implementation.yaml"}],
+            "coverage":{"fault_families":[{"id":"fault-family","owner_module":"provider",
+                "generator":{}}]}});
+        for generator in [json!({}),json!("src/property.rs#generate")] {
+            assembly["coverage"]["fault_families"][0]["generator"] = generator;
+            let error = validate_assembly_schema(&assembly).unwrap_err().to_string();
+            assert!(error.contains("expected oneOf schemas"), "{error}");
+            for variant in ["stimulus", "substitute", "route-fault", "delay", "duplicate", "drop", "timeout"] {
+                assert!(error.contains(variant), "{error}");
+            }
+            assert!(error.contains("/coverage/fault_families/0/generator"), "{error}");
+        }
+        for generator in [json!({"kind":"stimulus","id":"start"}),
+            json!({"kind":"substitute","id":"native-result"}),
+            json!({"kind":"route-fault","route":"native-result","fault":"duplicate"})] {
+            assembly["coverage"]["fault_families"][0]["generator"] = generator;
+            validate_assembly_schema(&assembly).unwrap();
+            validate_schema(&assembly["coverage"]["fault_families"][0]["generator"],
+                &fault_family_generator_schema().unwrap().to_string(), "rendered generator").unwrap();
+        }
+    }
 }
 
 fn write_artifact(path: &Path, value: &Value) -> Result<()> {
