@@ -42,6 +42,7 @@ mod property;
 mod retirement;
 mod retained_structural;
 mod rust_import_resolution;
+mod rust_role_analysis;
 mod rust_proof_calls;
 mod schema_generator;
 mod semantic_graph;
@@ -31979,7 +31980,7 @@ fn inspect_effect_support_ownership(manifest: &LoadedManifest, diagnostics: &mut
         let Ok(source) = fs::read_to_string(base.join(&reference)) else {
             continue;
         };
-        let owns_progression = [
+        let legacy_owns_progression = || [
             "next_state",
             "nextState",
             "state_after",
@@ -31994,6 +31995,12 @@ fn inspect_effect_support_ownership(manifest: &LoadedManifest, diagnostics: &mut
             || (!state_type.is_empty() && source.contains(&format!("{state_type}::")))
             || (!transition_type.is_empty() && source.contains(transition_type))
             || (!transition_record_type.is_empty() && source.contains(transition_record_type));
+        let owns_progression = if get_str(&manifest.value, &["binding"]) == Some("rust") {
+            rust_role_analysis::owns_workflow(&source, &[state_type, transition_type, transition_record_type])
+                .unwrap_or_else(legacy_owns_progression)
+        } else {
+            legacy_owns_progression()
+        };
         if owns_progression {
             push_unique_warning(
                 diagnostics,
@@ -127717,6 +127724,39 @@ verification: { laws: [], contracts: [], scenarios: [], boundaries: [] }
     }
 
     #[test]
+    fn effect_support_observes_state_without_owning_workflow() {
+        let root = unique_test_dir("effect-support-state-observation");
+        fs::create_dir_all(root.join("src")).unwrap();
+        let manifest = loaded_module_manifest(
+            root.join("implementation.yaml").to_str().unwrap(),
+            r#"spec: rms/implementation/v0.1
+module: support
+binding: rust
+architecture:
+  machine:
+    types: { state: SupportState, transition: SupportTransition, transition_record: SupportTransitionRecord }
+  roles: { effect_support: [src/support.rs] }
+"#,
+        );
+        for source in [
+            "fn reconcile(record: &SupportTransitionRecord) { match &record.state_after { crate::model::SupportState::Ready => (), crate::model::SupportState::Active(s) => consume(s) } }",
+            "fn reconcile(record: &SupportTransitionRecord) { if matches!(&record.state_after, crate::model::SupportState::Active(_) | SupportState::Ready) { payload.closed = true; } }",
+            "fn reconcile(record: &SupportTransitionRecord) { if let SupportState::Active(s) = &record.state_after { consume(s); } let SupportTransition { next_state, .. } = record.output; }",
+            "#[cfg(test)] mod tests { fn proof() { let state = initial_state(); let state = SupportState::Active(state); let out = SupportTransition { next_state: state }; drive_machine(); } } fn production() {}",
+            "#[cfg(all(test, unix))] fn proof() { transition_record(); } #[cfg(not(test))] fn production() {}",
+            "impl Storage { #[cfg(test)] fn proof() { let _ = SupportState::Ready; } fn reconcile(&self, record: &SupportTransitionRecord) { let _ = &record.state_after; } }",
+            "fn production() { #[cfg(test)] let state = SupportState::Ready; #[cfg(test)] { drive_machine(); } let _ = format!(\"SupportState::Ready state_after transition_record(\"); }",
+            "fn reconcile(record: &SupportTransitionRecord) { if matches!(record.state_after, SupportState::Active(s) if s.closed) { payload.closed = true; } }",
+        ] {
+            fs::write(root.join("src/support.rs"), source).unwrap();
+            let mut diagnostics = Vec::new();
+            inspect_effect_support_ownership(&manifest, &mut diagnostics);
+            assert!(diagnostics.is_empty(), "{source}: {diagnostics:#?}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn effect_support_is_private_mechanism_not_machine_progression() {
         let root = unique_test_dir("effect-support-ownership");
         fs::create_dir_all(root.join("src")).unwrap();
@@ -127738,16 +127778,28 @@ architecture:
         let mut diagnostics = Vec::new();
         inspect_effect_support_ownership(&manifest, &mut diagnostics);
         assert!(diagnostics.is_empty());
-        fs::write(
-            root.join("src/support.rs"),
-            "fn hidden_workflow() { let _state = SupportState::Ready; }\n",
-        )
-        .unwrap();
-        inspect_effect_support_ownership(&manifest, &mut diagnostics);
+        for source in [
+            "fn hidden_workflow() { let _state = SupportState::Ready; }",
+            "fn hidden_workflow() { let _state = crate::model::SupportState::Active(session); }",
+            "fn hidden_workflow() { let _out = crate::model::SupportTransition { events: vec![] }; }",
+            "fn hidden_workflow() { let _out = crate::model::SupportTransitionRecord::new(); }",
+            "fn hidden_workflow() { crate::model::transition_record(input); }",
+            "fn hidden_workflow() { crate::model::drive_machine(input); }",
+            "fn hidden_workflow() { record.state_after = state; }",
+            "fn hidden_workflow() { next_state = state; }",
+            "fn hidden_workflow() { record.next_state += 1; }",
+            "fn hidden_workflow() { let _ = vec![SupportState::Ready]; }",
+            "fn hidden_workflow() { if matches!(record.state_after, SupportState::Active(_) if { drive_machine(); true }) {} }",
+            "#[cfg(any(test, unix))] fn hidden_workflow() { let _ = SupportState::Ready; }",
+            "#[cfg(not(test))] fn hidden_workflow() { let _ = SupportState::Ready; }",
+            "fn drive_machine() {}",
+        ] {
+            fs::write(root.join("src/support.rs"), source).unwrap();
+            diagnostics.clear();
+            inspect_effect_support_ownership(&manifest, &mut diagnostics);
+            assert!(diagnostics.iter().any(|item| item.check == "structure.effect-support-owns-workflow"), "{source}: {diagnostics:#?}");
+        }
         fs::remove_dir_all(&root).unwrap();
-        assert!(diagnostics
-            .iter()
-            .any(|item| item.check == "structure.effect-support-owns-workflow"));
     }
 
     #[test]
