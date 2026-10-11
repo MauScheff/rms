@@ -213,7 +213,8 @@ impl CompiledCoreExpression {
             source: ObservationSourceMetadata::default(),
             raw: Value::Null,
         };
-        evaluate_predicate(&self.predicate, &frame, &mut Vec::new())
+        evaluate_predicate(&self.predicate, &frame, &mut Vec::new())?
+            .known().ok_or_else(|| anyhow!("predicate depends on unavailable observation values"))
     }
 }
 
@@ -577,6 +578,39 @@ enum EvaluatedTerm {
     Scalar(Value),
     Integer(i128),
     Quantity(Quantity),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Truth {
+    True,
+    False,
+    Unknown,
+}
+
+impl Truth {
+    fn from_bool(value: bool) -> Self {
+        if value { Self::True } else { Self::False }
+    }
+    fn known(self) -> Option<bool> {
+        match self { Self::True => Some(true), Self::False => Some(false), Self::Unknown => None }
+    }
+    fn not(self) -> Self {
+        match self { Self::True => Self::False, Self::False => Self::True, Self::Unknown => Self::Unknown }
+    }
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::False, _) | (_, Self::False) => Self::False,
+            (Self::True, Self::True) => Self::True,
+            _ => Self::Unknown,
+        }
+    }
+    fn or(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::True, _) | (_, Self::True) => Self::True,
+            (Self::False, Self::False) => Self::False,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 pub(super) fn compile_property(
@@ -1838,7 +1872,7 @@ fn evaluate_frames(
             return Ok(Evaluation {
                 property: property.id.clone(),
                 verdict: Verdict::Inconclusive,
-                trace_complete: complete,
+                trace_complete: complete && result.verdict != Verdict::Inconclusive,
                 observations: frames.len(),
                 explanation: PropertyExplanation {
                     summary: format!(
@@ -1869,8 +1903,8 @@ fn evaluate_frames(
     let decisive_sources = decisive_sources(frames, &result.decisive);
     Ok(Evaluation {
         property: property.id.clone(),
+        trace_complete: complete && result.verdict != Verdict::Inconclusive,
         verdict: result.verdict,
-        trace_complete: complete,
         observations: frames.len(),
         explanation: PropertyExplanation {
             summary: result.summary,
@@ -1899,7 +1933,7 @@ fn evaluate_step(
         return Ok(Evaluation {
             property: property.id.clone(),
             verdict: Verdict::Inconclusive,
-            trace_complete: complete,
+            trace_complete: false,
             observations: 0,
             explanation: PropertyExplanation {
                 summary: "step contract had no observations; coverage is missing".to_string(),
@@ -1945,17 +1979,15 @@ fn evaluate_step(
                 ));
             }
         }
-        let mut missing = BTreeMap::new();
-        collect_missing_observations(&step.predicate, frame, &mut missing);
-        if let Some(activation) = &step.activation {
-            collect_missing_observations(activation, frame, &mut missing);
-        }
-        if !missing.is_empty() {
+        let predicate_value = evaluate_predicate(&step.predicate, frame, &mut quantities)?;
+        if predicate_value == Truth::Unknown {
+            let mut missing = BTreeMap::new();
+            collect_missing_observations(&step.predicate, frame, &mut missing);
             return Ok(step_evaluation(
                 property,
                 step,
                 Verdict::Inconclusive,
-                complete,
+                false,
                 frames,
                 frame,
                 format!(
@@ -1967,7 +1999,7 @@ fn evaluate_step(
                 quantities,
             ));
         }
-        if !evaluate_predicate(&step.predicate, frame, &mut quantities)? {
+        if predicate_value == Truth::False {
             return Ok(step_evaluation(
                 property,
                 step,
@@ -1993,7 +2025,13 @@ fn evaluate_step(
             ));
         }
         if let (Some(activation), Some(permits)) = (&step.activation, &step.permits) {
-            if evaluate_predicate(activation, frame, &mut quantities)? {
+            let activation = evaluate_predicate(activation, frame, &mut quantities)?;
+            if activation == Truth::Unknown {
+                return Ok(step_evaluation(property, step, Verdict::Inconclusive, false,
+                    frames, frame, "frame activation depends on unavailable observation values".into(),
+                    Some("evidence"), active_assumptions, quantities));
+            }
+            if activation == Truth::True {
                 if let Some(reason) = frame_violation(&frame.raw, permits) {
                     return Ok(step_evaluation(
                         property,
@@ -2227,8 +2265,11 @@ fn evaluate_temporal(
 ) -> Result<TemporalResult> {
     match expression {
         TemporalExpression::Always(predicate) => {
+            let mut unknown = None;
             for frame in frames {
-                if !evaluate_predicate(predicate, frame, &mut Vec::new())? {
+                let value = evaluate_predicate(predicate, frame, &mut Vec::new())?;
+                if value == Truth::Unknown { unknown.get_or_insert(frame.index); }
+                if value == Truth::False {
                     return Ok(temporal_result(
                         Verdict::Violated,
                         "always predicate became false",
@@ -2236,6 +2277,7 @@ fn evaluate_temporal(
                     ));
                 }
             }
+            if let Some(index) = unknown { return Ok(missing_temporal_result(index)); }
             Ok(temporal_result(
                 Verdict::Satisfied,
                 "always predicate held for every observed step",
@@ -2243,8 +2285,11 @@ fn evaluate_temporal(
             ))
         }
         TemporalExpression::Eventually(predicate) => {
+            let mut unknown = None;
             for frame in frames {
-                if evaluate_predicate(predicate, frame, &mut Vec::new())? {
+                let value = evaluate_predicate(predicate, frame, &mut Vec::new())?;
+                if value == Truth::Unknown { unknown.get_or_insert(frame.index); }
+                if value == Truth::True {
                     return Ok(temporal_result(
                         Verdict::Satisfied,
                         "eventually predicate was observed",
@@ -2252,6 +2297,7 @@ fn evaluate_temporal(
                     ));
                 }
             }
+            if let Some(index) = unknown { return Ok(missing_temporal_result(index)); }
             Ok(TemporalResult {
                 verdict: if complete {
                     Verdict::Violated
@@ -2272,10 +2318,13 @@ fn evaluate_temporal(
             })
         }
         TemporalExpression::Precedence { before, after } => {
-            let mut seen_before = false;
+            let mut seen_before = Truth::False;
+            let mut unknown = None;
             for frame in frames {
-                seen_before |= evaluate_predicate(before, frame, &mut Vec::new())?;
-                if evaluate_predicate(after, frame, &mut Vec::new())? && !seen_before {
+                seen_before = seen_before.or(evaluate_predicate(before, frame, &mut Vec::new())?);
+                let violation = evaluate_predicate(after, frame, &mut Vec::new())?.and(seen_before.not());
+                if violation == Truth::Unknown { unknown.get_or_insert(frame.index); }
+                if violation == Truth::True {
                     return Ok(temporal_result(
                         Verdict::Violated,
                         "the `after` predicate occurred without a preceding `before` predicate",
@@ -2283,6 +2332,7 @@ fn evaluate_temporal(
                     ));
                 }
             }
+            if let Some(index) = unknown { return Ok(missing_temporal_result(index)); }
             Ok(temporal_result(
                 Verdict::Satisfied,
                 "every `after` predicate had a preceding `before` predicate",
@@ -2290,10 +2340,12 @@ fn evaluate_temporal(
             ))
         }
         TemporalExpression::Exclusion { left, right } => {
+            let mut unknown = None;
             for frame in frames {
-                if evaluate_predicate(left, frame, &mut Vec::new())?
-                    && evaluate_predicate(right, frame, &mut Vec::new())?
-                {
+                let violation = evaluate_predicate(left, frame, &mut Vec::new())?
+                    .and(evaluate_predicate(right, frame, &mut Vec::new())?);
+                if violation == Truth::Unknown { unknown.get_or_insert(frame.index); }
+                if violation == Truth::True {
                     return Ok(temporal_result(
                         Verdict::Violated,
                         "mutually exclusive predicates occurred together",
@@ -2301,6 +2353,7 @@ fn evaluate_temporal(
                     ));
                 }
             }
+            if let Some(index) = unknown { return Ok(missing_temporal_result(index)); }
             Ok(temporal_result(
                 Verdict::Satisfied,
                 "mutually exclusive predicates never occurred together",
@@ -2309,8 +2362,11 @@ fn evaluate_temporal(
         }
         TemporalExpression::AtMostOnce(predicate) => {
             let mut first = None;
+            let mut unknown = Vec::new();
             for frame in frames {
-                if evaluate_predicate(predicate, frame, &mut Vec::new())? {
+                let value = evaluate_predicate(predicate, frame, &mut Vec::new())?;
+                if value == Truth::Unknown { unknown.push(frame.index); }
+                if value == Truth::True {
                     if let Some(first) = first {
                         return Ok(temporal_result(
                             Verdict::Violated,
@@ -2321,6 +2377,7 @@ fn evaluate_temporal(
                     first = Some(frame.index);
                 }
             }
+            if unknown.len() + usize::from(first.is_some()) > 1 { return Ok(missing_temporal_result(unknown[0])); }
             Ok(temporal_result(
                 Verdict::Satisfied,
                 "at-most-once predicate occurred no more than once",
@@ -2340,17 +2397,25 @@ fn evaluate_temporal(
                 if frame.scenario_start {
                     pending.clear();
                 }
+                let triggered = evaluate_predicate(trigger, frame, &mut quantities)?;
+                if triggered == Truth::Unknown { return Ok(missing_temporal_result(frame.index)); }
+                // No trigger and no pending obligation needs neither a metric
+                // nor a response value. This is a sound vacuous step.
+                if triggered == Truth::False && pending.is_empty() { continue; }
+                let responded = evaluate_predicate(response, frame, &mut quantities)?;
+                if responded == Truth::Unknown { return Ok(missing_temporal_result(frame.index)); }
                 let metric_value = frame
                     .facts
-                    .get(metric)
-                    .ok_or_else(|| anyhow!("frame has no metric observation `{metric}`"))?;
+                    .get(metric);
+                if matches!(metric_value, None | Some(ObservedValue::Missing)) { return Ok(missing_temporal_result(frame.index)); }
+                let metric_value = metric_value.unwrap();
                 let ObservedValue::Quantity(current) = metric_value else {
                     bail!("metric observation `{metric}` is not a quantity");
                 };
-                if evaluate_predicate(trigger, frame, &mut quantities)? {
+                if triggered == Truth::True {
                     pending.push((frame.index, current.clone()));
                 }
-                if evaluate_predicate(response, frame, &mut quantities)? {
+                if responded == Truth::True {
                     if let Some((trigger_index, started)) = pending.first() {
                         let trigger_index = *trigger_index;
                         let elapsed = current.difference(started)?;
@@ -2427,6 +2492,13 @@ fn evaluate_temporal(
     }
 }
 
+fn missing_temporal_result(index: usize) -> TemporalResult {
+    let mut result = temporal_result(Verdict::Inconclusive,
+        "temporal verdict depends on unavailable observation values", vec![index]);
+    result.pending = Some("required observation values".into());
+    result
+}
+
 fn temporal_result(
     verdict: Verdict,
     summary: impl Into<String>,
@@ -2447,13 +2519,13 @@ fn evaluate_predicate(
     predicate: &Predicate,
     frame: &Frame,
     quantities: &mut Vec<NormalizedQuantity>,
-) -> Result<bool> {
+) -> Result<Truth> {
     match predicate {
-        Predicate::Constant(value) => Ok(*value),
-        Predicate::Occurred(id) => Ok(matches!(
-            frame.facts.get(id),
-            Some(ObservedValue::Scalar(Value::Bool(true)))
-        )),
+        Predicate::Constant(value) => Ok(Truth::from_bool(*value)),
+        Predicate::Occurred(id) => Ok(match frame.facts.get(id) {
+            Some(ObservedValue::Scalar(Value::Bool(value))) => Truth::from_bool(*value),
+            _ => Truth::Unknown,
+        }),
         Predicate::Equals { left, right } => {
             let left = evaluate_term(left, frame)?;
             let right = evaluate_term(right, frame)?;
@@ -2468,32 +2540,32 @@ fn evaluate_predicate(
             let right = evaluate_term(right, frame)?;
             let ordering = compare_terms(&left, &right, quantities)?;
             let Some(ordering) = ordering else {
-                return Ok(false);
+                return Ok(if matches!(left, EvaluatedTerm::Missing) || matches!(right, EvaluatedTerm::Missing) { Truth::Unknown } else { Truth::False });
             };
-            Ok(match operator {
+            Ok(Truth::from_bool(match operator {
                 CompareOperator::Lt => ordering == Ordering::Less,
                 CompareOperator::Lte => ordering != Ordering::Greater,
                 CompareOperator::Eq => ordering == Ordering::Equal,
                 CompareOperator::Gte => ordering != Ordering::Less,
                 CompareOperator::Gt => ordering == Ordering::Greater,
-            })
+            }))
         }
-        Predicate::Not(predicate) => Ok(!evaluate_predicate(predicate, frame, quantities)?),
+        Predicate::Not(predicate) => Ok(evaluate_predicate(predicate, frame, quantities)?.not()),
         Predicate::All(predicates) => {
+            let mut result = Truth::True;
             for predicate in predicates {
-                if !evaluate_predicate(predicate, frame, quantities)? {
-                    return Ok(false);
-                }
+                result = result.and(evaluate_predicate(predicate, frame, quantities)?);
+                if result == Truth::False { break; }
             }
-            Ok(true)
+            Ok(result)
         }
         Predicate::Any(predicates) => {
+            let mut result = Truth::False;
             for predicate in predicates {
-                if evaluate_predicate(predicate, frame, quantities)? {
-                    return Ok(true);
-                }
+                result = result.or(evaluate_predicate(predicate, frame, quantities)?);
+                if result == Truth::True { break; }
             }
-            Ok(false)
+            Ok(result)
         }
     }
 }
@@ -2566,16 +2638,16 @@ fn subtract_terms(left: EvaluatedTerm, right: EvaluatedTerm) -> Result<Evaluated
     }
 }
 
-fn term_equals(left: &EvaluatedTerm, right: &EvaluatedTerm) -> Result<bool> {
-    Ok(match (left, right) {
-        (EvaluatedTerm::Missing, _) | (_, EvaluatedTerm::Missing) => false,
+fn term_equals(left: &EvaluatedTerm, right: &EvaluatedTerm) -> Result<Truth> {
+    if matches!(left, EvaluatedTerm::Missing) || matches!(right, EvaluatedTerm::Missing) { return Ok(Truth::Unknown); }
+    Ok(Truth::from_bool(match (left, right) {
         (EvaluatedTerm::Integer(left), EvaluatedTerm::Integer(right)) => left == right,
         (EvaluatedTerm::Scalar(left), EvaluatedTerm::Scalar(right)) => left == right,
         (EvaluatedTerm::Quantity(left), EvaluatedTerm::Quantity(right)) => {
             left.compare(right)? == Ordering::Equal
         }
         _ => false,
-    })
+    }))
 }
 
 fn compare_terms(
@@ -2782,6 +2854,112 @@ mod tests {
             "input": input,
             "output": output
         })
+    }
+
+    #[test]
+    fn missing_value_observations_never_prove_negated_safety() {
+        let observations = json!([
+            {"id":"a", "source":{"kind":"state", "phase":"after", "pointer":"/a"}, "value":"boolean"},
+            {"id":"b", "source":{"kind":"output", "pointer":"/b"}, "value":"boolean"}
+        ]);
+        let equals = |id: &str| json!({"equals":{"observation":id,"value":true}});
+        let predicate = json!({"not":{"all":[equals("a"), equals("b")]}});
+        let compiled = compile_property(&json!({"id":"missing-safety", "observations":observations,
+            "temporal":{"scope":"machine", "expression":{"always":predicate}}})).unwrap();
+        let evidence = trace(vec![json!({"state_after":{},"output":{}})], true);
+        let evaluation = evaluate_trace(&compiled, &evidence).unwrap();
+        assert_eq!(evaluation.verdict, Verdict::Inconclusive);
+        assert!(!evaluation.trace_complete);
+        let normalized = normalize_trace(&compiled, &evidence).unwrap();
+        assert!(normalized[0].facts.is_empty());
+        assert_eq!(evaluate_observation_envelopes(&compiled, &normalized, true).unwrap().verdict, Verdict::Inconclusive);
+        let definitions = observations.as_array().unwrap();
+        for expression in [equals("a"), json!({"not":equals("a")}), json!({"equals":{"left":{"observation":"a"},"right":{"observation":"b"}}})] {
+            assert!(evaluate_core_expression(definitions, &expression, &BTreeMap::new()).is_err());
+        }
+        for value_type in [json!("boolean"), json!("integer"), json!("string"), json!({"variant":["Ready","Done"]}), json!({"quantity":"time"})] {
+            for source in [json!({"kind":"state","phase":"after","pointer":"/missing"}), json!({"kind":"output","pointer":"/missing"})] {
+                let definitions = vec![json!({"id":"typed", "source":source, "value":value_type})];
+                let same_missing = json!({"equals":{"left":{"observation":"typed"},"right":{"observation":"typed"}}});
+                assert!(evaluate_core_expression(&definitions, &same_missing, &BTreeMap::new()).is_err());
+                assert!(evaluate_core_expression(&definitions, &json!({"not":same_missing}), &BTreeMap::new()).is_err());
+            }
+        }
+        // Known false, or a decisive Boolean branch, needs no missing fact.
+        for (expression, expected) in [
+            (json!({"all":[equals("a"),{"constant":false}]}), false),
+            (json!({"any":[equals("a"),{"constant":true}]}), true),
+            (json!({"not":equals("a")}), true),
+        ] {
+            let assignments = if expression.get("not").is_some() {
+                BTreeMap::from([("a".into(), json!(false))])
+            } else { BTreeMap::new() };
+            assert_eq!(evaluate_core_expression(definitions, &expression, &assignments).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn missing_values_propagate_through_temporal_patterns_and_arithmetic() {
+        let observations = json!([
+            {"id":"a", "source":{"kind":"state", "phase":"after", "pointer":"/a"}, "value":"boolean"},
+            {"id":"b", "source":{"kind":"output", "pointer":"/b"}, "value":"boolean"},
+            {"id":"n", "source":{"kind":"state", "phase":"before", "pointer":"/n"}, "value":"integer"},
+            {"id":"elapsed", "source":{"kind":"trace-metric", "name":"elapsed"}, "value":{"quantity":"time"}}
+        ]);
+        let a = json!({"equals":{"observation":"a","value":true}});
+        let b = json!({"equals":{"observation":"b","value":true}});
+        let expression = |expression: Value| compile_property(&json!({"id":"missing-temporal", "observations":observations,
+            "temporal":{"scope":"machine","expression":expression}})).unwrap();
+        let evidence = trace(vec![json!({}),json!({})], true);
+        for temporal in [
+            json!({"always":a}), json!({"eventually":a}),
+            json!({"precedence":{"before":a,"after":b}}),
+            json!({"exclusion":{"left":a,"right":b}}),
+            json!({"at_most_once":a}),
+            json!({"bounded_response":{"trigger":a,"response":b,"within":{"metric":"elapsed","value":1,"unit":"ms"}}}),
+            json!({"always":{"not":{"compare":{"left":{"add":[{"observation":"n"},{"literal":1}]},"operator":"gt","right":{"literal":0}}}}}),
+        ] {
+            let property = expression(temporal.clone());
+            let evaluation = evaluate_trace(&property, &evidence).unwrap();
+            assert_eq!(evaluation.verdict, Verdict::Inconclusive, "{temporal}");
+            assert!(!evaluation.trace_complete);
+        }
+        // Each conclusion below holds for every completion of the missing facts.
+        for temporal in [
+            json!({"always":{"any":[a,{"constant":true}]}}),
+            json!({"eventually":{"any":[a,{"constant":true}]}}),
+            json!({"precedence":{"before":a,"after":{"constant":false}}}),
+            json!({"exclusion":{"left":a,"right":{"constant":false}}}),
+            json!({"bounded_response":{"trigger":{"constant":false},"response":b,"within":{"metric":"elapsed","value":1,"unit":"ms"}}}),
+        ] {
+            assert_eq!(evaluate_trace(&expression(temporal.clone()), &evidence).unwrap().verdict, Verdict::Satisfied, "{temporal}");
+        }
+        let eventual = expression(json!({"eventually":a}));
+        assert_eq!(evaluate_trace(&eventual, &trace(vec![json!({}),json!({"state_after":{"a":true}})],true)).unwrap().verdict, Verdict::Satisfied);
+        let always = expression(json!({"always":a}));
+        assert_eq!(evaluate_trace(&always, &trace(vec![json!({}),json!({"state_after":{"a":false}})],true)).unwrap().verdict, Verdict::Violated);
+        let bounded = expression(json!({"bounded_response":{"trigger":a,"response":b,"within":{"metric":"elapsed","value":1,"unit":"ms"}}}));
+        assert_eq!(evaluate_trace(&bounded, &trace(vec![json!({"state_after":{"a":true}})],true)).unwrap().verdict, Verdict::Inconclusive);
+        let absent = property(json!({"always":{"not":{"occurred":"accepted"}}}));
+        assert_eq!(evaluate_trace(&absent, &evidence).unwrap().verdict, Verdict::Satisfied);
+        let step = step_property("invariant", json!({"any":[a,{"constant":true}]}), observations);
+        assert_eq!(evaluate_trace(&step, &invocation("rust",json!({}),json!({}))).unwrap().verdict, Verdict::Satisfied);
+    }
+
+    #[test]
+    #[ignore = "requires RMS_MISSING_OBSERVATION_REPRODUCER naming a redacted saved property analysis"]
+    fn missing_observation_saved_analysis_reproducer() {
+        let path = std::env::var("RMS_MISSING_OBSERVATION_REPRODUCER").unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        for definition in saved["property_definitions"].as_array().unwrap() {
+            let property = compile_property(definition).unwrap();
+            let envelopes: Vec<ObservationEnvelope> = serde_json::from_value(saved["evidence_observations"][&property.id].clone()).unwrap();
+            assert_eq!(envelopes.len(), 13);
+            assert!(envelopes.iter().all(|envelope| envelope.facts.is_empty()));
+            let evaluation = evaluate_observation_envelopes(&property, &envelopes, true).unwrap();
+            assert_eq!(evaluation.verdict, Verdict::Inconclusive);
+            assert!(!evaluation.trace_complete);
+        }
     }
 
     #[test]

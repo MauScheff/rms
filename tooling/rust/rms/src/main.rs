@@ -19045,6 +19045,8 @@ fn run_property_evaluate(
         definitions.push(serde_json::to_value(&target_property.definition)?);
     }
     let result = aggregate_property_evaluation_result(&evaluations);
+    let observations_complete = evaluations.iter().all(|evaluation|
+        evaluation.get("trace_complete").and_then(JsonValue::as_bool) == Some(true));
     let analysis = json!({
         "spec": property::ANALYSIS_SPEC,
         "operation": "evaluate",
@@ -19060,7 +19062,7 @@ fn run_property_evaluate(
         "evidence_observations": normalized_observations,
         "coverage": {
             "kind": "trace",
-            "complete": trace_value.get("exhausted").and_then(JsonValue::as_bool)
+            "complete": observations_complete && trace_value.get("exhausted").and_then(JsonValue::as_bool)
                 .unwrap_or_else(|| trace_value.get("complete").and_then(JsonValue::as_bool).unwrap_or(true))
         },
         "proof_scope": {"kind": "observed-trace", "claim": "Verdicts cover only the supplied records."},
@@ -19100,6 +19102,25 @@ fn aggregate_property_evaluation_result(evaluations: &[JsonValue]) -> &'static s
         "inconclusive"
     } else {
         "satisfied"
+    }
+}
+
+fn property_evaluations_are_decisive<'a>(evaluations: impl IntoIterator<Item = &'a property::Evaluation>) -> bool {
+    let mut seen = false;
+    for evaluation in evaluations {
+        seen = true;
+        if !matches!(evaluation.verdict(), property::Verdict::Satisfied | property::Verdict::Violated) { return false; }
+    }
+    seen
+}
+
+fn property_search_conclusion(goal: PropertySearchGoal, found: bool, exhausted: bool, decisive: bool) -> &'static str {
+    match (goal, found, exhausted && decisive) {
+        (PropertySearchGoal::Satisfy, true, _) => "satisfied-witness",
+        (PropertySearchGoal::Violate, true, _) => "violated-counterexample",
+        (PropertySearchGoal::Satisfy, false, true) => "exhaustively-unsatisfiable",
+        (PropertySearchGoal::Violate, false, true) => "exhaustively-satisfied",
+        _ => "inconclusive",
     }
 }
 
@@ -19147,13 +19168,8 @@ fn run_property_search(
     let found = candidates
         .iter()
         .find(|(_, evaluation)| evaluation.verdict() == &desired);
-    let result = match (goal, found.is_some(), exploration.exhausted()) {
-        (PropertySearchGoal::Satisfy, true, _) => "satisfied-witness",
-        (PropertySearchGoal::Violate, true, _) => "violated-counterexample",
-        (PropertySearchGoal::Satisfy, false, true) => "exhaustively-unsatisfiable",
-        (PropertySearchGoal::Violate, false, true) => "exhaustively-satisfied",
-        _ => "inconclusive",
-    };
+    let observations_complete = property_evaluations_are_decisive(candidates.iter().map(|(_, evaluation)| evaluation));
+    let result = property_search_conclusion(goal, found.is_some(), exploration.exhausted(), observations_complete);
     let (evidence_trace, evaluations) = found
         .map(|(trace, evaluation)| {
             (
@@ -19189,6 +19205,7 @@ fn run_property_search(
         "evaluations": evaluations,
         "coverage": {
             "exhausted": exploration.exhausted(),
+            "complete": exploration.exhausted() && observations_complete,
             "probe": exploration.coverage(),
             "bounds": exploration.bounds()
         },
@@ -19349,6 +19366,7 @@ fn run_property_analyze(
     let mut relationships = Vec::new();
     for (target_property, compiled) in &properties {
         let evaluations = &matrix[&target_property.id];
+        let finite_complete = exploration.exhausted() && property_evaluations_are_decisive(evaluations);
         let any_satisfied = evaluations
             .iter()
             .any(|evaluation| evaluation.verdict() == &property::Verdict::Satisfied);
@@ -19357,11 +19375,11 @@ fn run_property_analyze(
             .any(|evaluation| evaluation.verdict() == &property::Verdict::Violated);
         relationships.push(json!({
             "relation": format!("satisfiable({})", target_property.id),
-            "result": if any_satisfied {"holds"} else if exploration.exhausted() {"refuted"} else {"inconclusive"}
+            "result": if any_satisfied {"holds"} else if finite_complete {"refuted"} else {"inconclusive"}
         }));
         relationships.push(json!({
             "relation": format!("valid({})", target_property.id),
-            "result": if any_violated {"refuted"} else if exploration.exhausted() {"holds"} else {"inconclusive"}
+            "result": if any_violated {"refuted"} else if finite_complete {"holds"} else {"inconclusive"}
         }));
         let trigger_seen = evaluations
             .iter()
@@ -19372,7 +19390,7 @@ fn run_property_analyze(
                 "unsupported"
             } else if trigger_seen {
                 "refuted"
-            } else if exploration.exhausted() {
+            } else if finite_complete {
                 "holds"
             } else {
                 "inconclusive"
@@ -19385,6 +19403,9 @@ fn run_property_analyze(
             let right = &properties[right_index].0.id;
             let left_evaluations = &matrix[left];
             let right_evaluations = &matrix[right];
+            let finite_complete = exploration.exhausted()
+                && property_evaluations_are_decisive(left_evaluations)
+                && property_evaluations_are_decisive(right_evaluations);
             let implication_refuted =
                 |antecedent: &[property::Evaluation], consequent: &[property::Evaluation]| {
                     antecedent.iter().zip(consequent).position(|(left, right)| {
@@ -19396,12 +19417,12 @@ fn run_property_analyze(
             let right_left_refutation = implication_refuted(right_evaluations, left_evaluations);
             relationships.push(json!({
                 "relation": format!("implies({left},{right})"),
-                "result": if left_right_refutation.is_some() {"refuted"} else if exploration.exhausted() {"holds"} else {"inconclusive"},
+                "result": if left_right_refutation.is_some() {"refuted"} else if finite_complete {"holds"} else {"inconclusive"},
                 "refuting_trace": left_right_refutation.map(|index| exploration.traces()[index].clone())
             }));
             relationships.push(json!({
                 "relation": format!("equivalent({left},{right})"),
-                "result": if left_right_refutation.is_some() || right_left_refutation.is_some() {"refuted"} else if exploration.exhausted() {"holds"} else {"inconclusive"},
+                "result": if left_right_refutation.is_some() || right_left_refutation.is_some() {"refuted"} else if finite_complete {"holds"} else {"inconclusive"},
                 "refuting_trace": left_right_refutation.or(right_left_refutation).map(|index| exploration.traces()[index].clone())
             }));
             let jointly_satisfied =
@@ -19414,12 +19435,12 @@ fn run_property_analyze(
                     });
             relationships.push(json!({
                 "relation": format!("conflicts({left},{right})"),
-                "result": if jointly_satisfied.is_some() {"refuted"} else if exploration.exhausted() {"holds"} else {"inconclusive"},
+                "result": if jointly_satisfied.is_some() {"refuted"} else if finite_complete {"holds"} else {"inconclusive"},
                 "refuting_trace": jointly_satisfied.map(|index| exploration.traces()[index].clone())
             }));
             relationships.push(json!({
                 "relation": format!("redundant({right}|{left})"),
-                "result": if left_right_refutation.is_some() {"refuted"} else if exploration.exhausted() {"holds"} else {"inconclusive"},
+                "result": if left_right_refutation.is_some() {"refuted"} else if finite_complete {"holds"} else {"inconclusive"},
                 "refuting_trace": left_right_refutation.map(|index| exploration.traces()[index].clone())
             }));
         }
@@ -19432,6 +19453,7 @@ fn run_property_analyze(
     } else {
         "complete"
     };
+    let observations_complete = matrix.values().all(|evaluations| property_evaluations_are_decisive(evaluations));
     let analysis = json!({
         "spec": property::ANALYSIS_SPEC,
         "operation": "analyze",
@@ -19447,6 +19469,7 @@ fn run_property_analyze(
         "relationships": relationships,
         "coverage": {
             "exhausted": exploration.exhausted(),
+            "complete": exploration.exhausted() && observations_complete,
             "probe": exploration.coverage(),
             "bounds": exploration.bounds()
         },
@@ -19624,6 +19647,7 @@ fn run_property_monitor(
         complete,
     );
     let result = evaluation.verdict().label();
+    let observations_complete = !matches!(evaluation.verdict(), property::Verdict::Inconclusive | property::Verdict::Invalid | property::Verdict::Unsupported);
     let analysis = json!({
         "spec": property::ANALYSIS_SPEC,
         "operation": "monitor",
@@ -19638,7 +19662,7 @@ fn run_property_monitor(
         "evaluations": [evaluation],
         "coverage": {
             "kind": "monitor-prefix",
-            "complete": complete,
+            "complete": complete && observations_complete,
             "observability": target_property.observability.as_deref().unwrap_or("unspecified"),
             "observability": target_property.observability.as_deref().unwrap_or("unspecified"),
             "mode": "production-fail-open",
@@ -123956,6 +123980,66 @@ temporal:
         assert!(!exhaustive_diagnostics
             .iter()
             .any(|diagnostic| { diagnostic.check == "evidence.temporal-realization-mismatch" }));
+    }
+
+    #[test]
+    fn missing_property_values_do_not_close_finite_search_proofs() {
+        let evaluation = |verdict: &str| serde_json::from_value::<property::Evaluation>(json!({
+            "property":"generic", "verdict":verdict, "trace_complete":false,
+            "observations":1, "explanation":{"summary":"fixture"}
+        })).unwrap();
+        for verdict in ["inconclusive", "invalid", "unsupported"] {
+            let values = [evaluation(verdict)];
+            assert!(!property_evaluations_are_decisive(&values));
+            for goal in [PropertySearchGoal::Satisfy, PropertySearchGoal::Violate] {
+                assert_eq!(property_search_conclusion(goal,false,true,property_evaluations_are_decisive(&values)), "inconclusive");
+            }
+        }
+        assert!(!property_evaluations_are_decisive(&[]));
+        assert!(property_evaluations_are_decisive(&[evaluation("satisfied"),evaluation("violated")]));
+        assert_eq!(property_search_conclusion(PropertySearchGoal::Violate,false,true,true), "exhaustively-satisfied");
+        assert_eq!(property_search_conclusion(PropertySearchGoal::Satisfy,false,true,true), "exhaustively-unsatisfiable");
+        assert_eq!(property_search_conclusion(PropertySearchGoal::Violate,true,false,false), "violated-counterexample");
+        assert_eq!(property_search_conclusion(PropertySearchGoal::Satisfy,true,false,false), "satisfied-witness");
+    }
+
+    #[test]
+    fn missing_property_evaluate_reports_incomplete_coverage() {
+        let root = unique_test_dir("missing-property-evaluate");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("module.yaml");
+        fs::write(&target, "spec: rms/module/v0.1\nmodule: {name: delivery, version: 0.1.0, kind: library, purpose: Verify values.}\nproperties:\n  - id: missing-safety\n    observations:\n      - {id: flag, source: {kind: state, phase: after, pointer: /flag}, value: boolean}\n    temporal:\n      scope: machine\n      expression: {always: {not: {equals: {observation: flag, value: true}}}}\n").unwrap();
+        let trace = root.join("trace.json");
+        fs::write(&trace, serde_json::to_vec(&json!({"spec":"rms/trace-bundle/v0.1","complete":true,
+            "records":[{"input":{},"output":{},"state_after":{}}]})).unwrap()).unwrap();
+        let out = root.join("analysis.json");
+        run_property_evaluate(&target,&trace,&[],Some(&out),true).unwrap();
+        let result = load_json_yaml_value(&out).unwrap();
+        assert_eq!(result["result"], "inconclusive");
+        assert_eq!(result["coverage"]["complete"], false);
+        assert_eq!(result["evaluations"][0]["trace_complete"], false);
+        assert_eq!(result["evidence_observations"]["missing-safety"][0]["facts"], json!({}));
+        // A finite native exploration with unresolved typed projections cannot
+        // produce a universal conclusion or its proof certificate.
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).unwrap();
+        let assembly = repository.join("examples/probes/stale-write-protection.yaml");
+        let search = root.join("search.json");
+        run_property_search(&target, &assembly, PropertySearchGoal::Violate,
+            Some("missing-safety"), None, None, None, Some(&search), true, 30).unwrap();
+        let searched = load_json_yaml_value(&search).unwrap();
+        assert_eq!(searched["result"], "inconclusive");
+        assert_eq!(searched["coverage"]["exhausted"], true);
+        assert_eq!(searched["coverage"]["complete"], false);
+        assert!(!proof_certificate_path(&search).exists());
+        let analysis = root.join("relationships.json");
+        run_property_analyze(&target, &assembly, &["missing-safety".into()],
+            None, None, None, Some(&analysis), true, 30).unwrap();
+        let analyzed = load_json_yaml_value(&analysis).unwrap();
+        assert_eq!(analyzed["result"], "inconclusive");
+        assert_eq!(analyzed["coverage"]["complete"], false);
+        assert!(analyzed["relationships"].as_array().unwrap().iter()
+            .all(|relation| matches!(relation["result"].as_str(), Some("inconclusive" | "unsupported"))));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
