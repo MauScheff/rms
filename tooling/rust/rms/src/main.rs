@@ -60887,10 +60887,11 @@ fn validate_task_preserved_machine_input_coverage(
         return;
     }
 
-    let task = task.to_ascii_lowercase();
-    if !task.contains("preserv") {
+    let preservation = task_preservation_scopes(task).join("\n");
+    if preservation.is_empty() {
         return;
     }
+    let task = preservation.to_ascii_lowercase();
     let existing_commands = get_string_array(
         &implementation.value,
         &["architecture", "machine", "commands"],
@@ -60940,11 +60941,16 @@ fn validate_task_preserved_machine_input_coverage(
         );
     }
     if task.contains("effect-result") || task.contains("effect result") {
-        preserved_inputs.extend(existing_effect_results);
+        preserved_inputs.extend(existing_effect_results.iter().cloned());
     }
-    for command in &existing_commands {
-        if task.contains(&command.to_ascii_lowercase()) {
-            preserved_inputs.insert(command.clone());
+    let existing_observed_events = get_string_array(
+        &implementation.value, &["architecture", "machine", "observed_events"]);
+    for input in existing_commands.iter().chain(&existing_effect_results).chain(&existing_observed_events) {
+        let explicitly_named = preservation.split(|character: char|
+            !(character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')))
+            .any(|token| token == input || (!input.contains('.') && token.rsplit('.').next() == Some(input.as_str())));
+        if explicitly_named {
+            preserved_inputs.insert(input.clone());
         }
     }
     if preserved_inputs.is_empty() {
@@ -60980,6 +60986,43 @@ fn validate_task_preserved_machine_input_coverage(
             ));
         }
     }
+}
+
+fn task_preservation_scopes(task: &str) -> Vec<String> {
+    let mut scopes = Vec::new();
+    let mut clauses = Vec::new();
+    let mut start = 0;
+    for (offset, character) in task.char_indices() {
+        if matches!(character, ';' | '\n') || (character == '.'
+            && task[offset + 1..].chars().next().is_none_or(char::is_whitespace)) {
+            clauses.push(&task[start..offset]);
+            start = offset + character.len_utf8();
+        }
+    }
+    clauses.push(&task[start..]);
+    for clause in clauses {
+        let words = clause.split_whitespace().collect::<Vec<_>>();
+        let normalized = words.iter().map(|word| word.trim_matches(|character: char|
+            !character.is_ascii_alphanumeric() && character != '-' && character != '_').to_ascii_lowercase()).collect::<Vec<_>>();
+        let mut preserving = false;
+        let mut scope = Vec::new();
+        for (index, word) in normalized.iter().enumerate() {
+            let quoted = words[index].starts_with(['`', '"', '\'']);
+            let positive = !quoted && matches!(word.as_str(), "preserve" | "preserving" | "preserved" | "preserves" | "preservation")
+                && index.checked_sub(1).is_none_or(|prior| normalized[prior] != "not");
+            let boundary = !quoted && (matches!(word.as_str(),
+                "replace" | "replacing" | "replacement" | "remove" | "removing" | "delete" | "deleting" | "drop" | "dropping" | "while" | "except" | "without")
+                || (word == "but" && normalized.get(index + 1).is_none_or(|next| next != "also"))
+                || (word == "not" && normalized.get(index + 1).is_none_or(|next| next != "only")));
+            if positive || boundary {
+                if !scope.is_empty() { scopes.push(scope.join(" ")); scope.clear(); }
+                preserving = positive;
+            }
+            if preserving { scope.push(words[index].to_string()); }
+        }
+        if !scope.is_empty() { scopes.push(scope.join(" ")); }
+    }
+    scopes
 }
 
 fn semantic_plan_terminal_state_name(state: &str) -> bool {
@@ -118429,6 +118472,83 @@ machine: null
             .iter()
             .any(|item| item.contains("reconciled diagnostic-scoped repair")));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn semantic_plan_scaffold_replacement_does_not_preserve_substrings_or_removed_inputs() {
+        let implementation = loaded_module_manifest("implementation.yaml", r#"spec: rms/implementation/v0.1
+module: generic-host
+binding: rust
+architecture:
+  machine:
+    states: [Ready, Completed]
+    commands: [Accept, Reject, Drop, Status.changed]
+    observed_events: [Signal]
+    effect_results: [OldResult]
+    transitions: []
+"#);
+        let context = SpecTargetContext { target: implementation.path.clone(), module: None, implementation: Some(implementation) };
+        let change: SemanticChange = serde_yaml::from_str(r#"spec: rms/semantic-change/v0.1
+machine:
+  mode: stateful-transition-machine
+  states: {set: [Dormant, Coordinating], add: [], remove: []}
+  commands: {set: [StartOperation], add: [], remove: []}
+  transitions: {set: [], add: [], remove: []}
+"#).unwrap();
+        for task in [
+            "Replace all generic scaffold contracts, states, variants and bindings. Preserve the existing policy: each input accepts at most one reply; late output requires cleanup, never acceptance. Define typed invalid input and uncertain outcome rejections.",
+            "Remove Accept and Reject. Preserve native cancellation policy.",
+            "Replace Accept and Reject while preserving the native policy.",
+            "Preserve native cancellation and remove Accept and Reject.",
+            "Preserve native policy. Replace old effect-result variants.",
+            "Do not preserve Accept or Reject. Preserve native policy.",
+            "Preserve the native policy: reject invalid requests and accept only complete input. Replace all generic scaffold contracts.",
+        ] {
+            let mut diagnostics = Vec::new();
+            validate_task_preserved_machine_input_coverage(&context, task, &change, &mut diagnostics);
+            assert!(diagnostics.is_empty(), "{task}: {diagnostics:#?}");
+        }
+        for (task, expected) in [
+            ("Replace Reject, but preserve Accept unchanged.", vec!["Accept"]),
+            ("Preserve `Accept` and `Reject` unchanged while adding a new state.", vec!["Accept", "Reject"]),
+            ("Preserve OldResult unchanged.", vec!["OldResult"]),
+            ("Preserve Signal unchanged.", vec!["Signal"]),
+            ("Preserve Accept and remove Reject.", vec!["Accept"]),
+            ("Preserve not only Accept but also Reject.", vec!["Accept", "Reject"]),
+            ("Preserve `Drop` unchanged.", vec!["Drop"]),
+            ("Preserve `Status.changed` unchanged.", vec!["Status.changed"]),
+        ] {
+            let mut diagnostics = Vec::new();
+            validate_task_preserved_machine_input_coverage(&context, task, &change, &mut diagnostics);
+            assert_eq!(diagnostics.len(), 2, "{task}: {diagnostics:#?}");
+            for diagnostic in diagnostics {
+                assert_eq!(diagnostic.check, "semantic-plan.preserved-input-unclassified");
+                for input in &expected { assert!(diagnostic.message.contains(input)); }
+                for input in ["Accept", "Reject", "OldResult", "Signal", "Drop", "Status.changed"] {
+                    if !expected.contains(&input) { assert!(!diagnostic.message.contains(input), "{diagnostic:#?}"); }
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires RMS_PRESERVATION_REPRODUCER naming the saved run in an unchanged consumer checkout"]
+    fn semantic_plan_preservation_saved_proposal_reproducer() {
+        let run = PathBuf::from(std::env::var("RMS_PRESERVATION_REPRODUCER").unwrap());
+        let prompt = fs::read_to_string(run.join("prompt.md")).unwrap();
+        let task = prompt.lines().find_map(|line| line.strip_prefix("Task: ")).unwrap();
+        let response = fs::read_to_string(run.join("attempt-1-response.md")).unwrap();
+        let proposed: YamlValue = serde_yaml::from_str(&response).unwrap();
+        let target = PathBuf::from(get_str(&proposed, &["module"]).unwrap());
+        let root = run.ancestors().nth(3).unwrap();
+        let context = load_spec_target(&root.join(&target)).unwrap();
+        let prepared = prepare_spec_plan_provider_response(&context, task, &response);
+        println!("saved proposal diagnostics: {}", serde_json::to_string_pretty(&prepared.diagnostics).unwrap());
+        assert!(!prepared.diagnostics.iter().any(|diagnostic| diagnostic.check == "semantic-plan.preserved-input-unclassified"));
+        // The provider's semantic-plan-diagnostics.json is overwritten by
+        // repair attempts. It is not a pinned baseline for attempt-1-response.
+        assert!(prepared.diagnostics.iter().any(|diagnostic| diagnostic.check == "structure.resource-transition-ambiguous"));
+        assert!(prepared.diagnostics.iter().any(|diagnostic| diagnostic.check == "structure.resource-operation-illegal"));
     }
 
     #[test]
