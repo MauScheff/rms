@@ -56968,6 +56968,19 @@ fn validate_machine_resource_product(
             .iter()
             .filter(|transition| transition.from == machine_state)
         {
+            // Arrival is not execution: an empty typed refusal preserves this
+            // product state. Complete data-state equality is still an executable
+            // contract-frame obligation; equal variant labels do not prove it.
+            if transition.from == transition.to
+                && transition.rejection.as_deref().is_some_and(|value| !value.trim().is_empty())
+                && transition.reply.is_none()
+                && transition.no_reply_justification.is_none()
+                && transition.events.is_empty()
+                && transition.commands.is_empty()
+                && transition.effects.is_empty()
+            {
+                continue;
+            }
             let input = transition_input_variant(&transition.on);
             let input_kind = if transition.on.contains('.') {
                 transition.on.split_once('.').map(|(kind, _)| match kind {
@@ -123826,6 +123839,152 @@ architecture:
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic.check == "structure.resource-not-closed-on-terminal-path"
         }));
+    }
+
+    #[test]
+    fn resource_protocol_distinguishes_inert_rejections_from_operations() {
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: YamlValue::Null,
+        };
+        let protocol: MachineResourceProtocol = serde_yaml::from_str(
+            r#"
+resource: handle
+ownership: exclusive
+states: [Free, Held]
+initial_state: Free
+terminal_states: [Free]
+transitions:
+  - {from: Held, on: Use, trigger_kind: command, operation: use, to: Held}
+"#,
+        )
+        .unwrap();
+        for input in ["Use", "Use.stale"] {
+            let inert: MachineTransitionChange = serde_yaml::from_str(&format!(
+                "{{from: Ready, on: {input}, to: Ready, rejection: Stale}}"
+            ))
+            .unwrap();
+            let mut diagnostics = Vec::new();
+            validate_machine_resource_product(
+                &manifest,
+                &protocol,
+                "Ready",
+                &BTreeSet::new(),
+                &[inert.clone()],
+                &mut diagnostics,
+            );
+            assert_no_error_diagnostics(&diagnostics);
+
+            // None of these branches is an empty, rejecting self-loop.
+            let mut accepted = inert.clone();
+            accepted.rejection = None;
+            accepted.reply = Some("Accepted".into());
+            let mut mutating = inert.clone();
+            mutating.to = "Changed".into();
+            let mut effectful = inert.clone();
+            effectful.effects.push("Cleanup".into());
+            let mut commanding = inert.clone();
+            commanding.commands.push("Cleanup".into());
+            let mut emitting = inert.clone();
+            emitting.events.push("Changed".into());
+            let mut replying = inert.clone();
+            replying.reply = Some("Accepted".into());
+            let mut empty_rejection = inert.clone();
+            empty_rejection.rejection = Some(" ".into());
+            let mut deferred = inert;
+            deferred.no_reply_justification = Some("waiting".into());
+            for transition in [
+                accepted,
+                mutating,
+                effectful,
+                commanding,
+                emitting,
+                replying,
+                empty_rejection,
+                deferred,
+            ] {
+                let mut diagnostics = Vec::new();
+                validate_machine_resource_product(
+                    &manifest,
+                    &protocol,
+                    "Ready",
+                    &BTreeSet::new(),
+                    &[transition.clone()],
+                    &mut diagnostics,
+                );
+                assert!(
+                    diagnostics.iter().any(
+                        |diagnostic| diagnostic.check == "structure.resource-operation-illegal"
+                    ),
+                    "non-inert branch must retain resource checks: {transition:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resource_protocol_rejected_acquire_and_release_preserve_custody() {
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value: YamlValue::Null,
+        };
+        let protocol: MachineResourceProtocol = serde_yaml::from_str(
+            r#"
+resource: handle
+ownership: exclusive
+states: [Free, Held]
+initial_state: Free
+terminal_states: [Free]
+transitions:
+  - {from: Free, on: Acquire, trigger_kind: command, operation: acquire, to: Held}
+  - {from: Held, on: Use, trigger_kind: command, operation: use, to: Held}
+  - {from: Held, on: Release, trigger_kind: command, operation: release, to: Free}
+"#,
+        )
+        .unwrap();
+        let transitions: Vec<MachineTransitionChange> = serde_yaml::from_str(
+            r#"
+- {from: Ready, on: Acquire, to: Ready, rejection: Denied}
+- {from: Ready, on: Use, to: Ready, reply: Accepted}
+"#,
+        )
+        .unwrap();
+        let mut diagnostics = Vec::new();
+        validate_machine_resource_product(
+            &manifest,
+            &protocol,
+            "Ready",
+            &BTreeSet::new(),
+            &transitions,
+            &mut diagnostics,
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("`Use`"));
+        assert!(diagnostics[0].message.contains("`Free`"));
+
+        let transitions: Vec<MachineTransitionChange> = serde_yaml::from_str(
+            r#"
+- {from: Ready, on: Acquire, to: Holding, reply: Accepted}
+- {from: Holding, on: Release, to: Holding, rejection: Denied}
+- {from: Holding, on: Finish, to: Done, reply: Accepted}
+"#,
+        )
+        .unwrap();
+        let mut diagnostics = Vec::new();
+        validate_machine_resource_product(
+            &manifest,
+            &protocol,
+            "Ready",
+            &BTreeSet::from(["Done".into()]),
+            &transitions,
+            &mut diagnostics,
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(
+            diagnostics[0].check,
+            "structure.resource-not-closed-on-terminal-path"
+        );
+        assert!(diagnostics[0].message.contains("`Held`"));
     }
 
     #[test]

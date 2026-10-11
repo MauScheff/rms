@@ -3046,6 +3046,41 @@ mod tests {
     }
 
     #[test]
+    fn rejecting_self_loop_does_not_exempt_complete_state_frame() {
+        let compiled = compile_property(&json!({
+            "id": "contract:use#stale",
+            "observations": [],
+            "step": {
+                "role": "case", "contract": "use", "clause": "stale",
+                "expression": {"constant": true},
+                "activation": {"constant": true},
+                "permits": {"state_changes": [], "events": [], "effects": []}
+            }
+        }))
+        .unwrap();
+        let mut record = invocation(
+            "rust",
+            json!({}),
+            json!({
+                "reply": null, "rejection": {"name": "Stale"},
+                "events": [], "commands": [], "effects": []
+            }),
+        );
+        record["contract"] = json!("use");
+        record["state_before"] = json!({"name": "Ready", "data": {"owner": "alice"}});
+        record["state_after"] = record["state_before"].clone();
+        assert_eq!(
+            evaluate_trace(&compiled, &record).unwrap().verdict,
+            Verdict::Satisfied
+        );
+        record["state_after"]["data"]["owner"] = json!("bob");
+        let evaluation = evaluate_trace(&compiled, &record).unwrap();
+        assert_eq!(evaluation.verdict, Verdict::Violated);
+        assert_eq!(evaluation.explanation.blame.as_deref(), Some("provider"));
+        assert!(evaluation.explanation.summary.contains("/data/owner"));
+    }
+
+    #[test]
     fn frames_reject_undeclared_state_events_and_effects() {
         let compiled = compile_property(&json!({
             "id": "contract:calculate#accepted",
