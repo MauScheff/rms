@@ -185,8 +185,11 @@ fn import_spelling(tree: &syn::UseTree) -> String {
 }
 // Display identifier segments even when generics prevent proof resolution.
 fn path_identifiers(path: &syn::Path) -> String {
-    path.segments.iter().map(|part| part.ident.to_string())
-        .collect::<Vec<_>>().join("::")
+    path.segments
+        .iter()
+        .map(|part| part.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::")
 }
 fn atom(expr: &Expr, name: &str) -> bool {
     matches!(expr, Expr::Path(path) if path.qself.is_none() && path.path.is_ident(name))
@@ -312,10 +315,18 @@ impl<'a> Checker<'a> {
                     )?;
                     if test_only_module(item) {
                         if item.content.is_none() {
-                            if let Some(attr) = item.attrs.iter().find(|attr| attr.path().is_ident("path")) {
-                                let syn::Meta::NameValue(value) = &attr.meta else { unreachable!() };
-                                let Expr::Lit(value) = &value.value else { unreachable!() };
-                                let syn::Lit::Str(value) = &value.lit else { unreachable!() };
+                            if let Some(attr) =
+                                item.attrs.iter().find(|attr| attr.path().is_ident("path"))
+                            {
+                                let syn::Meta::NameValue(value) = &attr.meta else {
+                                    unreachable!()
+                                };
+                                let Expr::Lit(value) = &value.value else {
+                                    unreachable!()
+                                };
+                                let syn::Lit::Str(value) = &value.lit else {
+                                    unreachable!()
+                                };
                                 let parent = std::path::Path::new(&file).parent().unwrap();
                                 let joined = parent.join(value.value());
                                 let mut parts = Vec::new();
@@ -330,11 +341,12 @@ impl<'a> Checker<'a> {
                                 test_sources.insert(parts.join("/"));
                             } else {
                                 let stem = file.strip_suffix(".rs").unwrap();
-                                let directory = if matches!(file.as_str(), "src/lib.rs" | "src/main.rs") {
-                                    "src"
-                                } else {
-                                    stem.strip_suffix("/mod").unwrap_or(stem)
-                                };
+                                let directory =
+                                    if matches!(file.as_str(), "src/lib.rs" | "src/main.rs") {
+                                        "src"
+                                    } else {
+                                        stem.strip_suffix("/mod").unwrap_or(stem)
+                                    };
                                 test_sources.insert(format!("{directory}/{}.rs", item.ident));
                                 test_sources.insert(format!("{directory}/{}/mod.rs", item.ident));
                             }
@@ -1488,7 +1500,9 @@ impl Closure<'_, '_> {
         let location = node.span().start();
         self.refuse(&format!(
             "{}:{}:{}: {cause}; reference `{reference}`",
-            self.file, location.line, location.column + 1,
+            self.file,
+            location.line,
+            location.column + 1,
         ));
     }
     fn sensitive(&self, path: &syn::Path) -> bool {
@@ -2043,24 +2057,46 @@ envelope_flow:
     #[test]
     fn callable_collision_diagnostic_names_reference_and_source_location() {
         let mut sources = sources();
-        sources.insert("tests/trace_producer.rs".into(),
-            "fn witness() {\n    let observed = 1;\n    let _ = observed;\n}".into());
+        sources.insert(
+            "tests/trace_producer.rs".into(),
+            "fn witness() {\n    let observed = 1;\n    let _ = observed;\n}".into(),
+        );
         let errors = check(&sources, BINDING, &contract());
-        assert!(errors.iter().any(|reason|
-            reason.contains("tests/trace_producer.rs:3:13")
-                && reason.contains("reference `observed`")
-                && reason.contains("conservative match on leaf `observed`")), "{errors:?}");
+        assert!(
+            errors
+                .iter()
+                .any(|reason| reason.contains("tests/trace_producer.rs:3:13")
+                    && reason.contains("reference `observed`")
+                    && reason.contains("conservative match on leaf `observed`")),
+            "{errors:?}"
+        );
         for (source, reference, cause) in [
-            ("fn witness() { let _ = crate::read::execute; }", "crate::read::execute", "registered callable"),
-            ("fn witness(value: u64) { value.observed(); }", "observed", "registered context/executor method"),
-            ("fn witness() { let _ = crate::types::Context::split; }", "crate::types::Context::split", "context constructor or callable"),
+            (
+                "fn witness() { let _ = crate::read::execute; }",
+                "crate::read::execute",
+                "registered callable",
+            ),
+            (
+                "fn witness(value: u64) { value.observed(); }",
+                "observed",
+                "registered context/executor method",
+            ),
+            (
+                "fn witness() { let _ = crate::types::Context::split; }",
+                "crate::types::Context::split",
+                "context constructor or callable",
+            ),
         ] {
             sources.insert("tests/trace_producer.rs".into(), source.into());
             let errors = check(&sources, BINDING, &contract());
-            assert!(errors.iter().any(|reason|
-                reason.contains("tests/trace_producer.rs:1:")
-                    && reason.contains(&format!("reference `{reference}`"))
-                    && reason.contains(cause)), "{errors:?}");
+            assert!(
+                errors
+                    .iter()
+                    .any(|reason| reason.contains("tests/trace_producer.rs:1:")
+                        && reason.contains(&format!("reference `{reference}`"))
+                        && reason.contains(cause)),
+                "{errors:?}"
+            );
         }
     }
     #[test]
@@ -2090,29 +2126,38 @@ envelope_flow:
         moved.get_mut("src/io.rs").unwrap().push_str(
             "\n#[cfg(test)] #[path = \"../tests/support/io_support_unit.rs\"] mod tests;",
         );
-        moved.insert("tests/support/io_support_unit.rs".into(),
-            "use super::*; #[test] fn private_parent_access() { let _ = Ports; }".into());
+        moved.insert(
+            "tests/support/io_support_unit.rs".into(),
+            "use super::*; #[test] fn private_parent_access() { let _ = Ports; }".into(),
+        );
         let errors = check(&moved, BINDING, &contract());
         assert!(errors.is_empty(), "{errors:?}");
 
         let mut ordinary = sources();
-        ordinary.get_mut("src/io.rs").unwrap().push_str("\n#[cfg(test)] mod tests;");
-        ordinary.insert("src/io/tests.rs".into(), "use super::*; #[test] fn smoke() {}".into());
+        ordinary
+            .get_mut("src/io.rs")
+            .unwrap()
+            .push_str("\n#[cfg(test)] mod tests;");
+        ordinary.insert(
+            "src/io/tests.rs".into(),
+            "use super::*; #[test] fn smoke() {}".into(),
+        );
         assert!(check(&ordinary, BINDING, &contract()).is_empty());
         let mut inline = sources();
-        inline.get_mut("src/io.rs").unwrap().push_str(
-            "\n#[cfg(test)] mod tests { use super::*; #[test] fn smoke() {} }",
-        );
+        inline
+            .get_mut("src/io.rs")
+            .unwrap()
+            .push_str("\n#[cfg(test)] mod tests { use super::*; #[test] fn smoke() {} }");
         assert!(check(&inline, BINDING, &contract()).is_empty());
 
         // A test reference cannot exempt a file that production also reaches.
         let mut dual = sources();
-        dual.get_mut("src/lib.rs").unwrap().push_str(
-            "\n#[cfg(test)] #[path = \"io.rs\"] mod tests;",
-        );
-        dual.get_mut("src/io.rs").unwrap().push_str(
-            "\nfn bypass() { crate::types::Context::split(request); }",
-        );
+        dual.get_mut("src/lib.rs")
+            .unwrap()
+            .push_str("\n#[cfg(test)] #[path = \"io.rs\"] mod tests;");
+        dual.get_mut("src/io.rs")
+            .unwrap()
+            .push_str("\nfn bypass() { crate::types::Context::split(request); }");
         assert!(!check(&dual, BINDING, &contract()).is_empty());
 
         for attrs in [
@@ -2129,14 +2174,19 @@ envelope_flow:
             assert!(!check(&invalid, BINDING, &contract()).is_empty(), "{attrs}");
         }
         let mut hidden_owner = moved.clone();
-        hidden_owner.insert("src/lib.rs".into(),
-            "mod types; mod runtime; #[cfg(test)] mod read; mod stop; mod io;".into());
-        assert!(check(&hidden_owner, BINDING, &contract()).iter()
+        hidden_owner.insert(
+            "src/lib.rs".into(),
+            "mod types; mod runtime; #[cfg(test)] mod read; mod stop; mod io;".into(),
+        );
+        assert!(check(&hidden_owner, BINDING, &contract())
+            .iter()
             .any(|reason| reason.contains("registered source is not wired")));
 
         // An unrelated inspected file is not test-only merely by its path.
-        moved.insert("tests/unregistered.rs".into(),
-            "fn bypass() { crate::types::Context::split(request); }".into());
+        moved.insert(
+            "tests/unregistered.rs".into(),
+            "fn bypass() { crate::types::Context::split(request); }".into(),
+        );
         assert!(!check(&moved, BINDING, &contract()).is_empty());
     }
     #[test]

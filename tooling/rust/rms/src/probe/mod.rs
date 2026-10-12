@@ -789,9 +789,13 @@ fn validate_assembly_schema(value: &Value) -> Result<()> {
 }
 
 pub(super) fn fault_family_generator_schema() -> Result<Value> {
-    let schema: Value = serde_json::from_str(include_str!("../../../../../schemas/probe-assembly-v0.3.schema.json"))?;
-    let mut generator = schema.pointer("/properties/coverage/properties/fault_families/items/properties/generator")
-        .cloned().ok_or_else(|| anyhow!("embedded assembly schema has no fault-family generator"))?;
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../../../schemas/probe-assembly-v0.3.schema.json"
+    ))?;
+    let mut generator = schema
+        .pointer("/properties/coverage/properties/fault_families/items/properties/generator")
+        .cloned()
+        .ok_or_else(|| anyhow!("embedded assembly schema has no fault-family generator"))?;
     generator["$defs"] = json!({"id":schema["$defs"]["id"]});
     Ok(generator)
 }
@@ -4785,22 +4789,39 @@ mod schema_discovery_tests {
             "instances":[{"id":"provider","implementation":"implementation.yaml"}],
             "coverage":{"fault_families":[{"id":"fault-family","owner_module":"provider",
                 "generator":{}}]}});
-        for generator in [json!({}),json!("src/property.rs#generate")] {
+        for generator in [json!({}), json!("src/property.rs#generate")] {
             assembly["coverage"]["fault_families"][0]["generator"] = generator;
             let error = validate_assembly_schema(&assembly).unwrap_err().to_string();
             assert!(error.contains("expected oneOf schemas"), "{error}");
-            for variant in ["stimulus", "substitute", "route-fault", "delay", "duplicate", "drop", "timeout"] {
+            for variant in [
+                "stimulus",
+                "substitute",
+                "route-fault",
+                "delay",
+                "duplicate",
+                "drop",
+                "timeout",
+            ] {
                 assert!(error.contains(variant), "{error}");
             }
-            assert!(error.contains("/coverage/fault_families/0/generator"), "{error}");
+            assert!(
+                error.contains("/coverage/fault_families/0/generator"),
+                "{error}"
+            );
         }
-        for generator in [json!({"kind":"stimulus","id":"start"}),
+        for generator in [
+            json!({"kind":"stimulus","id":"start"}),
             json!({"kind":"substitute","id":"native-result"}),
-            json!({"kind":"route-fault","route":"native-result","fault":"duplicate"})] {
+            json!({"kind":"route-fault","route":"native-result","fault":"duplicate"}),
+        ] {
             assembly["coverage"]["fault_families"][0]["generator"] = generator;
             validate_assembly_schema(&assembly).unwrap();
-            validate_schema(&assembly["coverage"]["fault_families"][0]["generator"],
-                &fault_family_generator_schema().unwrap().to_string(), "rendered generator").unwrap();
+            validate_schema(
+                &assembly["coverage"]["fault_families"][0]["generator"],
+                &fault_family_generator_schema().unwrap().to_string(),
+                "rendered generator",
+            )
+            .unwrap();
         }
     }
 }

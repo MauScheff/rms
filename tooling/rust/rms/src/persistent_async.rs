@@ -58,7 +58,10 @@ impl ExecutionBinding {
         matches!(self, Self::PersistentAsync { .. })
     }
     pub(crate) fn uses_envelopes(&self) -> bool {
-        matches!(self, Self::SynchronousEnvelopes { .. } | Self::PersistentAsync { .. })
+        matches!(
+            self,
+            Self::SynchronousEnvelopes { .. } | Self::PersistentAsync { .. }
+        )
     }
 
     pub(crate) fn is_caller_driven(&self) -> bool {
@@ -268,25 +271,45 @@ impl<'a> Index<'a> {
                     let Type::Path(ty) = item.self_ty.as_ref() else {
                         continue;
                     };
-                    if !ty.path.segments.last().is_some_and(|part| part.ident == owner) {
+                    if !ty
+                        .path
+                        .segments
+                        .last()
+                        .is_some_and(|part| part.ident == owner)
+                    {
                         continue;
                     }
                     for member in &item.items {
-                        let syn::ImplItem::Fn(method) = member else { continue; };
-                        if method.sig.ident != method_name { continue; }
+                        let syn::ImplItem::Fn(method) = member else {
+                            continue;
+                        };
+                        if method.sig.ident != method_name {
+                            continue;
+                        }
                         // Do not borrow a same-named method from another owner,
                         // conditional declaration, or generic specialization.
                         let declarations = self.named_items(owner);
                         let exact_owner = match declarations.as_slice() {
-                            [(owner_file, Item::Struct(owner))] => *owner_file == file
-                                && owner.generics.params.is_empty()
-                                && owner.attrs.iter().all(|attr| attr.path().is_ident("doc") || attr.path().is_ident("derive")),
-                            [(owner_file, Item::Enum(owner))] => *owner_file == file
-                                && owner.generics.params.is_empty()
-                                && owner.attrs.iter().all(|attr| attr.path().is_ident("doc") || attr.path().is_ident("derive")),
+                            [(owner_file, Item::Struct(owner))] => {
+                                *owner_file == file
+                                    && owner.generics.params.is_empty()
+                                    && owner.attrs.iter().all(|attr| {
+                                        attr.path().is_ident("doc")
+                                            || attr.path().is_ident("derive")
+                                    })
+                            }
+                            [(owner_file, Item::Enum(owner))] => {
+                                *owner_file == file
+                                    && owner.generics.params.is_empty()
+                                    && owner.attrs.iter().all(|attr| {
+                                        attr.path().is_ident("doc")
+                                            || attr.path().is_ident("derive")
+                                    })
+                            }
                             _ => false,
                         };
-                        if !exact_owner || ty.qself.is_some()
+                        if !exact_owner
+                            || ty.qself.is_some()
                             || ty.path.leading_colon.is_some()
                             || ty.path.segments.len() != 1
                             || !matches!(ty.path.segments[0].arguments, PathArguments::None)
@@ -324,11 +347,26 @@ impl<'a> Index<'a> {
     }
 
     pub(crate) fn validate_with_flow(
-        &self, binding: &ExecutionBinding, driver: &str, protocols: &[String],
-        types: &Types<'_>, contract: Option<&FlowContract>,
+        &self,
+        binding: &ExecutionBinding,
+        driver: &str,
+        protocols: &[String],
+        types: &Types<'_>,
+        contract: Option<&FlowContract>,
     ) -> Vec<String> {
-        if let ExecutionBinding::SynchronousEnvelopes { executors, envelope_flow } = binding {
-            return self.validate_executors(executors, protocols, types, false, envelope_flow.as_ref(), contract);
+        if let ExecutionBinding::SynchronousEnvelopes {
+            executors,
+            envelope_flow,
+        } = binding
+        {
+            return self.validate_executors(
+                executors,
+                protocols,
+                types,
+                false,
+                envelope_flow.as_ref(),
+                contract,
+            );
         }
         let ExecutionBinding::PersistentAsync {
             runtime,
@@ -409,7 +447,14 @@ impl<'a> Index<'a> {
         {
             errors.push("exact input poll method must return Poll<Option<Input>>".into());
         }
-        errors.extend(self.validate_executors(executors, protocols, types, true, envelope_flow.as_ref(), contract));
+        errors.extend(self.validate_executors(
+            executors,
+            protocols,
+            types,
+            true,
+            envelope_flow.as_ref(),
+            contract,
+        ));
         errors
     }
 
@@ -425,14 +470,29 @@ impl<'a> Index<'a> {
         let mut errors = Vec::new();
         let projected = if let Some(flow) = flow {
             match contract {
-                Some(contract) => match envelope_flow::prove(self, flow, executors, types, contract, asynchronous) {
-                    Ok(()) => true,
-                    Err(reason) => { errors.push(format!("envelope-flow proof failed: {reason}")); false }
-                },
-                None => { errors.push("envelope-flow requires canonical protocol and message-field evidence".into()); false }
+                Some(contract) => {
+                    match envelope_flow::prove(self, flow, executors, types, contract, asynchronous)
+                    {
+                        Ok(()) => true,
+                        Err(reason) => {
+                            errors.push(format!("envelope-flow proof failed: {reason}"));
+                            false
+                        }
+                    }
+                }
+                None => {
+                    errors.push(
+                        "envelope-flow requires canonical protocol and message-field evidence"
+                            .into(),
+                    );
+                    false
+                }
             }
         } else {
-            if executors.iter().any(|executor| executor.status_symbol.is_some()) {
+            if executors
+                .iter()
+                .any(|executor| executor.status_symbol.is_some())
+            {
                 errors.push("status_symbol requires an explicit envelope_flow binding".into());
             }
             false
@@ -477,7 +537,8 @@ impl<'a> Index<'a> {
                 .and_then(parameter_type);
             if !executor.symbol.contains('#')
                 || generic_envelope
-                || (!projected && request.is_none_or(|ty| !self.nominal(ty, types.request_envelope)))
+                || (!projected
+                    && request.is_none_or(|ty| !self.nominal(ty, types.request_envelope)))
             {
                 errors.push(format!(
                     "{} request parameter must be the exact EffectEnvelope",
@@ -549,7 +610,10 @@ mod tests {
     #[test]
     fn envelope_flow_requires_explicit_supported_binding() {
         let yaml = "kind: synchronous-envelopes\nexecutors:\n- {symbol: 'src/read.rs#execute', request_parameter: 1, status_symbol: 'src/io.rs#Ports::read'}\nenvelope_flow:\n  context: src/types.rs#Context\n  split: src/types.rs#Context::split\n  observe: src/types.rs#Context::observed\n  dispatcher: src/runtime.rs#dispatch\n  request_parameter: 1\n";
-        assert!(serde_yaml::from_str::<ExecutionBinding>(yaml).is_ok(), "closed envelope projection is not yet representable");
+        assert!(
+            serde_yaml::from_str::<ExecutionBinding>(yaml).is_ok(),
+            "closed envelope projection is not yet representable"
+        );
     }
 
     const SOURCE: &str = r#"
@@ -674,15 +738,20 @@ executors:
         ] {
             assert!(check(&invalid).iter().any(|error| error.contains("input poll")), "{invalid}");
         }
-        let files = BTreeMap::from([
-            ("src/other.rs".into(), syn::parse_file(&source).unwrap()),
-        ]);
-        assert!(Index { files: &files }.signature("src/driver.rs#Adapters::poll_input").is_none());
+        let files = BTreeMap::from([("src/other.rs".into(), syn::parse_file(&source).unwrap())]);
+        assert!(Index { files: &files }
+            .signature("src/driver.rs#Adapters::poll_input")
+            .is_none());
         let files = BTreeMap::from([
             ("src/driver.rs".into(), syn::parse_file(&source).unwrap()),
-            ("src/other.rs".into(), syn::parse_file("struct Adapters;").unwrap()),
+            (
+                "src/other.rs".into(),
+                syn::parse_file("struct Adapters;").unwrap(),
+            ),
         ]);
-        assert!(Index { files: &files }.signature("src/driver.rs#Adapters::poll_input").is_none());
+        assert!(Index { files: &files }
+            .signature("src/driver.rs#Adapters::poll_input")
+            .is_none());
     }
 
     #[test]

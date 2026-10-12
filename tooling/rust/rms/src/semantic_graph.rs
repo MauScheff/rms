@@ -1970,11 +1970,14 @@ fn project_effect_closure(
         .as_ref()
         .is_some_and(super::caller_driven_machine);
     let valid_caller_provider = caller_driven
-        && module.implementation.as_ref().is_some_and(|implementation| {
-            let mut diagnostics = Vec::new();
-            super::validate_caller_driven_binding(implementation, &mut diagnostics);
-            diagnostics.is_empty()
-        });
+        && module
+            .implementation
+            .as_ref()
+            .is_some_and(|implementation| {
+                let mut diagnostics = Vec::new();
+                super::validate_caller_driven_binding(implementation, &mut diagnostics);
+                diagnostics.is_empty()
+            });
     let declared_results = module
         .implementation
         .as_ref()
@@ -1995,12 +1998,16 @@ fn project_effect_closure(
                         && protocols
                             .iter()
                             .filter(|candidate| candidate.effect == *effect)
-                            .count() == 1
+                            .count()
+                            == 1
                         && protocol.executor_role.is_none()
                         && protocol.executor_symbol.is_none()
                         && protocol.atomicity == "one-request-one-result"
                         && !protocol.results.is_empty()
-                        && protocol.results.iter().all(|result| declared_results.contains(result))
+                        && protocol
+                            .results
+                            .iter()
+                            .all(|result| declared_results.contains(result))
                         && protocol.results.iter().collect::<BTreeSet<_>>().len()
                             == protocol.results.len()
                 } else {
@@ -2399,7 +2406,9 @@ mod tests {
     #[test]
     fn caller_driven_effect_owner_projection_preserves_protocol_and_local_execution_obligations() {
         let root = fixture_root("caller-driven-owner");
-        write_fixture(&root.join("module.yaml"), r#"spec: rms/module/v0.1
+        write_fixture(
+            &root.join("module.yaml"),
+            r#"spec: rms/module/v0.1
 module: {name: request-provider, version: 0.1.0, kind: library, purpose: Return requests}
 profiles: [core]
 owns: {concepts: [], data: [], decisions: []}
@@ -2409,7 +2418,8 @@ invariants: []
 effects: [{name: Send, kind: external-control-request}]
 compatibility: {policy: backward-compatible-within-major}
 verification: {laws: [], contracts: [], scenarios: [], boundaries: []}
-"#);
+"#,
+        );
         let source = r#"spec: rms/implementation/v0.2
 module: request-provider
 binding: rust
@@ -2432,11 +2442,20 @@ semantic_functions:
         let check = |candidate: &str, expected: &str| {
             write_fixture(&root.join("implementation.yaml"), candidate);
             let graph = build_semantic_system_graph(&root).unwrap();
-            let owners = graph.obligations.iter().filter(|item| item.kind == "effect-owner").collect::<Vec<_>>();
+            let owners = graph
+                .obligations
+                .iter()
+                .filter(|item| item.kind == "effect-owner")
+                .collect::<Vec<_>>();
             assert_eq!(owners.len(), 1);
             assert_eq!(owners[0].status, expected, "{}", owners[0].detail);
             let diagnostics = semantic_system_graph_diagnostics(&root).unwrap();
-            assert_eq!(diagnostics.iter().any(|d| d.check == "semantic.effect-owner-missing"), expected != "satisfied");
+            assert_eq!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.check == "semantic.effect-owner-missing"),
+                expected != "satisfied"
+            );
         };
         check(source, "satisfied");
         for invalid in [
