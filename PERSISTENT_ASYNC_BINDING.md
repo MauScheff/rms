@@ -10,7 +10,7 @@ An omitted execution binding retains the existing synchronous signature checks. 
 
 Existing declarations require no migration. Older RMS binaries do not support the new declaration. Apply a new declaration only with a candidate or release that supports it. Rollback to synchronous requires a real synchronous realization; removing the declaration is not an exemption for async code.
 
-The structural analyzer checks declared storage and callable types. It does not prove fairness, cancellation, correlation equality, or drop safety from field names. Executable properties must prove these behaviors. Effect analysis remains independent. Unknown calls and undeclared adapter authority remain blockers.
+The default structural analyzer checks declared storage and callable types. It does not prove fairness, cancellation, correlation equality, or drop safety from field names. The explicit [closed envelope-flow binding](RUST_ENVELOPE_FLOW_BINDING.md) can additionally prove unchanged identity projections within one dispatcher invocation. Executable properties must still prove lifecycle behavior. Effect analysis remains independent. Unknown calls and undeclared adapter authority remain blockers.
 
 ## Candidate declaration
 
@@ -38,6 +38,8 @@ machine:
 ```
 
 Each executor entry must match one declared effect protocol. The zero-based request parameter must have the existing `effect_envelope` type. Its future output must have the existing `effect_result_envelope` type. The `effect` and `effect_result` enum bindings remain separate.
+
+An explicit `envelope_flow` permits the request index to select a proved opaque context instead. Each executor then requires an exact `status_symbol`. The [envelope-flow specification](RUST_ENVELOPE_FLOW_BINDING.md) defines the canonical fields, supported source forms, and refusal conditions. Omission keeps the exact-envelope rule.
 
 The runtime fields must contain the existing state type, `Vec<TransitionRecord>`, and `Vec<Future<Output = EffectResultEnvelope>>`. The driver must accept a mutable reference to that runtime. The input poll method must return `Poll<Option<Input>>`. Type aliases must resolve without ambiguity or cycles. The analyzer must not infer that an arbitrary generic type is a future or a record collection.
 

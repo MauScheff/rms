@@ -233,6 +233,8 @@ An explicit request to implement a native adapter, handler, executor, envelope, 
 
 `no-rms-change` contains no design, specification, source-edit, gate, audit, or pending-candidate prescription, even when the readable root is uninitialized. It reports only the repository operation and its applicable authority boundary.
 
+An exact existing-owner semantic amendment may retain unfinished Rust callable, declared-variant, and recognized persistent-runtime layout findings as visible source debt. These findings do not force source implementation before canonical correction. Source validation remains failed; candidate, committed, and release gates remain strict. Malformed canonical artifacts, revision drift, actual authority violations, unresolved calls, ambiguous symbols, and owner ambiguity remain blockers. Material intent unknowns require clarification and grant no ready mutation receipt. A ready amendment receipt authorizes only its recorded mutation families and owner; the mutator still validates the exact change and seals its semantic revision.
+
 Owner selection is deterministic:
 
 1. An explicit readable `--module` wins.
@@ -345,6 +347,25 @@ Do not hand-edit canonical manifests, contracts, semantic functions, behavior bi
 
 If the CLI cannot express a required semantic change, report the RMS gap rather than bypassing the declaration gate.
 
+### Existing authority-row repair
+
+An exact existing owner may request `rms next "Align only canonical authority rows in existing OWNER. No new behavior." --root . --ai`. A ready `authority-alignment` receipt permits only exact inferred row updates on existing effectful functions and the supported raw authority declarations. It preserves source, purity, symbols, contracts, topology, existing facades, and sealed prior revisions. It rejects unresolved or ambiguous symbols and pure-function violations.
+
+A mismatched `dynamic-dispatch` row is repairable only on the exact registered, structurally conformant `persistent-async` driver. Every dynamic contributor must be the exact registered input poll or an already-conformant registered executor. Existing conformant dynamic rows remain unchanged. Arbitrary callbacks outside those boundaries remain blocked. This repair does not authorize new dynamic authority declarations, bindings, semantic functions, or evidence.
+
+When only a supported driver row blocks a normal semantic amendment, use two fresh receipts:
+
+1. Route the row-only task. Dry-run and apply only `semantic_functions.set` with that `authority-alignment` receipt. Preserve every function field except its exact inferred `authorities` row.
+2. Route the subsequent semantic task after alignment. Use the new normal `spec-apply` receipt to declare the exact registered poll function, containment binding, and evidence. Dry-run, apply, and run all prescribed proof.
+
+Do not reuse the blocked or alignment receipt for the second task. Each receipt pins its source and canonical snapshot. This recovery sequence removes no final candidate or release gate.
+
+The sequence is not supported when another effectful facade has an undeclared dynamic row or reaches an unclassified foreign boundary. Driver-only alignment does not authorize those rows or declarations. Do not substitute callbacks or remove genuine execution.
+
+For that pre-state, supply one complete ordinary `rms/semantic-change/v0.1` amendment with `rms next "<exact declaration task>" --root . --module <owner/module.yaml> --semantic-change-file <amendment.json> --ai`. RMS validates the prepared final candidate against unchanged source before issuing an `authority-candidate-apply` receipt. The candidate may repair existing effectful authority rows and add exact effectful boundary functions, raw authorities, containment bindings, and evidence obligations. Existing function metadata, pure rows, public contracts, machine, roles, dependencies, source, and prior semantic revisions remain unchanged. An unresolved call, ambiguous symbol, pure violation, invalid ordinary amendment, incomplete authority row, or uncontained new boundary rejects the candidate. A changed persistent driver still permits dynamic origins only at its registered input poll or conformant exact executors.
+
+Dry-run `rms spec apply <owner/module.yaml> --change-file <amendment.json> --route-receipt <RUN_ID> --dry-run`, then apply after review. The mutator revalidates the complete candidate and its source, canonical, contract-source, and prepared-history fingerprint. Any proposal or snapshot drift requires a fresh route. The receipt grants no source-edit authority and does not certify callback behavior. New evidence declarations remain obligations until observed proof replaces them. All candidate and release gates remain required. Without a complete valid amendment, report the source-to-declaration gap; do not claim a ready receipt.
+
 A focused probe-capable machine change uses the same `rms/machine-change/v0.1` object for the command binding, initial state, probe protocol, and adapter role:
 
 ```yaml
@@ -384,6 +405,10 @@ Focused proof is selected from the promises affected by the change:
 | Bound implementation or composite | `rms verify` |
 | Reusable module | `rms package`, `rms verify-package` |
 | Compatibility | `rms check-compat` |
+
+`rms verify <target> --proof-timeout-seconds 1800` sets a positive per-command budget for RMS probe, trace, and smoke-property proof. `--timeout-seconds` is an alias. The default is 300 seconds. Composite verification passes the same budget to contained implementation bindings. The budget enters the verification run identity and the property-execution cache key. It does not bound the project-owned `commands.verify` or surface-smoke commands, change proof selection, or waive timeout failures. Use `rms property run <implementation.yaml> --timeout-seconds 1800` for the corresponding property-only budget. No binding or global configuration field sets these budgets.
+
+Use `--proof-timeout-seconds 1800` with `rms check --changes`, `rms check --committed`, or `rms check --all` to pass the same positive per-command budget to captured implementation/composite verification and executable audit proof. Candidate and baseline verification use the same budget. Scoped and affected checks retain their exact owner selection. Committed run identity includes the budget. The default remains 300 seconds; budget exhaustion remains a failure, even when the baseline has the same timeout. Other unchanged baseline debt remains visible. No preceding `verify` invocation sets a later check's budget.
 
 ### Executable property loop
 

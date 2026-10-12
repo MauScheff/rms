@@ -177,12 +177,21 @@ fn authority_facades(candidate: &Value) -> Result<BTreeSet<String>> {
         if facade.matches('#').count() != 1 || facade.starts_with('#') || facade.ends_with('#') {
             bail!("authority binding `{authority}` does not use an exact path#symbol facade");
         }
-        if !witnesses.entry(authority.to_string()).or_default().insert(facade.to_string()) {
+        if !witnesses
+            .entry(authority.to_string())
+            .or_default()
+            .insert(facade.to_string())
+        {
             bail!("authority `{authority}` repeats exact facade `{facade}`");
         }
     }
-    if let Some((authority, facades)) = witnesses.iter().find(|(authority, facades)| !crate::effect_analysis::is_raw_authority(authority) && facades.len() != 1) {
-        bail!("named authority `{authority}` resolves through {} facades; expected exactly one", facades.len());
+    if let Some((authority, facades)) = witnesses.iter().find(|(authority, facades)| {
+        !crate::effect_analysis::is_raw_authority(authority) && facades.len() != 1
+    }) {
+        bail!(
+            "named authority `{authority}` resolves through {} facades; expected exactly one",
+            facades.len()
+        );
     }
     Ok(witnesses.into_keys().collect())
 }
@@ -253,6 +262,8 @@ mod tests {
             tool_digest: "tool".to_string(),
             result: AnalysisResult::Fail,
             functions: vec![FunctionAnalysis {
+                authority_alignment_eligible: false,
+                dynamic_origins: Vec::new(),
                 id: "read".to_string(),
                 symbol: "src/lib.rs#read".to_string(),
                 declared_purity: "effectful".to_string(),
@@ -351,7 +362,11 @@ semantic_functions:
             ("operator", "src/public.rs#read", false),
         ] {
             let candidate: Value = serde_yaml::from_str(&format!("spec: rms/implementation/v0.1\narchitecture:\n  authority_bindings:\n  - {{authority: {authority}, safe_facade: 'src/io.rs#read'}}\n  - {{authority: {authority}, safe_facade: '{second}'}}\nsemantic_functions:\n- {{id: read, kind: adapter, symbol: 'src/io.rs#read', purity: effectful}}\n")).unwrap();
-            assert_eq!(plan(&candidate, &analysis(&[authority], &[]), "v0.2").is_ok(), expected, "{authority}: {second}");
+            assert_eq!(
+                plan(&candidate, &analysis(&[authority], &[]), "v0.2").is_ok(),
+                expected,
+                "{authority}: {second}"
+            );
         }
     }
 

@@ -309,6 +309,148 @@ impl Index {
     }
 }
 
+/// Recognize the bounded collector shape used by delegated trace producers.
+/// Keep origin, append, projection, document, and write in one helper; unrelated
+/// reachable field reads are not evidence that the returned records were written.
+pub(crate) fn serializes_collected_records(source: &str, target: &str) -> bool {
+    if !identifier(target) {
+        return false;
+    }
+    let mut parser = Parser::new();
+    if parser
+        .set_language(&tree_sitter_swift::LANGUAGE.into())
+        .is_err()
+    {
+        return false;
+    }
+    let Some(tree) = parser.parse(source, None) else {
+        return false;
+    };
+    if tree.root_node().has_error() {
+        return false;
+    }
+    let mut declarations = BTreeMap::<String, Vec<(String, String, bool)>>::new();
+    let mut calls = Vec::new();
+    let mut fields = BTreeSet::new();
+    let mut mutated = false;
+    walk(tree.root_node(), &mut |node| {
+        let owner = enclosing_function(node)
+            .and_then(|function| function_node_name(function, source))
+            .unwrap_or_default();
+        if node.kind() == "property_declaration" {
+            if let (Some(name), Some(value)) = (
+                node.child_by_field_name("name"),
+                node.child_by_field_name("value"),
+            ) {
+                let name = text(name, source);
+                declarations.entry(name.into()).or_default().push((
+                    compact(text(value, source)),
+                    owner.clone(),
+                    compact(text(node, source)).starts_with("let"),
+                ));
+                if name == "values" {
+                    walk(value, &mut |part| {
+                        if part.kind() == "navigation_expression" {
+                            fields.insert(compact(text(part, source)));
+                        }
+                    });
+                }
+            }
+        }
+        if node.kind() == "assignment" {
+            if let Some(lhs) = node.named_child(0) {
+                let lhs = compact(text(lhs, source));
+                mutated |= ["record", "records", "values", "document"]
+                    .iter()
+                    .any(|name| {
+                        lhs == *name
+                            || lhs.starts_with(&format!("{name}."))
+                            || lhs.starts_with(&format!("{name}["))
+                    });
+            }
+        }
+        if node.kind() == "call_expression" {
+            calls.push((compact(text(node, source)), owner));
+        }
+    });
+    let single = |name: &str| {
+        declarations
+            .get(name)
+            .filter(|items| items.len() == 1)
+            .and_then(|items| items.first())
+    };
+    let (Some(record), Some(records), Some(values), Some(document)) = (
+        single("record"),
+        single("records"),
+        single("values"),
+        single("document"),
+    ) else {
+        return false;
+    };
+    let origin = format!("{target}(");
+    if mutated
+        || !record.2
+        || !record.0.starts_with(&origin)
+        || matching_delimiter(&record.0, target.len(), '(', ')') != Some(record.0.len() - 1)
+        || records.0 != "[]"
+        || !values.2
+        || !document.2
+        || !values.0.starts_with("records.enumerated().map{")
+        || !values
+            .0
+            .split_once('{')
+            .is_some_and(|(_, body)| body.starts_with("index,recordin"))
+        || !["stateBefore", "stateAfter", "input", "output", "source"]
+            .iter()
+            .all(|field| fields.contains(&format!("record.{field}")))
+    {
+        return false;
+    }
+    let appends = calls
+        .iter()
+        .filter(|(call, _)| call.starts_with("records.append("))
+        .collect::<Vec<_>>();
+    if appends.len() != 1 || appends[0].0 != "records.append(record)" || appends[0].1 != record.1 {
+        return false;
+    }
+    if record.1 != records.1
+        && !calls
+            .iter()
+            .any(|(call, owner)| owner == &records.1 && call.starts_with(&format!("{}(", record.1)))
+    {
+        return false;
+    }
+    if calls.iter().any(|(call, _)| {
+        call.starts_with("records.")
+            && call != "records.append(record)"
+            && !call.starts_with("records.enumerated()")
+    }) {
+        return false;
+    }
+    let Some(entries) = document
+        .0
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+    else {
+        return false;
+    };
+    if !split_top_level(entries, ',').contains(&"\"records\":values") {
+        return false;
+    }
+    calls.iter().any(|(call, owner)| {
+        let call = call.strip_prefix("try").unwrap_or(call);
+        let prefix = "JSONSerialization.data(";
+        if owner != &document.1 || !call.starts_with(prefix) {
+            return false;
+        }
+        let Some(close) = matching_delimiter(call, prefix.len() - 1, '(', ')') else {
+            return false;
+        };
+        split_top_level(&call[prefix.len()..close], ',').contains(&"withJSONObject:document")
+            && call[close + 1..].starts_with(".write(")
+    })
+}
+
 fn parameters(source: &str) -> Option<Vec<Parameter>> {
     split_top_level(source, ',')
         .into_iter()
