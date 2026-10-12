@@ -3179,8 +3179,19 @@ fn extract_rust_functions_with_types(
     types: &RustTypeIndex,
     sources: &BTreeMap<String, String>,
 ) -> Vec<FunctionNode> {
-    let Ok(file) = syn::parse_file(source) else {
-        return Vec::new();
+    let standalone;
+    let file = if types.has_source(path) {
+        let Some(file) = types.parsed_source(path) else {
+            return Vec::new();
+        };
+        file
+    } else {
+        // The standalone extraction test helper has no source snapshot.
+        let Ok(file) = syn::parse_file(source) else {
+            return Vec::new();
+        };
+        standalone = file;
+        &standalone
     };
     let mut function_counts = BTreeMap::<String, usize>::new();
     for item in &file.items {
@@ -3239,7 +3250,7 @@ fn extract_rust_functions_with_types(
         if !safe_aliases.contains(name) || function_counts.contains_key(name) {
             continue;
         }
-        if let Some(exact) = rust_exact_function_reference(path, target, sources, 0) {
+        if let Some(exact) = rust_exact_function_reference(path, target, sources, 0, types) {
             *target = exact;
         }
     }
@@ -3260,7 +3271,7 @@ fn extract_rust_functions_with_types(
                 // A same-name function import is in the value namespace; it
                 // must not replace a declared module used as a path prefix.
                 let resolved = if local_module { call.clone() } else { resolve_call_alias(call, &aliases) };
-                rust_exact_function_reference(path, &resolved, sources, 0)
+                rust_exact_function_reference(path, &resolved, sources, 0, types)
                     .unwrap_or_else(|| if local_module { format!("{path}#{resolved}") } else { resolved })
             })
             .collect();
@@ -3300,11 +3311,13 @@ fn rust_exact_function_reference(
     reference: &str,
     sources: &BTreeMap<String, String>,
     depth: usize,
+    types: &RustTypeIndex,
 ) -> Option<String> {
     if let Some((owner_reference, method)) = reference.rsplit_once("::") {
-        if let Some(owner) = rust_exact_item_reference(path, owner_reference, sources, depth) {
+        if let Some(owner) = rust_exact_item_reference(path, owner_reference, sources, depth, types)
+        {
             let (owner_path, owner_name) = owner.split_once('#')?;
-            let file = syn::parse_file(sources.get(owner_path)?).ok()?;
+            let file = types.parsed_source(owner_path)?;
             let methods = file.items.iter().filter_map(|item| match item {
                 syn::Item::Impl(item) if item.trait_.is_none() && matches!(item.self_ty.as_ref(), Type::Path(owner)
                     if owner.qself.is_none() && owner.path.segments.len() == 1
@@ -3316,9 +3329,9 @@ fn rust_exact_function_reference(
             }
         }
     }
-    let exact = rust_exact_item_reference(path, reference, sources, depth)?;
+    let exact = rust_exact_item_reference(path, reference, sources, depth, types)?;
     let (path, name) = exact.split_once('#')?;
-    let file = syn::parse_file(sources.get(path)?).ok()?;
+    let file = types.parsed_source(path)?;
     file.items
         .iter()
         .any(|item| matches!(item, syn::Item::Fn(function) if function.sig.ident == name))
@@ -3330,13 +3343,14 @@ fn rust_exact_item_reference(
     reference: &str,
     sources: &BTreeMap<String, String>,
     depth: usize,
+    types: &RustTypeIndex,
 ) -> Option<String> {
     if depth > 8 {
         return None;
     }
     let parts = reference.split("::").collect::<Vec<_>>();
     if parts.len() > 1 {
-        let file = syn::parse_file(sources.get(path)?).ok()?;
+        let file = types.parsed_source(path)?;
         let modules = file
             .items
             .iter()
@@ -3364,7 +3378,7 @@ fn rust_exact_item_reference(
             }
             if let Some(import) = rust_import_aliases(&file).get(parts[0]) {
                 // Only a proven function import can coexist in another namespace.
-                rust_exact_function_reference(path, import, sources, depth + 1)?;
+                rust_exact_function_reference(path, import, sources, depth + 1, types)?;
             }
             let source_path = std::path::Path::new(path);
             let parent = source_path.parent()?;
@@ -3396,6 +3410,7 @@ fn rust_exact_item_reference(
                 &parts[1..].join("::"),
                 sources,
                 depth + 1,
+                types,
             );
         }
         let prefix = if parts[0] == "crate" {
@@ -3403,7 +3418,7 @@ fn rust_exact_item_reference(
                 .map(|(prefix, _)| prefix.to_string())
                 .unwrap_or_default()
         } else {
-            let file = syn::parse_file(sources.get(path)?).ok()?;
+            let file = types.parsed_source(path)?;
             if file.items.iter().any(|item| match item {
                 syn::Item::Mod(item) => item.ident == parts[0],
                 syn::Item::Struct(item) => item.ident == parts[0],
@@ -3442,9 +3457,9 @@ fn rust_exact_item_reference(
         } else {
             format!("{root}/{}.rs", parts[1..parts.len() - 1].join("/"))
         };
-        return rust_exact_item_reference(&target, parts.last()?, sources, depth + 1);
+        return rust_exact_item_reference(&target, parts.last()?, sources, depth + 1, types);
     }
-    let file = syn::parse_file(sources.get(path)?).ok()?;
+    let file = types.parsed_source(path)?;
     let functions = file
         .items
         .iter()
@@ -3529,6 +3544,7 @@ fn rust_exact_item_reference(
                 &format!("{module}::{reference}"),
                 sources,
                 depth + 1,
+                types,
             ) {
                 resolved.insert(target);
             }
@@ -3540,7 +3556,7 @@ fn rust_exact_item_reference(
     if targets.len() != 1 {
         return None;
     }
-    rust_exact_item_reference(path, &targets[0], sources, depth + 1)
+    rust_exact_item_reference(path, &targets[0], sources, depth + 1, types)
 }
 
 fn rust_import_aliases(file: &syn::File) -> BTreeMap<String, String> {

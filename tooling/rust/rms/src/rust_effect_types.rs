@@ -214,6 +214,96 @@ mod external_crate_summary_tests {
     use super::*;
 
     #[test]
+    fn repeated_type_queries_do_not_allocate_source_map_files() {
+        // proc-macro2's locked fallback span Debug exposes the cumulative source
+        // position. This is a deterministic allocation bound, not a timing test.
+        fn position() -> usize {
+            let marker: syn::Ident = syn::parse_str("marker").unwrap();
+            let span = format!("{:?}", marker.span());
+            span.strip_prefix("bytes(")
+                .unwrap()
+                .split("..")
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        }
+        let source = format!(
+            "mod io; use crate::io::Record; use std::io::Error; fn run() {{}}\n/*{}*/",
+            "x".repeat(16_384)
+        );
+        let index = RustTypeIndex::from_sources(&BTreeMap::from([
+            ("src/lib.rs".into(), source),
+            (
+                "src/io.rs".into(),
+                "pub struct Record; pub fn execute() {}".into(),
+            ),
+        ]))
+        .for_path("src/lib.rs");
+        let path: syn::Path = syn::parse_str("Error").unwrap();
+        let before = position();
+        for _ in 0..32 {
+            let scope = index.for_path("src/lib.rs");
+            assert!(Rc::ptr_eq(&index.parsed_sources, &scope.parsed_sources));
+            assert_eq!(
+                scope.external_path(&path).as_deref(),
+                Some("std::io::Error")
+            );
+            assert!(index.unshadowed_external_root("std"));
+            assert_eq!(index.resolve_named_type("Missing"), None);
+            assert_eq!(
+                index.resolve_named_type("Record").as_deref(),
+                Some("src/io.rs#Record")
+            );
+            assert_eq!(
+                super::super::rust_exact_function_reference(
+                    "src/lib.rs",
+                    "crate::io::execute",
+                    &index.sources,
+                    0,
+                    &index
+                )
+                .as_deref(),
+                Some("src/io.rs#execute")
+            );
+        }
+        let allocated = position() - before;
+        assert!(
+            allocated < 128,
+            "queries reparsed immutable source: {allocated} span positions"
+        );
+    }
+
+    #[test]
+    fn parsed_source_snapshot_preserves_failure_shadowing_and_freshness() {
+        for (source, expected) in [
+            ("use std::io::Error;", Some("std::io::Error")),
+            ("#[cfg(any())] use std::io::Error;", None),
+            ("struct Error; use std::io::Error;", None),
+            ("mod std {} use std::io::Error;", None),
+            ("fn malformed(", None),
+        ] {
+            let mut sources = BTreeMap::from([("src/lib.rs".into(), source.into())]);
+            let index = RustTypeIndex::from_sources(&sources).for_path("src/lib.rs");
+            let path: syn::Path = syn::parse_str("Error").unwrap();
+            for _ in 0..8 {
+                assert_eq!(index.external_path(&path).as_deref(), expected, "{source}");
+            }
+            assert!(index.has_source("src/lib.rs"));
+            assert!(!index.has_source("missing.rs"));
+            sources.insert("src/lib.rs".into(), "use std::io::Error;".into());
+            let fresh = RustTypeIndex::from_sources(&sources).for_path("src/lib.rs");
+            assert!(!Rc::ptr_eq(&index.parsed_sources, &fresh.parsed_sources));
+            assert_eq!(
+                fresh.external_path(&path).as_deref(),
+                Some("std::io::Error")
+            );
+            assert_eq!(index.external_path(&path).as_deref(), expected);
+        }
+        assert!(!RustTypeIndex::default().has_source("src/lib.rs"));
+    }
+
+    #[test]
     fn named_type_memo_preserves_resolution_and_snapshot_scope() {
         let cases = [
             ("struct T;", "T", Some("src/lib.rs#T")),
@@ -419,7 +509,8 @@ pub(super) struct RustTypeIndex {
     generic_names: BTreeSet<String>,
     local_enum_aliases: BTreeMap<String, String>,
     self_type: Option<String>,
-    sources: BTreeMap<String, String>,
+    sources: Rc<BTreeMap<String, String>>,
+    parsed_sources: Rc<BTreeMap<String, Option<syn::File>>>,
     has_unparsed_rust_sources: bool,
     rebound_external_crates: BTreeSet<String>,
     named_type_memo: Rc<RefCell<BTreeMap<(String, String), Option<String>>>>,
@@ -427,6 +518,16 @@ pub(super) struct RustTypeIndex {
 }
 
 impl RustTypeIndex {
+    pub(super) fn has_source(&self, path: &str) -> bool {
+        self.sources.contains_key(path)
+    }
+
+    // Immutable per-analysis syntax, including failed parses. Scope clones share
+    // this snapshot; fresh analyses never borrow facts from a prior snapshot.
+    pub(super) fn parsed_source(&self, path: &str) -> Option<&syn::File> {
+        self.parsed_sources.get(path)?.as_ref()
+    }
+
     pub(super) fn git_index_entry(&self, path: &syn::Path) -> bool {
         self.external_path(path).as_deref() == Some("git2::IndexEntry")
     }
@@ -520,11 +621,7 @@ impl RustTypeIndex {
         if !context.unshadowed_external_root("From") || !context.unshadowed_external_root("Into") {
             return false;
         }
-        let Some(file) = self
-            .sources
-            .get(path)
-            .and_then(|source| syn::parse_file(source).ok())
-        else {
+        let Some(file) = self.parsed_source(path) else {
             return false;
         };
         let candidates = file
@@ -624,7 +721,7 @@ impl RustTypeIndex {
         if self.is_generic(&root) || self.unique_types.contains(&format!("{}#{root}", self.path)) {
             return None;
         }
-        let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
+        let file = self.parsed_source(&self.path)?;
         let aliases = super::rust_import_aliases(&file);
         if aliases.contains_key(&root)
             && (path.leading_colon.is_some()
@@ -708,11 +805,7 @@ impl RustTypeIndex {
         if !context.unique_types.contains(owner) || !context.unshadowed_external_root("Debug") {
             return false;
         }
-        let Some(file) = self
-            .sources
-            .get(path)
-            .and_then(|source| syn::parse_file(source).ok())
-        else {
+        let Some(file) = self.parsed_source(path) else {
             return false;
         };
         let Some(item) = file.items.iter().find_map(|item| match item {
@@ -911,10 +1004,16 @@ impl RustTypeIndex {
     }
 
     pub(super) fn from_sources(sources: &BTreeMap<String, String>) -> Self {
-        let files = sources
+        let parsed_sources = Rc::new(
+            sources
+                .iter()
+                .map(|(path, source)| (path.clone(), syn::parse_file(source).ok()))
+                .collect::<BTreeMap<_, _>>(),
+        );
+        let files = parsed_sources
             .iter()
             .filter(|(path, _)| path.ends_with(".rs"))
-            .filter_map(|(path, source)| syn::parse_file(source).ok().map(|file| (path, file)))
+            .filter_map(|(path, file)| file.as_ref().map(|file| (path, file)))
             .collect::<Vec<_>>();
         // Preserve the whole-closure, recursive extern-alias check, but derive
         // its immutable facts once rather than parsing every source per call.
@@ -974,7 +1073,8 @@ impl RustTypeIndex {
             generic_names: BTreeSet::new(),
             local_enum_aliases: BTreeMap::new(),
             self_type: None,
-            sources: sources.clone(),
+            sources: Rc::new(sources.clone()),
+            parsed_sources: Rc::clone(&parsed_sources),
             has_unparsed_rust_sources,
             rebound_external_crates: rebound.0,
             named_type_memo: Rc::default(),
@@ -1285,9 +1385,7 @@ impl RustTypeIndex {
                 .sources
                 .contains_key(&format!("rms-metadata/rust-crate-alias/{name}"))
             || self
-                .sources
-                .get(&self.path)
-                .and_then(|source| syn::parse_file(source).ok())
+                .parsed_source(&self.path)
                 .is_some_and(|file| super::rust_import_aliases(&file).contains_key(name))
     }
 
@@ -1434,7 +1532,7 @@ impl RustTypeIndex {
                 }
                 let owner = self.resolve_named_type(&path)?;
                 let (path, name) = owner.split_once('#')?;
-                let file = syn::parse_file(self.sources.get(path)?).ok()?;
+                let file = self.parsed_source(path)?;
                 let declaration = file.items.iter().find_map(|item| match item {
                     Item::Enum(item) if item.ident == name => Some(item),
                     _ => None,
@@ -1518,11 +1616,7 @@ impl RustTypeIndex {
                 _ => false,
             }
         }
-        let Some(file) = self
-            .sources
-            .get(&self.path)
-            .and_then(|source| syn::parse_file(source).ok())
-        else {
+        let Some(file) = self.parsed_source(&self.path) else {
             return false;
         };
         if file.items.iter().any(item_shadows)
@@ -1697,7 +1791,7 @@ impl RustTypeIndex {
                 if arguments.args.len() != expected_arguments || path.path.segments.len() != 1 {
                     return None;
                 }
-                let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
+                let file = self.parsed_source(&self.path)?;
                 // Preserve a proven payload through the standard Option even
                 // with source-owned globs. Both standard roots must be closed;
                 // the element still requires its own exact type proof.
@@ -1812,11 +1906,7 @@ impl RustTypeIndex {
         if self.is_generic(root) || !self.standard_external_crate_available(root) {
             return false;
         }
-        let Some(file) = self
-            .sources
-            .get(&self.path)
-            .and_then(|source| syn::parse_file(source).ok())
-        else {
+        let Some(file) = self.parsed_source(&self.path) else {
             return false;
         };
         fn imported(tree: &syn::UseTree, name: &str) -> bool {
@@ -1904,11 +1994,7 @@ impl RustTypeIndex {
                         .path
                         .split_once("/src/")
                         .map_or("src".to_string(), |(prefix, _)| format!("{prefix}/src"));
-                    let Some(library) = self
-                        .sources
-                        .get(&format!("{source_root}/lib.rs"))
-                        .and_then(|source| syn::parse_file(source).ok())
-                    else {
+                    let Some(library) = self.parsed_source(&format!("{source_root}/lib.rs")) else {
                         return false;
                     };
                     let declarations = library
@@ -1940,10 +2026,7 @@ impl RustTypeIndex {
                     };
                     (*target_path).clone()
                 };
-                let Some(source) = self.sources.get(&target_path) else {
-                    return false;
-                };
-                let Ok(file) = syn::parse_file(source) else {
+                let Some(file) = self.parsed_source(&target_path) else {
                     return false;
                 };
                 if !file.attrs.is_empty() {
@@ -2057,11 +2140,7 @@ impl RustTypeIndex {
         {
             return false;
         }
-        let Some(file) = self
-            .sources
-            .get(&self.path)
-            .and_then(|source| syn::parse_file(source).ok())
-        else {
+        let Some(file) = self.parsed_source(&self.path) else {
             return false;
         };
         let reference = path
@@ -2176,11 +2255,7 @@ impl RustTypeIndex {
             if !seen.insert(path.clone()) {
                 continue;
             }
-            let Some(file) = self
-                .sources
-                .get(&path)
-                .and_then(|source| syn::parse_file(source).ok())
-            else {
+            let Some(file) = self.parsed_source(&path) else {
                 return false;
             };
             let mut shadows = Shadows {
@@ -2252,18 +2327,19 @@ impl RustTypeIndex {
             (count, conditional)
         };
         if !reference.contains("::") {
-            let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
+            let file = self.parsed_source(&self.path)?;
             let (count, conditional) = imports(&file, reference);
             if count > 1 || conditional {
                 return None;
             }
         }
-        let exact = super::rust_exact_item_reference(&self.path, reference, &self.sources, 0)?;
+        let exact =
+            super::rust_exact_item_reference(&self.path, reference, &self.sources, 0, self)?;
         if !self.unique_types.contains(&exact) {
             return None;
         }
         let (path, name) = exact.split_once('#')?;
-        let file = syn::parse_file(self.sources.get(path)?).ok()?;
+        let file = self.parsed_source(path)?;
         // A declaration plus an explicit same-name import is not a unique
         // binding. Do not let the resolver's local-item preference hide it.
         if imports(&file, name).0 > 0 {
@@ -2506,6 +2582,7 @@ impl RustTypeIndex {
                         &reference,
                         &self.index.sources,
                         0,
+                        self.index,
                     ) {
                         if let Some(parameters) = self
                             .index
@@ -2563,11 +2640,7 @@ impl RustTypeIndex {
         {
             return false;
         }
-        let Some(file) = self
-            .sources
-            .get(&self.path)
-            .and_then(|source| syn::parse_file(source).ok())
-        else {
+        let Some(file) = self.parsed_source(&self.path) else {
             return false;
         };
         fn glob(tree: &syn::UseTree) -> bool {
@@ -2607,11 +2680,7 @@ impl RustTypeIndex {
         {
             return false;
         }
-        let Some(file) = self
-            .sources
-            .get(&self.path)
-            .and_then(|source| syn::parse_file(source).ok())
-        else {
+        let Some(file) = self.parsed_source(&self.path) else {
             return false;
         };
         super::rust_unique_unconditional_imports(&file).contains("BTreeMap")
@@ -2745,7 +2814,7 @@ impl RustTypeIndex {
         if self.is_generic(&name) {
             return None;
         }
-        let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
+        let file = self.parsed_source(&self.path)?;
         if super::rust_import_aliases(&file).contains_key(&name)
             || file
                 .items
@@ -3021,8 +3090,13 @@ impl RustTypeIndex {
                 {
                     return Some(RustValueType::ResultOk(Box::new(RustValueType::Text)));
                 }
-                let exact =
-                    super::rust_exact_function_reference(&self.path, &reference, &self.sources, 0)?;
+                let exact = super::rust_exact_function_reference(
+                    &self.path,
+                    &reference,
+                    &self.sources,
+                    0,
+                    self,
+                )?;
                 self.function_returns
                     .get(&exact)
                     .or_else(|| self.returns.get(&exact))
@@ -3292,10 +3366,7 @@ impl RustTypeIndex {
                                 }
                                 // Require an explicit standard Vec target; an unconstrained
                                 // FromIterator implementation may produce a different type.
-                                let Some(source) = self.sources.get(&self.path) else {
-                                    return false;
-                                };
-                                let Ok(file) = syn::parse_file(source) else {
+                                let Some(file) = self.parsed_source(&self.path) else {
                                     return false;
                                 };
                                 super::rust_import_aliases(&file).get("Vec").is_none()
