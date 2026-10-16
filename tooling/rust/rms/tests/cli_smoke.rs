@@ -7,18 +7,45 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn add_module_preview_preserves_project_and_apply_matches_manifest() {
-    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let root = std::env::temp_dir().join(format!("rms-cli-module-preview-{unique}"));
     fs::create_dir_all(&root).unwrap();
-    let run = |args: &[String]| Command::new(env!("CARGO_BIN_EXE_rms"))
-        .current_dir(&root).args(args).output().unwrap();
-    let init = run(&["init".into(), ".".into(), "--name".into(), "preview-test".into(),
-        "--purpose".into(), "Test scaffold preview.".into()]);
-    assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
-    for args in [vec!["init", "-q"], vec!["config", "user.name", "RMS Test"],
-        vec!["config", "user.email", "rms@example.test"], vec!["add", "-A"],
-        vec!["commit", "-qm", "bootstrap"]] {
-        assert!(Command::new("git").current_dir(&root).args(args).status().unwrap().success());
+    let run = |args: &[String]| {
+        Command::new(env!("CARGO_BIN_EXE_rms"))
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let init = run(&[
+        "init".into(),
+        ".".into(),
+        "--name".into(),
+        "preview-test".into(),
+        "--purpose".into(),
+        "Test scaffold preview.".into(),
+    ]);
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "RMS Test"],
+        vec!["config", "user.email", "rms@example.test"],
+        vec!["add", "-A"],
+        vec!["commit", "-qm", "bootstrap"],
+    ] {
+        assert!(Command::new("git")
+            .current_dir(&root)
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
     }
     let intent = serde_json::json!({
         "spec": "rms/intent-model/v0.1", "operation": "design", "change_scope": "new-module",
@@ -36,32 +63,69 @@ fn add_module_preview_preserves_project_and_apply_matches_manifest() {
         ],
         "surface_kinds": [], "binding_preferences": ["rust"], "open_questions": []
     });
-    let design = run(&["design".into(), "--task".into(), "Create reusable receiver decisions and receiver lifecycle; pure decisions, library only.".into(),
-        "--intent-json".into(), intent.to_string(), "--json".into()]);
-    assert!(design.status.success(), "{} {}", String::from_utf8_lossy(&design.stdout), String::from_utf8_lossy(&design.stderr));
+    let design = run(&[
+        "design".into(),
+        "--task".into(),
+        "Create reusable receiver decisions and receiver lifecycle; pure decisions, library only."
+            .into(),
+        "--intent-json".into(),
+        intent.to_string(),
+        "--json".into(),
+    ]);
+    assert!(
+        design.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&design.stdout),
+        String::from_utf8_lossy(&design.stderr)
+    );
     let design: Value = serde_json::from_slice(&design.stdout).unwrap();
     assert_eq!(design["result"], "ready", "{design}");
-    let mut args = design["decision"]["scaffold"]["args"].as_array().unwrap().iter()
-        .map(|value| value.as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let mut args = design["decision"]["scaffold"]["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
     assert_eq!(args[0], "add-module");
     let target = root.join(&args[1]);
-    args.extend(["--route-receipt".into(), design["run_id"].as_str().unwrap().into()]);
-    let snapshot = || walkdir::WalkDir::new(&root).into_iter().map(|entry| {
-        let entry = entry.unwrap();
-        let bytes = entry.file_type().is_file().then(|| fs::read(entry.path()).unwrap());
-        (entry.path().strip_prefix(&root).unwrap().to_path_buf(), bytes)
-    }).collect::<std::collections::BTreeMap<_, _>>();
+    args.extend([
+        "--route-receipt".into(),
+        design["run_id"].as_str().unwrap().into(),
+    ]);
+    let snapshot = || {
+        walkdir::WalkDir::new(&root)
+            .into_iter()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let bytes = entry
+                    .file_type()
+                    .is_file()
+                    .then(|| fs::read(entry.path()).unwrap());
+                (
+                    entry.path().strip_prefix(&root).unwrap().to_path_buf(),
+                    bytes,
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
     let before = snapshot();
     let mut preview = args.clone();
     preview.push("--dry-run".into());
     let result = run(&preview);
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert_eq!(snapshot(), before);
     assert!(!target.exists());
     let output = String::from_utf8(result.stdout).unwrap();
     assert!(output.contains("module.yaml") && output.contains("Cargo.toml"));
-    let intended = output.lines().filter_map(|line| line.strip_prefix("create "))
-        .map(|path| root.join(path)).collect::<std::collections::BTreeSet<_>>();
+    let intended = output
+        .lines()
+        .filter_map(|line| line.strip_prefix("create "))
+        .map(|path| root.join(path))
+        .collect::<std::collections::BTreeSet<_>>();
 
     // A different scaffold and a missing receipt must fail without side effects.
     let mut invalid = preview.clone();
@@ -70,7 +134,11 @@ fn add_module_preview_preserves_project_and_apply_matches_manifest() {
     assert!(!run(&invalid).status.success());
     assert_eq!(snapshot(), before);
     let mut invalid = preview.clone();
-    let receipt = invalid.iter().position(|arg| arg == "--route-receipt").unwrap() + 1;
+    let receipt = invalid
+        .iter()
+        .position(|arg| arg == "--route-receipt")
+        .unwrap()
+        + 1;
     invalid[receipt] = "missing-receipt".into();
     assert!(!run(&invalid).status.success());
     assert_eq!(snapshot(), before);
@@ -80,9 +148,16 @@ fn add_module_preview_preserves_project_and_apply_matches_manifest() {
     assert_eq!(snapshot(), before);
 
     let applied = run(&args);
-    assert!(applied.status.success(), "{}", String::from_utf8_lossy(&applied.stderr));
-    let actual = walkdir::WalkDir::new(&target).into_iter().map(Result::unwrap)
-        .filter(|entry| entry.file_type().is_file()).map(|entry| entry.path().to_path_buf())
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let actual = walkdir::WalkDir::new(&target)
+        .into_iter()
+        .map(Result::unwrap)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| entry.path().to_path_buf())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(actual, intended);
     let after = snapshot();

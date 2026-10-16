@@ -7,7 +7,7 @@ This guide explains the strict `0.1.0-rc.9` analysis and generation tools. Canon
 | Need | Command | Result | Use the result for |
 | --- | --- | --- | --- |
 | Upgrade a legacy binding | `rms binding migrate IMPLEMENTATION --to v0.2 --route-receipt RECEIPT --dry-run` | A deterministic candidate, or an explicit ambiguity | Review before the write-mode migration. |
-| Prove declared purity and authority rows | `rms structure IMPLEMENTATION` | Transitive call/effect diagnostics | Fix unresolved calls, undeclared authority, or false purity claims. |
+| Inspect declared purity and authority rows | `rms structure IMPLEMENTATION` | Transitive call/effect diagnostics | Fix detected violations. Retain uncertainty as advisory evidence. |
 | Check property declarations | `rms property check TARGET` | Declaration and realization diagnostics | Confirm that inputs, operations, oracles, runners, and evidence close. |
 | Derive machine inputs from probe schemas | `rms property generate IMPLEMENTATION --out ASSEMBLY` | `rms/probe-assembly/v0.3` | Run deterministic machine exploration without maintaining a duplicate generator. |
 | Execute binding-native property runners | `rms property run IMPLEMENTATION --profile smoke` | Observed runner results | Prove the declared smoke realization. |
@@ -22,13 +22,15 @@ Use `property generate` for one implementation. Use `compose --output` for a sys
 
 ## Implementation Binding v0.2
 
+Public fields on an ordinary Rust input or data record produce advisory style findings. Public fields on a type named in `architecture.representation.validated_values` remain an error because they bypass a declared construction boundary. Invalid structural exemptions remain errors. Native compilation and executable tests remain required in both cases.
+
 Production checks require `spec: rms/implementation/v0.2`. The v0.1 schema remains readable for migration and compatibility.
 
 Each semantic function declares:
 
 - `purity: pure|effectful`;
 - `trust: internal|boundary`;
-- `authorities: []` or the exact inferred authority row.
+- `authorities: []` or the declared effectful authority row.
 
 Each declared authority resolves through exact `path#symbol` safe facades. A named authority has one facade. A raw category has one or more distinct exact witnesses when it is available through independently public boundaries. Each witness has its own roles and containment evidence. Repeating the same authority/facade pair is invalid. `rms structure`, `rms verify`, audit, change checks, and committed checks run transitive effect analysis for Rust, Swift, Python, JavaScript, and shell.
 
@@ -36,7 +38,7 @@ Raw effect categories (`filesystem`, `process`, `clock`, `randomness`, `environm
 
 For raw categories, `authority_bindings.add` adds a distinct authority/facade pair. `authority_bindings.remove` still removes every binding for the named authority. Use a complete `authority_bindings.set` to replace the witness set or remove one witness while preserving the others.
 
-The analyzer resolves local calls, imports, aliases, closed Python dispatch tables, recursion, and strongly connected call groups. It ignores comments and string literals. A pure closure fails when it reaches ambient authority, an unresolved call, or unresolved dynamic dispatch. An effectful function fails when its inferred authority row differs from its declaration. Creating an effect value is pure; executing the effect requires authority.
+The analyzer resolves local calls, imports, aliases, closed Python dispatch tables, recursion, and strongly connected call groups. It ignores comments and string literals. Detected forbidden authority remains an error, including when other calls remain unresolved. Unresolved calls, unresolved imports, open dispatch, ambiguous symbol resolution, and unavailable analysis are advisory. Raw analyzer verdicts remain visible; an advisory finding does not prove purity. Strict audit retains these findings with acceptance-gate applicability `not-applicable`; it does not certify their purity. An incomplete graph cannot prove that a declared authority is absent. Canonical schema, ownership, revision, and explicit authority declarations remain strict. Native compilation and declared executable tests remain required. Do not expand analyzer recognition solely to remove advisory findings. Creating an effect value is pure; executing the effect requires authority.
 
 An executable binding can keep its command runner while its semantic functions use inspectable `path#symbol` references. RMS selects the analyzer from each symbol path. A successful migration changes `architecture.static_inspection` from `opaque` to `transitive-effects`. It records a route-receipt-bound candidate seal under `x-rms.binding_migration`. The seal preserves the prior authorized semantic revision for this schema-only change. A later metadata change invalidates the candidate seal.
 

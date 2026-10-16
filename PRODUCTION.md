@@ -143,7 +143,7 @@ Use the smallest tool that matches the question:
 | Can that composition be explored as one symbolic machine? | `rms compose --root . --output <dir> --dry-run`, then write mode |
 | Can an exact finite universal result be reused? | Exhaustive `rms property search ... --goal violate --out <analysis>` and its digest-bound certificate |
 
-Production bindings use `rms/implementation/v0.2`. Pure functions require an empty inferred authority row and no unresolved calls. Effectful functions require an exact declared authority row. Generated composition and property artifacts are evidence projections; strict proof regenerates any projection referenced as canonical evidence. See [Functional Core and Composition](FUNCTIONAL_CORE.md) for command boundaries, artifacts, and failure rules.
+Production bindings use `rms/implementation/v0.2`. Pure functions declare an empty authority row. Detected forbidden effects and undeclared authority remain errors. Uncertain static analysis is advisory and does not prove purity. Native compilation and declared executable tests remain required. Canonical schema, ownership, and revision checks remain strict. Generated composition and property artifacts are evidence projections; strict proof regenerates any projection referenced as canonical evidence. See [Functional Core and Composition](FUNCTIONAL_CORE.md) for command boundaries, artifacts, and failure rules.
 
 ## Evidence Rules
 

@@ -1,5 +1,6 @@
 //! Bounded source-declared receiver types. Unknown and ambiguous types stay unknown.
 use std::collections::{BTreeMap, BTreeSet};
+use std::{cell::RefCell, rc::Rc};
 use syn::{Expr, FnArg, GenericArgument, Item, Pat, PathArguments, ReturnType, Signature, Type};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,9 +25,21 @@ pub(super) enum RustValueType {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ExternalType {
-    Stdin, IoError, GitRepository, GitReference, GitCommit, GitTree,
-    GitTreeEntry, GitDiff, GitDiffLine, GitOid, GitError, GitIndex, GitTreeWalkResult,
-    GitStatusOptions, GitDiffOptions,
+    Stdin,
+    IoError,
+    GitRepository,
+    GitReference,
+    GitCommit,
+    GitTree,
+    GitTreeEntry,
+    GitDiff,
+    GitDiffLine,
+    GitOid,
+    GitError,
+    GitIndex,
+    GitTreeWalkResult,
+    GitStatusOptions,
+    GitDiffOptions,
 }
 
 impl ExternalType {
@@ -37,27 +50,55 @@ impl ExternalType {
         let result = |value| RustValueType::ResultKnown(Box::new(value), Box::new(E(GitError)));
         let optional = |value| RustValueType::Optional(Box::new(value));
         Some(match (self, method, arity) {
-            (Stdin, "read_to_string", 1) => RustValueType::ResultKnown(Box::new(U), Box::new(E(IoError))),
+            (Stdin, "read_to_string", 1) => {
+                RustValueType::ResultKnown(Box::new(U), Box::new(E(IoError)))
+            }
             (IoError, "kind", 0) => U,
-            (GitRepository, "head", 0) | (GitRepository, "find_reference", 1) => result(E(GitReference)),
-            (GitRepository, "find_commit", 1) | (GitReference, "peel_to_commit", 0) => result(E(GitCommit)),
+            (GitRepository, "head", 0) | (GitRepository, "find_reference", 1) => {
+                result(E(GitReference))
+            }
+            (GitRepository, "find_commit", 1) | (GitReference, "peel_to_commit", 0) => {
+                result(E(GitCommit))
+            }
             (GitRepository, "find_tree", 1) | (GitCommit, "tree", 0) => result(E(GitTree)),
             (GitRepository, "index", 0) => result(E(GitIndex)),
-            (GitRepository, "workdir", 0) => optional(RustValueType::Named("std::path::Path".into())),
-            (GitRepository, "diff_tree_to_workdir_with_index", 2) | (GitRepository, "diff_tree_to_index", 3) => result(E(GitDiff)),
+            (GitRepository, "workdir", 0) => {
+                optional(RustValueType::Named("std::path::Path".into()))
+            }
+            (GitRepository, "diff_tree_to_workdir_with_index", 2)
+            | (GitRepository, "diff_tree_to_index", 3) => result(E(GitDiff)),
             (GitReference, "target", 0) => optional(E(GitOid)),
-            (GitReference, "symbolic_target", 0) | (GitCommit, "summary", 0) => optional(RustValueType::Text),
+            (GitReference, "symbolic_target", 0) | (GitCommit, "summary", 0) => {
+                optional(RustValueType::Text)
+            }
             (GitCommit, "id" | "tree_id", 0) => E(GitOid),
             (GitCommit, "parent_ids", 0) => RustValueType::Iterator(Box::new(E(GitOid))),
             (GitOid, "to_string", 0) => RustValueType::Text,
             (GitTree, "walk", 2) | (GitDiff, "print", 2) => result(U),
             (GitTreeEntry, "filemode", 0) => RustValueType::Integer,
             (GitDiffLine, "content", 0) | (GitError, "code", 0) => U,
-            (GitStatusOptions, "include_untracked" | "recurse_untracked_dirs" | "include_ignored", 1) => E(GitStatusOptions),
-            (GitDiffOptions, "include_untracked" | "recurse_untracked_dirs" | "show_untracked_content" | "pathspec", 1) => E(GitDiffOptions),
-            (GitRepository, "is_bare" | "is_worktree" | "state" | "path" | "revwalk" | "signature", 0)
+            (
+                GitStatusOptions,
+                "include_untracked" | "recurse_untracked_dirs" | "include_ignored",
+                1,
+            ) => E(GitStatusOptions),
+            (
+                GitDiffOptions,
+                "include_untracked"
+                | "recurse_untracked_dirs"
+                | "show_untracked_content"
+                | "pathspec",
+                1,
+            ) => E(GitDiffOptions),
+            (
+                GitRepository,
+                "is_bare" | "is_worktree" | "state" | "path" | "revwalk" | "signature",
+                0,
+            )
             | (GitRepository, "statuses" | "blob", 1)
-            | (GitRepository, "commit", 6) | (GitRepository, "reference", 4) | (GitRepository, "reference_matching", 5)
+            | (GitRepository, "commit", 6)
+            | (GitRepository, "reference", 4)
+            | (GitRepository, "reference_matching", 5)
             | (GitIndex, "iter" | "len" | "has_conflicts" | "write", 0)
             | (GitIndex, "read_tree" | "add" | "remove_path" | "write_tree_to", 1)
             | (GitDiff, "deltas", 0) => U,
@@ -100,11 +141,138 @@ impl RustValueType {
             (Self::Optional(element), "map_or_else", 1) => Some(vec![(**element).clone()]),
             (Self::Iterator(element), "fold", 1) => Some(vec![Self::Unknown, (**element).clone()]),
             (Self::Iterator(element), "flat_map", 0) => Some(vec![(**element).clone()]),
-            (_, "map" | "filter" | "filter_map" | "find_map" | "any" | "all" | "find" | "and_then" | "is_some_and" | "max_by_key" | "min_by_key", 0) => {
-                self.element().map(|element| vec![element.clone()])
-            }
+            (
+                _,
+                "map" | "filter" | "filter_map" | "find_map" | "any" | "all" | "find" | "and_then"
+                | "is_some_and" | "max_by_key" | "min_by_key",
+                0,
+            ) => self.element().map(|element| vec![element.clone()]),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    #[test]
+    fn parsed_source_reuses_only_the_immutable_analysis_snapshot() {
+        let sources = BTreeMap::from([
+            ("src/lib.rs".into(), "pub struct T;".into()),
+            ("src/broken.rs".into(), "fn broken(".into()),
+        ]);
+        let index = RustTypeIndex::from_sources(&sources);
+        let first = index.parsed_source("src/lib.rs").unwrap();
+        let scoped = index.for_path("src/lib.rs");
+        assert!(Rc::ptr_eq(
+            &first,
+            &scoped.parsed_source("src/lib.rs").unwrap()
+        ));
+        for _ in 0..3 {
+            assert!(scoped.parsed_source("src/broken.rs").is_none());
+            assert!(scoped.parsed_source("missing.rs").is_none());
+        }
+        assert!(Rc::ptr_eq(&index.parsed_sources, &scoped.parsed_sources));
+        assert_eq!(index.parsed_sources.borrow().len(), 3);
+        let changed = BTreeMap::from([
+            ("src/lib.rs".into(), "pub enum T { Value }".into()),
+            ("src/broken.rs".into(), "fn repaired() {}".into()),
+        ]);
+        let fresh = RustTypeIndex::from_sources(&changed);
+        assert!(!Rc::ptr_eq(&index.parsed_sources, &fresh.parsed_sources));
+        assert!(!Rc::ptr_eq(
+            &first,
+            &fresh.parsed_source("src/lib.rs").unwrap()
+        ));
+        assert!(fresh.parsed_source("src/broken.rs").is_some());
+    }
+
+    // The pre-optimization predicate is the equivalence oracle. Do not use
+    // the cached summary here: malformed files and recursive scope matter.
+    fn reparsed_available(sources: &BTreeMap<String, String>, root: &str) -> bool {
+        use syn::visit::{self, Visit};
+        struct Rebound<'a> {
+            root: &'a str,
+            found: bool,
+        }
+        impl<'ast> Visit<'ast> for Rebound<'_> {
+            fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+                let binding = item
+                    .rename
+                    .as_ref()
+                    .map(|(_, name)| name)
+                    .unwrap_or(&item.ident);
+                self.found |= binding == self.root && item.ident != self.root;
+                visit::visit_item_extern_crate(self, item);
+            }
+        }
+        let mut rebound = Rebound { root, found: false };
+        for (path, source) in sources {
+            if !path.ends_with(".rs") {
+                continue;
+            }
+            let Ok(file) = syn::parse_file(source) else {
+                return false;
+            };
+            rebound.visit_file(&file);
+        }
+        !rebound.found
+    }
+
+    #[test]
+    fn external_crate_summary_preserves_recursive_closure_rejection() {
+        let cases = [
+            "",
+            "extern crate std;",
+            "extern crate std as std;",
+            "extern crate other as std;",
+            "extern crate other as uuid;",
+            "extern crate other as custom;",
+            "extern crate other as r#custom;",
+            "#[cfg(any())] extern crate other as std;",
+            "mod nested { extern crate other as uuid; }",
+            "fn local() { extern crate other as custom; }",
+            "extern crate std as other; extern crate other as uuid;",
+            "fn malformed(",
+        ];
+        for first in cases {
+            for second in cases {
+                let sources = BTreeMap::from([
+                    ("src/lib.rs".into(), first.into()),
+                    ("dependency/src/lib.rs".into(), second.into()),
+                    ("metadata.yaml".into(), "not Rust {".into()),
+                ]);
+                let index = RustTypeIndex::from_sources(&sources);
+                for root in ["std", "uuid", "custom", "r#custom", "other", "missing"] {
+                    let expected = reparsed_available(&sources, root);
+                    assert_eq!(
+                        index.standard_external_crate_available(root),
+                        expected,
+                        "{root}: {sources:?}"
+                    );
+                    assert_eq!(
+                        index
+                            .for_path("dependency/src/lib.rs")
+                            .standard_external_crate_available(root),
+                        expected
+                    );
+                    assert_eq!(
+                        index
+                            .with_local_type_shadows(&syn::parse_str("{}").unwrap())
+                            .standard_external_crate_available(root),
+                        expected
+                    );
+                }
+            }
+        }
+        let empty = RustTypeIndex::from_sources(&BTreeMap::new());
+        assert!(empty.standard_external_crate_available("std"));
+        assert!(RustTypeIndex::default().standard_external_crate_available("std"));
+        let malformed = BTreeMap::from([("other.rs".into(), "fn broken(".into())]);
+        assert!(!RustTypeIndex::from_sources(&malformed).standard_external_crate_available("std"));
+        // A fresh analysis must derive new facts, not retain a process-global cache.
+        let repaired = BTreeMap::from([("other.rs".into(), "fn repaired() {}".into())]);
+        assert!(RustTypeIndex::from_sources(&repaired).standard_external_crate_available("std"));
     }
 }
 
@@ -122,106 +290,278 @@ pub(super) struct RustTypeIndex {
     local_enum_aliases: BTreeMap<String, String>,
     self_type: Option<String>,
     sources: BTreeMap<String, String>,
+    parsed_sources: Rc<RefCell<BTreeMap<String, Option<Rc<syn::File>>>>>,
+    has_unparsed_rust_sources: bool,
+    rebound_external_crates: BTreeSet<String>,
     path: String,
 }
 
 impl RustTypeIndex {
+    // Clones share only this immutable analysis snapshot, never another run.
+    pub(super) fn parsed_source(&self, path: &str) -> Option<Rc<syn::File>> {
+        if let Some(parsed) = self.parsed_sources.borrow().get(path) {
+            return parsed.clone();
+        }
+        let parsed = self
+            .sources
+            .get(path)
+            .and_then(|source| syn::parse_file(source).ok())
+            .map(Rc::new);
+        self.parsed_sources
+            .borrow_mut()
+            .insert(path.to_string(), parsed.clone());
+        parsed
+    }
+
+    pub(super) fn source_map(&self) -> &BTreeMap<String, String> {
+        &self.sources
+    }
+
     pub(super) fn git_index_entry(&self, path: &syn::Path) -> bool {
         self.external_path(path).as_deref() == Some("git2::IndexEntry")
     }
 
     pub(super) fn unit_variant_type(&self, expression: &Expr) -> Option<RustValueType> {
-        let Expr::Path(path) = expression else { return None; };
-        if path.qself.is_some() || path.path.segments.len() < 2
-            || path.path.segments.iter().any(|part| !matches!(part.arguments, PathArguments::None)) { return None; }
+        let Expr::Path(path) = expression else {
+            return None;
+        };
+        if path.qself.is_some()
+            || path.path.segments.len() < 2
+            || path
+                .path
+                .segments
+                .iter()
+                .any(|part| !matches!(part.arguments, PathArguments::None))
+        {
+            return None;
+        }
         let mut owner = path.path.clone();
         let variant = owner.segments.pop()?.into_value().ident.to_string();
-        let reference = owner.segments.iter().map(|part| part.ident.to_string()).collect::<Vec<_>>().join("::");
+        let reference = owner
+            .segments
+            .iter()
+            .map(|part| part.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
         let owner = self.resolve_named_type(&reference)?;
-        self.unit_variants.contains(&(owner.clone(), variant)).then_some(RustValueType::Named(owner))
+        self.unit_variants
+            .contains(&(owner.clone(), variant))
+            .then_some(RustValueType::Named(owner))
     }
-    pub(super) fn external_callback_closed(&self, receiver: &RustValueType, method: &str, position: usize,
-        closure: &syn::ExprClosure, scope: &BTreeMap<String, RustValueType>) -> bool {
-        if *receiver != RustValueType::External(ExternalType::GitTree) || method != "walk" || position != 1 { return true; }
+    pub(super) fn external_callback_closed(
+        &self,
+        receiver: &RustValueType,
+        method: &str,
+        position: usize,
+        closure: &syn::ExprClosure,
+        scope: &BTreeMap<String, RustValueType>,
+    ) -> bool {
+        if *receiver != RustValueType::External(ExternalType::GitTree)
+            || method != "walk"
+            || position != 1
+        {
+            return true;
+        }
         // Tree::walk invokes Into<i32> on the callback result. Do not hide a
         // user-defined conversion behind a known callback parameter type.
         use syn::visit::{self, Visit};
         struct Returns(bool);
         impl<'ast> Visit<'ast> for Returns {
-            fn visit_expr_return(&mut self, _: &'ast syn::ExprReturn) { self.0 = true; }
+            fn visit_expr_return(&mut self, _: &'ast syn::ExprReturn) {
+                self.0 = true;
+            }
         }
         let mut returns = Returns(false);
         visit::visit_expr(&mut returns, &closure.body);
-        !returns.0 && matches!(self.expression_type(&closure.body, scope),
-            Some(RustValueType::Integer | RustValueType::External(ExternalType::GitTreeWalkResult)))
+        !returns.0
+            && matches!(
+                self.expression_type(&closure.body, scope),
+                Some(
+                    RustValueType::Integer
+                        | RustValueType::External(ExternalType::GitTreeWalkResult)
+                )
+            )
     }
 
     pub(super) fn return_error(&self, signature: &Signature) -> Option<RustValueType> {
-        let ReturnType::Type(_, ty) = &signature.output else { return None; };
-        let RustValueType::ResultKnown(_, error) = self.with_generics(&signature.generics).parse_type(ty)? else { return None; };
+        let ReturnType::Type(_, ty) = &signature.output else {
+            return None;
+        };
+        let RustValueType::ResultKnown(_, error) =
+            self.with_generics(&signature.generics).parse_type(ty)?
+        else {
+            return None;
+        };
         Some(*error)
     }
 
-    pub(super) fn closed_error_wrapper(&self, source: &RustValueType, target: &RustValueType) -> bool {
-        let RustValueType::Named(target) = target else { return false; };
-        let Some((path, name)) = target.rsplit_once('#') else { return false; };
+    pub(super) fn closed_error_wrapper(
+        &self,
+        source: &RustValueType,
+        target: &RustValueType,
+    ) -> bool {
+        let RustValueType::Named(target) = target else {
+            return false;
+        };
+        let Some((path, name)) = target.rsplit_once('#') else {
+            return false;
+        };
         let context = self.for_path(path);
-        if !context.unshadowed_external_root("From") || !context.unshadowed_external_root("Into") { return false; }
-        let Some(file) = self.sources.get(path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
-        let candidates = file.items.iter().filter_map(|item| {
-            let Item::Impl(item) = item else { return None; };
-            let Type::Path(owner) = item.self_ty.as_ref() else { return None; };
-            if !owner.path.is_ident(name) { return None; }
-            let (_, trait_path, _) = item.trait_.as_ref()?;
-            if trait_path.segments.len() != 1 || trait_path.segments[0].ident != "From" { return None; }
-            let PathArguments::AngleBracketed(args) = &trait_path.segments[0].arguments else { return None; };
-            let [GenericArgument::Type(input)] = args.args.iter().collect::<Vec<_>>().as_slice() else { return None; };
-            (context.parse_type(input).as_ref() == Some(source)).then_some(item)
-        }).collect::<Vec<_>>();
-        let [implementation] = candidates.as_slice() else { return false; };
-        if !implementation.attrs.is_empty() || !implementation.generics.params.is_empty() { return false; }
-        let [syn::ImplItem::Fn(function)] = implementation.items.as_slice() else { return false; };
-        if function.sig.ident != "from" || !function.attrs.is_empty() || function.sig.unsafety.is_some()
-            || !function.sig.generics.params.is_empty() || function.sig.inputs.len() != 1 { return false; }
-        let FnArg::Typed(input) = &function.sig.inputs[0] else { return false; };
-        let Pat::Ident(argument) = input.pat.as_ref() else { return false; };
-        if context.parse_type(&input.ty).as_ref() != Some(source) || argument.subpat.is_some() { return false; }
-        let [syn::Stmt::Expr(Expr::Call(call), None)] = function.block.stmts.as_slice() else { return false; };
-        let Expr::Path(constructor) = call.func.as_ref() else { return false; };
-        if constructor.qself.is_some() || constructor.path.segments.len() != 2
-            || constructor.path.segments[0].ident != "Self" || call.args.len() != 1
-            || constructor.path.segments.iter().any(|part| !matches!(part.arguments, PathArguments::None)) { return false; }
-        let Expr::Path(value) = &call.args[0] else { return false; };
+        if !context.unshadowed_external_root("From") || !context.unshadowed_external_root("Into") {
+            return false;
+        }
+        let Some(file) = self.parsed_source(path) else {
+            return false;
+        };
+        let candidates = file
+            .items
+            .iter()
+            .filter_map(|item| {
+                let Item::Impl(item) = item else {
+                    return None;
+                };
+                let Type::Path(owner) = item.self_ty.as_ref() else {
+                    return None;
+                };
+                if !owner.path.is_ident(name) {
+                    return None;
+                }
+                let (_, trait_path, _) = item.trait_.as_ref()?;
+                if trait_path.segments.len() != 1 || trait_path.segments[0].ident != "From" {
+                    return None;
+                }
+                let PathArguments::AngleBracketed(args) = &trait_path.segments[0].arguments else {
+                    return None;
+                };
+                let [GenericArgument::Type(input)] =
+                    args.args.iter().collect::<Vec<_>>().as_slice()
+                else {
+                    return None;
+                };
+                (context.parse_type(input).as_ref() == Some(source)).then_some(item)
+            })
+            .collect::<Vec<_>>();
+        let [implementation] = candidates.as_slice() else {
+            return false;
+        };
+        if !implementation.attrs.is_empty() || !implementation.generics.params.is_empty() {
+            return false;
+        }
+        let [syn::ImplItem::Fn(function)] = implementation.items.as_slice() else {
+            return false;
+        };
+        if function.sig.ident != "from"
+            || !function.attrs.is_empty()
+            || function.sig.unsafety.is_some()
+            || !function.sig.generics.params.is_empty()
+            || function.sig.inputs.len() != 1
+        {
+            return false;
+        }
+        let FnArg::Typed(input) = &function.sig.inputs[0] else {
+            return false;
+        };
+        let Pat::Ident(argument) = input.pat.as_ref() else {
+            return false;
+        };
+        if context.parse_type(&input.ty).as_ref() != Some(source) || argument.subpat.is_some() {
+            return false;
+        }
+        let [syn::Stmt::Expr(Expr::Call(call), None)] = function.block.stmts.as_slice() else {
+            return false;
+        };
+        let Expr::Path(constructor) = call.func.as_ref() else {
+            return false;
+        };
+        if constructor.qself.is_some()
+            || constructor.path.segments.len() != 2
+            || constructor.path.segments[0].ident != "Self"
+            || call.args.len() != 1
+            || constructor
+                .path
+                .segments
+                .iter()
+                .any(|part| !matches!(part.arguments, PathArguments::None))
+        {
+            return false;
+        }
+        let Expr::Path(value) = &call.args[0] else {
+            return false;
+        };
         value.path.is_ident(&argument.ident)
-            && self.variants.get(&(target.clone(), constructor.path.segments[1].ident.to_string())) == Some(&vec![source.clone()])
+            && self.variants.get(&(
+                target.clone(),
+                constructor.path.segments[1].ident.to_string(),
+            )) == Some(&vec![source.clone()])
     }
 
     fn external_path(&self, path: &syn::Path) -> Option<String> {
         if path.segments.iter().any(|part| match &part.arguments {
             PathArguments::None => false,
-            PathArguments::AngleBracketed(args) => args.args.iter().any(|arg| !matches!(arg, GenericArgument::Lifetime(_))),
+            PathArguments::AngleBracketed(args) => args
+                .args
+                .iter()
+                .any(|arg| !matches!(arg, GenericArgument::Lifetime(_))),
             _ => true,
-        }) { return None; }
+        }) {
+            return None;
+        }
         let root = path.segments.first()?.ident.to_string();
-        if self.is_generic(&root) || self.unique_types.contains(&format!("{}#{root}", self.path)) { return None; }
-        let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
+        if self.is_generic(&root) || self.unique_types.contains(&format!("{}#{root}", self.path)) {
+            return None;
+        }
+        let file = self.parsed_source(&self.path)?;
         let aliases = super::rust_import_aliases(&file);
-        if aliases.contains_key(&root) && (path.leading_colon.is_some() || !super::rust_unique_unconditional_imports(&file).contains(&root)) { return None; }
-        if file.items.iter().any(|item| matches!(item, Item::Mod(item) if item.ident == root)) { return None; }
-        let reference = path.segments.iter().map(|part| part.ident.to_string()).collect::<Vec<_>>().join("::");
+        if aliases.contains_key(&root)
+            && (path.leading_colon.is_some()
+                || !super::rust_unique_unconditional_imports(&file).contains(&root))
+        {
+            return None;
+        }
+        if file
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Mod(item) if item.ident == root))
+        {
+            return None;
+        }
+        let reference = path
+            .segments
+            .iter()
+            .map(|part| part.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
         let resolved = super::resolve_call_alias(&reference, &aliases);
         let external_root = resolved.split("::").next()?;
-        if !matches!(external_root, "std" | "git2") || !self.unshadowed_external_root(external_root) { return None; }
+        if !matches!(external_root, "std" | "git2") || !self.unshadowed_external_root(external_root)
+        {
+            return None;
+        }
         if external_root == "git2" {
             let prefix = self.path.split_once("src/")?.0;
-            if self.sources.get(&format!("rms-metadata/rust-external-api/{prefix}git2-0.20.4")).map(String::as_str)
-                != Some("7b88256088d75a56f8ecfa070513a775dd9107f6530ef14919dac831af9cfe2b") { return None; }
+            if self
+                .sources
+                .get(&format!(
+                    "rms-metadata/rust-external-api/{prefix}git2-0.20.4"
+                ))
+                .map(String::as_str)
+                != Some("7b88256088d75a56f8ecfa070513a775dd9107f6530ef14919dac831af9cfe2b")
+            {
+                return None;
+            }
         }
         Some(resolved)
     }
 
-    pub(super) fn external_method_marker(&self, value: &RustValueType, method: &str, arity: usize) -> Option<&'static str> {
-        let RustValueType::External(receiver) = value else { return None; };
+    pub(super) fn external_method_marker(
+        &self,
+        value: &RustValueType,
+        method: &str,
+        arity: usize,
+    ) -> Option<&'static str> {
+        let RustValueType::External(receiver) = value else {
+            return None;
+        };
         receiver.method(method, arity)?;
         Some(match receiver {
             ExternalType::Stdin => "<rust-stdin-read>",
@@ -234,8 +574,34 @@ impl RustTypeIndex {
         let files = sources
             .iter()
             .filter(|(path, _)| path.ends_with(".rs"))
-            .filter_map(|(path, source)| syn::parse_file(source).ok().map(|file| (path, file)))
+            .filter_map(|(path, source)| {
+                syn::parse_file(source)
+                    .ok()
+                    .map(|file| (path, Rc::new(file)))
+            })
             .collect::<Vec<_>>();
+        use syn::visit::{self, Visit};
+        #[derive(Default)]
+        struct Rebound(BTreeSet<String>);
+        impl<'ast> Visit<'ast> for Rebound {
+            fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+                let binding = item
+                    .rename
+                    .as_ref()
+                    .map(|(_, name)| name)
+                    .unwrap_or(&item.ident);
+                if binding != &item.ident {
+                    self.0.insert(binding.to_string());
+                }
+                visit::visit_item_extern_crate(self, item);
+            }
+        }
+        let mut rebound = Rebound::default();
+        for (_, file) in &files {
+            rebound.visit_file(file);
+        }
+        let has_unparsed_rust_sources =
+            files.len() != sources.keys().filter(|path| path.ends_with(".rs")).count();
         let mut counts = BTreeMap::<String, usize>::new();
         for (path, file) in &files {
             for item in &file.items {
@@ -256,7 +622,10 @@ impl RustTypeIndex {
                 .filter(|(_, count)| **count == 1)
                 .map(|(name, _)| name.clone())
                 .collect(),
-            shadowed_types: counts.keys().map(|key| super::symbol_name(key).to_string()).collect(),
+            shadowed_types: counts
+                .keys()
+                .map(|key| super::symbol_name(key).to_string())
+                .collect(),
             returns: BTreeMap::new(),
             function_returns: BTreeMap::new(),
             fields: BTreeMap::new(),
@@ -267,6 +636,14 @@ impl RustTypeIndex {
             local_enum_aliases: BTreeMap::new(),
             self_type: None,
             sources: sources.clone(),
+            parsed_sources: Rc::new(RefCell::new(
+                files
+                    .iter()
+                    .map(|(path, file)| ((*path).clone(), Some(Rc::clone(file))))
+                    .collect(),
+            )),
+            has_unparsed_rust_sources,
+            rebound_external_crates: rebound.0,
             path: String::new(),
         };
         let mut signatures = BTreeMap::<String, Vec<(String, Type)>>::new();
@@ -280,54 +657,133 @@ impl RustTypeIndex {
                 if let Some((name, attrs, generics)) = derived {
                     let mut clone = false;
                     for attr in attrs.iter().filter(|attr| attr.path().is_ident("derive")) {
-                        let _ = attr.parse_nested_meta(|meta| { clone |= meta.path.is_ident("Clone"); Ok(()) });
+                        let _ = attr.parse_nested_meta(|meta| {
+                            clone |= meta.path.is_ident("Clone");
+                            Ok(())
+                        });
                     }
-                    if clone && generics.params.is_empty()
-                        && !attrs.iter().any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr"))
-                        && index.for_path(path).unshadowed_external_root("Clone") {
+                    if clone
+                        && generics.params.is_empty()
+                        && !attrs.iter().any(|attr| {
+                            attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")
+                        })
+                        && index.for_path(path).unshadowed_external_root("Clone")
+                    {
                         // This is a return-type fact, not a purity exemption.
                         // Competing inherent clone signatures remain ambiguous.
-                        signatures.entry(format!("{path}#{name}::clone")).or_default()
+                        signatures
+                            .entry(format!("{path}#{name}::clone"))
+                            .or_default()
                             .push(((*path).clone(), syn::parse_str("Self").unwrap()));
                     }
                 }
                 if let Item::Struct(item) = item {
-                    if index.unique_types.contains(&format!("{path}#{}", item.ident)) && item.generics.params.is_empty()
-                        && !item.attrs.iter().any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")) {
+                    if index
+                        .unique_types
+                        .contains(&format!("{path}#{}", item.ident))
+                        && item.generics.params.is_empty()
+                        && !item.attrs.iter().any(|attr| {
+                            attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")
+                        })
+                    {
                         for (position, field) in item.fields.iter().enumerate() {
-                            if !field.attrs.is_empty() { continue; }
+                            if !field.attrs.is_empty() {
+                                continue;
+                            }
                             if let Some(value) = index.for_path(path).parse_type(&field.ty) {
-                                let name = field.ident.as_ref().map(ToString::to_string).unwrap_or_else(|| position.to_string());
-                                index.fields.insert((format!("{path}#{}", item.ident), name), value);
+                                let name = field
+                                    .ident
+                                    .as_ref()
+                                    .map(ToString::to_string)
+                                    .unwrap_or_else(|| position.to_string());
+                                index
+                                    .fields
+                                    .insert((format!("{path}#{}", item.ident), name), value);
                             }
                         }
                     }
                 }
                 if let Item::Enum(item) = item {
                     let owner = format!("{path}#{}", item.ident);
-                    if index.unique_types.contains(&owner) && item.generics.params.is_empty()
-                        && !item.attrs.iter().any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")) {
+                    if index.unique_types.contains(&owner)
+                        && item.generics.params.is_empty()
+                        && !item.attrs.iter().any(|attr| {
+                            attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")
+                        })
+                    {
                         for variant in &item.variants {
-                            if item.variants.iter().filter(|candidate| candidate.ident == variant.ident).count() != 1 { continue; }
-                            if matches!(variant.fields, syn::Fields::Unit) && variant.attrs.is_empty() {
-                                index.unit_variants.insert((owner.clone(), variant.ident.to_string()));
+                            if item
+                                .variants
+                                .iter()
+                                .filter(|candidate| candidate.ident == variant.ident)
+                                .count()
+                                != 1
+                            {
+                                continue;
                             }
-                            let syn::Fields::Unnamed(fields) = &variant.fields else { continue; };
-                            if !variant.attrs.is_empty() || fields.unnamed.iter().any(|field| !field.attrs.is_empty()) { continue; }
-                            let values = fields.unnamed.iter().map(|field| index.for_path(path).parse_type(&field.ty).unwrap_or(RustValueType::Unknown)).collect();
-                            index.variants.insert((owner.clone(), variant.ident.to_string()), values);
+                            if matches!(variant.fields, syn::Fields::Unit)
+                                && variant.attrs.is_empty()
+                            {
+                                index
+                                    .unit_variants
+                                    .insert((owner.clone(), variant.ident.to_string()));
+                            }
+                            let syn::Fields::Unnamed(fields) = &variant.fields else {
+                                continue;
+                            };
+                            if !variant.attrs.is_empty()
+                                || fields.unnamed.iter().any(|field| !field.attrs.is_empty())
+                            {
+                                continue;
+                            }
+                            let values = fields
+                                .unnamed
+                                .iter()
+                                .map(|field| {
+                                    index
+                                        .for_path(path)
+                                        .parse_type(&field.ty)
+                                        .unwrap_or(RustValueType::Unknown)
+                                })
+                                .collect();
+                            index
+                                .variants
+                                .insert((owner.clone(), variant.ident.to_string()), values);
                         }
                     }
                 }
                 if let Item::Fn(function) = item {
-                    if function.sig.generics.params.iter().all(|p| matches!(p, syn::GenericParam::Lifetime(_))) && function.attrs.is_empty() {
-                        let parameters = function.sig.inputs.iter().map(|argument| {
-                            let FnArg::Typed(argument) = argument else { return None; };
-                            let Type::Reference(reference) = argument.ty.as_ref() else { return None; };
-                            if reference.mutability.is_none() { return None; }
-                            index.for_path(path).parse_type(&reference.elem).filter(|value| matches!(value, RustValueType::Sequence(_)))
-                        }).collect();
-                        index.mutable_sequences.insert(format!("{path}#{}", function.sig.ident), parameters);
+                    if function
+                        .sig
+                        .generics
+                        .params
+                        .iter()
+                        .all(|p| matches!(p, syn::GenericParam::Lifetime(_)))
+                        && function.attrs.is_empty()
+                    {
+                        let parameters = function
+                            .sig
+                            .inputs
+                            .iter()
+                            .map(|argument| {
+                                let FnArg::Typed(argument) = argument else {
+                                    return None;
+                                };
+                                let Type::Reference(reference) = argument.ty.as_ref() else {
+                                    return None;
+                                };
+                                if reference.mutability.is_none() {
+                                    return None;
+                                }
+                                index
+                                    .for_path(path)
+                                    .parse_type(&reference.elem)
+                                    .filter(|value| matches!(value, RustValueType::Sequence(_)))
+                            })
+                            .collect();
+                        index
+                            .mutable_sequences
+                            .insert(format!("{path}#{}", function.sig.ident), parameters);
                         if let ReturnType::Type(_, result) = &function.sig.output {
                             if let Some(value) = index.for_path(path).parse_type(result) {
                                 index
@@ -393,28 +849,50 @@ impl RustTypeIndex {
 
     pub(super) fn with_generics(&self, generics: &syn::Generics) -> Self {
         let mut result = self.clone();
-        result.generic_names.extend(generics.type_params().map(|parameter| parameter.ident.to_string()));
+        result.generic_names.extend(
+            generics
+                .type_params()
+                .map(|parameter| parameter.ident.to_string()),
+        );
         result
     }
 
-    pub(super) fn is_generic(&self, name: &str) -> bool { self.generic_names.contains(name) || self.generic_names.contains("*") }
+    pub(super) fn is_generic(&self, name: &str) -> bool {
+        self.generic_names.contains(name) || self.generic_names.contains("*")
+    }
 
     pub(super) fn call_root_shadowed(&self, name: &str) -> bool {
-        if self.generic_names.contains(name) { return true; }
-        if !self.generic_names.contains("*") { return false; }
-        let caller = self.path.split_once("/src/").map(|(prefix, _)| prefix).unwrap_or("");
-        self.sources.contains_key(&format!("rms-metadata/rust-crate-alias/{caller}/{name}"))
-            || self.sources.contains_key(&format!("rms-metadata/rust-crate-alias/{name}"))
-            || self.sources.get(&self.path).and_then(|source| syn::parse_file(source).ok())
+        if self.generic_names.contains(name) {
+            return true;
+        }
+        if !self.generic_names.contains("*") {
+            return false;
+        }
+        let caller = self
+            .path
+            .split_once("/src/")
+            .map(|(prefix, _)| prefix)
+            .unwrap_or("");
+        self.sources
+            .contains_key(&format!("rms-metadata/rust-crate-alias/{caller}/{name}"))
+            || self
+                .sources
+                .contains_key(&format!("rms-metadata/rust-crate-alias/{name}"))
+            || self
+                .parsed_source(&self.path)
                 .is_some_and(|file| super::rust_import_aliases(&file).contains_key(name))
     }
 
-    pub(super) fn is_declared_type(&self, name: &str) -> bool { self.shadowed_types.contains(name) }
+    pub(super) fn is_declared_type(&self, name: &str) -> bool {
+        self.shadowed_types.contains(name)
+    }
 
     pub(super) fn with_local_type_shadows(&self, block: &syn::Block) -> Self {
         let mut result = self.clone();
         for statement in &block.stmts {
-            let syn::Stmt::Item(item) = statement else { continue; };
+            let syn::Stmt::Item(item) = statement else {
+                continue;
+            };
             let name = match item {
                 Item::Struct(item) => Some(item.ident.to_string()),
                 Item::Enum(item) => Some(item.ident.to_string()),
@@ -423,17 +901,31 @@ impl RustTypeIndex {
                 Item::Use(item) => {
                     fn collect_names(tree: &syn::UseTree, names: &mut BTreeSet<String>) {
                         match tree {
-                            syn::UseTree::Name(item) => { names.insert(item.ident.to_string()); }
-                            syn::UseTree::Rename(item) => { names.insert(item.rename.to_string()); }
-                            syn::UseTree::Glob(_) => { names.insert("*".into()); }
+                            syn::UseTree::Name(item) => {
+                                names.insert(item.ident.to_string());
+                            }
+                            syn::UseTree::Rename(item) => {
+                                names.insert(item.rename.to_string());
+                            }
+                            syn::UseTree::Glob(_) => {
+                                names.insert("*".into());
+                            }
                             syn::UseTree::Path(item) => collect_names(&item.tree, names),
-                            syn::UseTree::Group(group) => { for item in &group.items { collect_names(item, names); } }
+                            syn::UseTree::Group(group) => {
+                                for item in &group.items {
+                                    collect_names(item, names);
+                                }
+                            }
                         }
                     }
                     let mut names = BTreeSet::new();
                     collect_names(&item.tree, &mut names);
-                    for name in &names { result.local_enum_aliases.remove(name); }
-                    if names.contains("*") { result.local_enum_aliases.clear(); }
+                    for name in &names {
+                        result.local_enum_aliases.remove(name);
+                    }
+                    if names.contains("*") {
+                        result.local_enum_aliases.clear();
+                    }
                     result.generic_names.extend(names);
                     None
                 }
@@ -444,23 +936,42 @@ impl RustTypeIndex {
                 result.generic_names.insert(name);
             }
         }
-        let local = syn::File { shebang: None, attrs: vec![], items: block.stmts.iter().filter_map(|statement|
-            if let syn::Stmt::Item(item) = statement { Some(item.clone()) } else { None }).collect() };
+        let local = syn::File {
+            shebang: None,
+            attrs: vec![],
+            items: block
+                .stmts
+                .iter()
+                .filter_map(|statement| {
+                    if let syn::Stmt::Item(item) = statement {
+                        Some(item.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        };
         let unique = super::rust_unique_unconditional_imports(&local);
         let enum_glob_names = self.local_enum_glob_names(&local, &result.generic_names);
         for (alias, target) in super::rust_import_aliases(&local) {
             let root = target.split("::").next().unwrap_or("");
-            if !unique.contains(&alias) || self.generic_names.contains(&alias)
+            if !unique.contains(&alias)
+                || self.generic_names.contains(&alias)
                 || result.generic_names.contains(root)
                 || (result.generic_names.contains("*")
-                    && !enum_glob_names.as_ref().is_some_and(|names| !names.contains(root)))
+                    && !enum_glob_names
+                        .as_ref()
+                        .is_some_and(|names| !names.contains(root)))
                 || local.items.iter().any(|item| match item {
                     Item::Struct(item) => item.ident == alias,
                     Item::Enum(item) => item.ident == alias,
                     Item::Type(item) => item.ident == alias,
                     Item::Mod(item) => item.ident == alias,
                     _ => false,
-                }) { continue; }
+                })
+            {
+                continue;
+            }
             if let Some(owner) = self.resolve_named_type(&target) {
                 if self.variants.keys().any(|(name, _)| name == &owner) {
                     result.local_enum_aliases.insert(alias, owner);
@@ -472,7 +983,11 @@ impl RustTypeIndex {
 
     // A known enum glob imports only its variants. It cannot hide a different
     // type behind an explicit alias; unknown/conditional globs remain open.
-    fn local_enum_glob_names(&self, local: &syn::File, shadows: &BTreeSet<String>) -> Option<BTreeSet<String>> {
+    fn local_enum_glob_names(
+        &self,
+        local: &syn::File,
+        shadows: &BTreeSet<String>,
+    ) -> Option<BTreeSet<String>> {
         fn glob_paths(tree: &syn::UseTree, prefix: Vec<String>, paths: &mut Vec<String>) {
             match tree {
                 syn::UseTree::Path(item) => {
@@ -481,45 +996,86 @@ impl RustTypeIndex {
                     glob_paths(&item.tree, prefix, paths);
                 }
                 syn::UseTree::Group(group) => {
-                    for item in &group.items { glob_paths(item, prefix.clone(), paths); }
+                    for item in &group.items {
+                        glob_paths(item, prefix.clone(), paths);
+                    }
                 }
                 syn::UseTree::Glob(_) => paths.push(prefix.join("::")),
                 _ => {}
             }
         }
-        if self.generic_names.contains("*") { return None; }
+        if self.generic_names.contains("*") {
+            return None;
+        }
         let mut names = BTreeSet::new();
         let mut roots = BTreeSet::new();
         for item in &local.items {
-            let Item::Use(item) = item else { continue; };
+            let Item::Use(item) = item else {
+                continue;
+            };
             let mut paths = Vec::new();
             glob_paths(&item.tree, Vec::new(), &mut paths);
-            if !paths.is_empty() && !item.attrs.is_empty() { return None; }
+            if !paths.is_empty() && !item.attrs.is_empty() {
+                return None;
+            }
             for path in paths {
                 let root = path.split("::").next()?;
                 roots.insert(root.to_string());
-                if shadows.contains(root) || self.generic_names.contains(root) { return None; }
+                if shadows.contains(root) || self.generic_names.contains(root) {
+                    return None;
+                }
                 let owner = self.resolve_named_type(&path)?;
                 let (path, name) = owner.split_once('#')?;
-                let file = syn::parse_file(self.sources.get(path)?).ok()?;
+                let file = self.parsed_source(path)?;
                 let declaration = file.items.iter().find_map(|item| match item {
                     Item::Enum(item) if item.ident == name => Some(item),
                     _ => None,
                 })?;
-                if declaration.attrs.iter().any(|attr| !attr.path().is_ident("derive") && !attr.path().is_ident("doc"))
-                    || declaration.variants.iter().any(|variant| !variant.attrs.is_empty()) { return None; }
-                names.extend(declaration.variants.iter().map(|variant| variant.ident.to_string()));
+                if declaration
+                    .attrs
+                    .iter()
+                    .any(|attr| !attr.path().is_ident("derive") && !attr.path().is_ident("doc"))
+                    || declaration
+                        .variants
+                        .iter()
+                        .any(|variant| !variant.attrs.is_empty())
+                {
+                    return None;
+                }
+                names.extend(
+                    declaration
+                        .variants
+                        .iter()
+                        .map(|variant| variant.ident.to_string()),
+                );
             }
         }
-        if !names.is_disjoint(&roots) { return None; }
+        if !names.is_disjoint(&roots) {
+            return None;
+        }
         Some(names)
     }
 
     pub(super) fn local_enum_constructor(&self, path: &syn::ExprPath, arity: usize) -> bool {
-        if path.qself.is_some() || path.path.leading_colon.is_some() || path.path.segments.len() != 2
-            || path.path.segments.iter().any(|part| !matches!(part.arguments, PathArguments::None)) { return false; }
-        let Some(owner) = self.local_enum_aliases.get(&path.path.segments[0].ident.to_string()) else { return false; };
-        self.variants.get(&(owner.clone(), path.path.segments[1].ident.to_string()))
+        if path.qself.is_some()
+            || path.path.leading_colon.is_some()
+            || path.path.segments.len() != 2
+            || path
+                .path
+                .segments
+                .iter()
+                .any(|part| !matches!(part.arguments, PathArguments::None))
+        {
+            return false;
+        }
+        let Some(owner) = self
+            .local_enum_aliases
+            .get(&path.path.segments[0].ident.to_string())
+        else {
+            return false;
+        };
+        self.variants
+            .get(&(owner.clone(), path.path.segments[1].ident.to_string()))
             .is_some_and(|fields| fields.len() == arity)
     }
 
@@ -541,14 +1097,30 @@ impl RustTypeIndex {
                 Item::Type(item) => item.ident == "str",
                 Item::Mod(item) => item.ident == "str",
                 Item::Trait(item) => item.ident == "str",
-                Item::Impl(item) => item.generics.type_params().any(|parameter| parameter.ident == "str"),
-                Item::ExternCrate(item) => item.rename.as_ref().map(|(_, name)| name == "str").unwrap_or(item.ident == "str"),
+                Item::Impl(item) => item
+                    .generics
+                    .type_params()
+                    .any(|parameter| parameter.ident == "str"),
+                Item::ExternCrate(item) => item
+                    .rename
+                    .as_ref()
+                    .map(|(_, name)| name == "str")
+                    .unwrap_or(item.ident == "str"),
                 Item::Use(item) => shadows(&item.tree),
                 _ => false,
             }
         }
-        let Some(file) = self.sources.get(&self.path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
-        if file.items.iter().any(item_shadows) || signature.generics.type_params().any(|parameter| parameter.ident == "str") { return false; }
+        let Some(file) = self.parsed_source(&self.path) else {
+            return false;
+        };
+        if file.items.iter().any(item_shadows)
+            || signature
+                .generics
+                .type_params()
+                .any(|parameter| parameter.ident == "str")
+        {
+            return false;
+        }
         struct LocalShadows(bool);
         impl<'ast> Visit<'ast> for LocalShadows {
             fn visit_item(&mut self, item: &'ast Item) {
@@ -568,11 +1140,20 @@ impl RustTypeIndex {
         match value {
             Type::Reference(reference) => self.parse_type(&reference.elem),
             Type::Array(array) => Some(RustValueType::Sequence(Box::new(
-                self.parse_type(&array.elem).unwrap_or(RustValueType::Unknown)))),
-            Type::Tuple(tuple) => Some(RustValueType::Tuple(tuple.elems.iter()
-                .map(|element| self.parse_type(element).unwrap_or(RustValueType::Unknown)).collect())),
+                self.parse_type(&array.elem)
+                    .unwrap_or(RustValueType::Unknown),
+            ))),
+            Type::Tuple(tuple) => Some(RustValueType::Tuple(
+                tuple
+                    .elems
+                    .iter()
+                    .map(|element| self.parse_type(element).unwrap_or(RustValueType::Unknown))
+                    .collect(),
+            )),
             Type::Slice(slice) => Some(RustValueType::Sequence(Box::new(
-                self.parse_type(&slice.elem).unwrap_or(RustValueType::Unknown)))),
+                self.parse_type(&slice.elem)
+                    .unwrap_or(RustValueType::Unknown),
+            ))),
             Type::Path(path) if path.qself.is_none() => {
                 if path.path.is_ident("Self") {
                     return self.self_type.clone().map(RustValueType::Named);
@@ -580,22 +1161,30 @@ impl RustTypeIndex {
                 if self.external_path(&path.path).as_deref() == Some("std::path::Path") {
                     return Some(RustValueType::Named("std::path::Path".into()));
                 }
-                let external = self.external_path(&path.path).and_then(|path| match path.as_str() {
-                    "git2::Repository" => Some(ExternalType::GitRepository),
-                    "git2::Oid" => Some(ExternalType::GitOid),
-                    "git2::Tree" => Some(ExternalType::GitTree),
-                    "git2::Error" => Some(ExternalType::GitError),
-                    "std::io::Error" => Some(ExternalType::IoError),
-                    _ => None,
-                });
-                if let Some(external) = external { return Some(RustValueType::External(external)); }
+                let external =
+                    self.external_path(&path.path)
+                        .and_then(|path| match path.as_str() {
+                            "git2::Repository" => Some(ExternalType::GitRepository),
+                            "git2::Oid" => Some(ExternalType::GitOid),
+                            "git2::Tree" => Some(ExternalType::GitTree),
+                            "git2::Error" => Some(ExternalType::GitError),
+                            "std::io::Error" => Some(ExternalType::IoError),
+                            _ => None,
+                        });
+                if let Some(external) = external {
+                    return Some(RustValueType::External(external));
+                }
                 let segment = path.path.segments.last()?;
                 let name = segment.ident.to_string();
-                if path.path.segments.len() == 1 && matches!(name.as_str(), "str" | "String")
-                    && self.unshadowed_external_root(&name) {
+                if path.path.segments.len() == 1
+                    && matches!(name.as_str(), "str" | "String")
+                    && self.unshadowed_external_root(&name)
+                {
                     return Some(RustValueType::Text);
                 }
-                if path.path.segments.len() == 1 && self.is_generic(&name) { return None; }
+                if path.path.segments.len() == 1 && self.is_generic(&name) {
+                    return None;
+                }
                 if matches!(segment.arguments, PathArguments::None) {
                     let reference = path
                         .path
@@ -604,7 +1193,9 @@ impl RustTypeIndex {
                         .map(|s| s.ident.to_string())
                         .collect::<Vec<_>>()
                         .join("::");
-                    return self.resolve_named_type(&reference).map(RustValueType::Named);
+                    return self
+                        .resolve_named_type(&reference)
+                        .map(RustValueType::Named);
                 }
                 if self.shadowed_types.contains(&name) {
                     return None;
@@ -620,7 +1211,7 @@ impl RustTypeIndex {
                 if arguments.args.len() != expected_arguments || path.path.segments.len() != 1 {
                     return None;
                 }
-                let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
+                let file = self.parsed_source(&self.path)?;
                 fn has_glob(tree: &syn::UseTree) -> bool {
                     match tree {
                         syn::UseTree::Glob(_) => true,
@@ -637,10 +1228,14 @@ impl RustTypeIndex {
                     return None;
                 }
                 let aliases = super::rust_import_aliases(&file);
-                if name == "Vec" && aliases.contains_key(&name)
+                if name == "Vec"
+                    && aliases.contains_key(&name)
                     && (aliases.get(&name).map(String::as_str) != Some("std::vec::Vec")
                         || aliases.contains_key("std")
-                        || file.items.iter().any(|item| matches!(item, Item::Mod(item) if item.ident == "std"))
+                        || file
+                            .items
+                            .iter()
+                            .any(|item| matches!(item, Item::Mod(item) if item.ident == "std"))
                         || !self.standard_external_crate_available("std"))
                 {
                     return None;
@@ -662,14 +1257,18 @@ impl RustTypeIndex {
                 {
                     return None;
                 }
-                if name == "BTreeSet" && !self.unshadowed_external_root("std") { return None; }
+                if name == "BTreeSet" && !self.unshadowed_external_root("std") {
+                    return None;
+                }
                 let element_index = if name == "BTreeMap" { 1 } else { 0 };
                 let GenericArgument::Type(element) = &arguments.args[element_index] else {
                     return None;
                 };
                 let element = Box::new(if name == "Vec" {
                     self.parse_type(element).unwrap_or(RustValueType::Unknown)
-                } else { self.parse_type(element)? });
+                } else {
+                    self.parse_type(element)?
+                });
                 match name.as_str() {
                     "Vec" => Some(RustValueType::Sequence(element)),
                     "Option" => Some(RustValueType::Optional(element)),
@@ -677,7 +1276,9 @@ impl RustTypeIndex {
                     "BTreeSet" => Some(RustValueType::Set(element)),
                     "Result" => {
                         let error = match &arguments.args[1] {
-                            GenericArgument::Type(error) => self.parse_type(error).unwrap_or(RustValueType::Unknown),
+                            GenericArgument::Type(error) => {
+                                self.parse_type(error).unwrap_or(RustValueType::Unknown)
+                            }
                             _ => RustValueType::Unknown,
                         };
                         Some(RustValueType::ResultKnown(element, Box::new(error)))
@@ -690,29 +1291,16 @@ impl RustTypeIndex {
     }
 
     pub(super) fn standard_external_crate_available(&self, root: &str) -> bool {
-        use syn::visit::{self, Visit};
-        struct Rebound<'a> { root: &'a str, found: bool }
-        impl<'ast> Visit<'ast> for Rebound<'_> {
-            fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
-                let binding = item.rename.as_ref().map(|(_, name)| name).unwrap_or(&item.ident);
-                self.found |= binding == self.root && item.ident != self.root;
-                visit::visit_item_extern_crate(self, item);
-            }
-        }
-        let mut rebound = Rebound { root, found: false };
-        // A crate-root extern alias also affects calls in another source file.
-        // Refuse ambiguous roots across the available Rust source closure.
-        for (path, source) in &self.sources {
-            if !path.ends_with(".rs") { continue; }
-            let Ok(file) = syn::parse_file(source) else { return false; };
-            rebound.visit_file(&file);
-        }
-        !rebound.found
+        !self.has_unparsed_rust_sources && !self.rebound_external_crates.contains(root)
     }
 
     pub(super) fn unshadowed_external_root(&self, root: &str) -> bool {
-        if self.is_generic(root) || !self.standard_external_crate_available(root) { return false; }
-        let Some(file) = self.sources.get(&self.path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
+        if self.is_generic(root) || !self.standard_external_crate_available(root) {
+            return false;
+        }
+        let Some(file) = self.parsed_source(&self.path) else {
+            return false;
+        };
         fn imported(tree: &syn::UseTree, name: &str) -> bool {
             match tree {
                 syn::UseTree::Glob(_) => true,
@@ -735,39 +1323,103 @@ impl RustTypeIndex {
     }
 
     pub(super) fn external_uuid_v4(&self, path: &syn::ExprPath) -> bool {
-        if path.qself.is_some() || path.path.segments.iter().any(|part| !matches!(part.arguments, PathArguments::None)) {
+        if path.qself.is_some()
+            || path
+                .path
+                .segments
+                .iter()
+                .any(|part| !matches!(part.arguments, PathArguments::None))
+        {
             return false;
         }
-        let Some(root) = path.path.segments.first().map(|part| part.ident.to_string()) else { return false; };
-        if self.is_generic(&root) || self.unique_types.contains(&format!("{}#{root}", self.path))
-            || !self.unshadowed_external_root("uuid") { return false; }
-        let Some(file) = self.sources.get(&self.path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
-        let reference = path.path.segments.iter().map(|part| part.ident.to_string()).collect::<Vec<_>>().join("::");
+        let Some(root) = path
+            .path
+            .segments
+            .first()
+            .map(|part| part.ident.to_string())
+        else {
+            return false;
+        };
+        if self.is_generic(&root)
+            || self.unique_types.contains(&format!("{}#{root}", self.path))
+            || !self.unshadowed_external_root("uuid")
+        {
+            return false;
+        }
+        let Some(file) = self.parsed_source(&self.path) else {
+            return false;
+        };
+        let reference = path
+            .path
+            .segments
+            .iter()
+            .map(|part| part.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
         if file.items.iter().any(|item| match item {
             Item::Mod(item) => item.ident == root,
             Item::Trait(item) => item.ident == root,
-            Item::ExternCrate(item) => item.rename.as_ref().map(|(_, name)| name).unwrap_or(&item.ident) == &root,
+            Item::ExternCrate(item) => {
+                item.rename
+                    .as_ref()
+                    .map(|(_, name)| name)
+                    .unwrap_or(&item.ident)
+                    == &root
+            }
             _ => false,
-        }) { return false; }
+        }) {
+            return false;
+        }
         let aliases = super::rust_import_aliases(&file);
         if aliases.contains_key(&root) {
-            if path.path.leading_colon.is_some() || !super::rust_unique_unconditional_imports(&file).contains(&root) { return false; }
-        } else if root != "uuid" { return false; }
+            if path.path.leading_colon.is_some()
+                || !super::rust_unique_unconditional_imports(&file).contains(&root)
+            {
+                return false;
+            }
+        } else if root != "uuid" {
+            return false;
+        }
         super::resolve_call_alias(&reference, &aliases) == "uuid::Uuid::new_v4"
     }
 
     pub(super) fn standard_integer_available(&self, name: &str) -> bool {
-        if !matches!(name, "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
-            "i8" | "i16" | "i32" | "i64" | "i128" | "isize") || self.is_generic(name) { return false; }
+        if !matches!(
+            name,
+            "u8" | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+                | "i8"
+                | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+        ) || self.is_generic(name)
+        {
+            return false;
+        }
         use syn::visit::{self, Visit};
-        struct Shadows<'a> { name: &'a str, found: bool, globs: Vec<String> }
+        struct Shadows<'a> {
+            name: &'a str,
+            found: bool,
+            globs: Vec<String>,
+        }
         impl Shadows<'_> {
             fn imports(&mut self, tree: &syn::UseTree, prefix: &str) {
                 match tree {
                     syn::UseTree::Name(item) => self.found |= item.ident == self.name,
                     syn::UseTree::Rename(item) => self.found |= item.rename == self.name,
-                    syn::UseTree::Path(item) => self.imports(&item.tree, &format!("{prefix}{}::", item.ident)),
-                    syn::UseTree::Group(group) => { for item in &group.items { self.imports(item, prefix); } }
+                    syn::UseTree::Path(item) => {
+                        self.imports(&item.tree, &format!("{prefix}{}::", item.ident))
+                    }
+                    syn::UseTree::Group(group) => {
+                        for item in &group.items {
+                            self.imports(item, prefix);
+                        }
+                    }
                     syn::UseTree::Glob(_) => self.globs.push(prefix.trim_end_matches("::").into()),
                 }
             }
@@ -780,10 +1432,18 @@ impl RustTypeIndex {
                     Item::Type(item) => item.ident == self.name,
                     Item::Trait(item) => item.ident == self.name,
                     Item::Mod(item) => item.ident == self.name,
-                    Item::ExternCrate(item) => item.rename.as_ref().map(|(_, id)| id).unwrap_or(&item.ident) == self.name,
+                    Item::ExternCrate(item) => {
+                        item.rename
+                            .as_ref()
+                            .map(|(_, id)| id)
+                            .unwrap_or(&item.ident)
+                            == self.name
+                    }
                     _ => false,
                 };
-                if let Item::Use(item) = item { self.imports(&item.tree, ""); }
+                if let Item::Use(item) = item {
+                    self.imports(&item.tree, "");
+                }
                 visit::visit_item(self, item);
             }
             fn visit_type_param(&mut self, parameter: &'ast syn::TypeParam) {
@@ -793,16 +1453,33 @@ impl RustTypeIndex {
         let mut pending = vec![self.path.clone()];
         let mut seen = BTreeSet::new();
         while let Some(path) = pending.pop() {
-            if !seen.insert(path.clone()) { continue; }
-            let Some(file) = self.sources.get(&path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
-            let mut shadows = Shadows { name, found: false, globs: Vec::new() };
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let Some(file) = self.parsed_source(&path) else {
+                return false;
+            };
+            let mut shadows = Shadows {
+                name,
+                found: false,
+                globs: Vec::new(),
+            };
             shadows.visit_file(&file);
-            if shadows.found { return false; }
+            if shadows.found {
+                return false;
+            }
             for glob in shadows.globs {
                 // Only exact source-owned crate-module globs are inspectable here.
-                let Some(module) = glob.strip_prefix("crate::").filter(|module| !module.contains("::")) else { return false; };
+                let Some(module) = glob
+                    .strip_prefix("crate::")
+                    .filter(|module| !module.contains("::"))
+                else {
+                    return false;
+                };
                 let target = format!("src/{module}.rs");
-                if !self.sources.contains_key(&target) { return false; }
+                if !self.sources.contains_key(&target) {
+                    return false;
+                }
                 pending.push(target);
             }
         }
@@ -815,7 +1492,11 @@ impl RustTypeIndex {
                 syn::UseTree::Name(item) => usize::from(item.ident == name),
                 syn::UseTree::Rename(item) => usize::from(item.rename == name),
                 syn::UseTree::Path(item) => imported_count(&item.tree, name),
-                syn::UseTree::Group(group) => group.items.iter().map(|item| imported_count(item, name)).sum(),
+                syn::UseTree::Group(group) => group
+                    .items
+                    .iter()
+                    .map(|item| imported_count(item, name))
+                    .sum(),
                 syn::UseTree::Glob(_) => 0,
             }
         }
@@ -832,27 +1513,35 @@ impl RustTypeIndex {
             (count, conditional)
         };
         if !reference.contains("::") {
-            let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
+            let file = self.parsed_source(&self.path)?;
             let (count, conditional) = imports(&file, reference);
-            if count > 1 || conditional { return None; }
+            if count > 1 || conditional {
+                return None;
+            }
         }
-        let exact = super::rust_exact_item_reference(&self.path, reference, &self.sources, 0)?;
-        if !self.unique_types.contains(&exact) { return None; }
+        let exact = super::rust_exact_item_reference(&self.path, reference, self, 0)?;
+        if !self.unique_types.contains(&exact) {
+            return None;
+        }
         let (path, name) = exact.split_once('#')?;
-        let file = syn::parse_file(self.sources.get(path)?).ok()?;
+        let file = self.parsed_source(path)?;
         // A declaration plus an explicit same-name import is not a unique
         // binding. Do not let the resolver's local-item preference hide it.
-        if imports(&file, name).0 > 0 { return None; }
+        if imports(&file, name).0 > 0 {
+            return None;
+        }
         Some(exact)
     }
 
     pub(super) fn parameters(&self, signature: &Signature) -> BTreeMap<String, RustValueType> {
         let mut scope = self.clone();
-        scope.generic_names.extend(signature
-            .generics
-            .type_params()
-            .map(|parameter| parameter.ident.to_string())
-            .collect::<BTreeSet<_>>());
+        scope.generic_names.extend(
+            signature
+                .generics
+                .type_params()
+                .map(|parameter| parameter.ident.to_string())
+                .collect::<BTreeSet<_>>(),
+        );
         signature
             .inputs
             .iter()
@@ -871,44 +1560,105 @@ impl RustTypeIndex {
             .collect()
     }
 
-    pub(super) fn pattern_bindings(&self, pattern: &Pat, value: &RustValueType) -> BTreeMap<String, RustValueType> {
+    pub(super) fn pattern_bindings(
+        &self,
+        pattern: &Pat,
+        value: &RustValueType,
+    ) -> BTreeMap<String, RustValueType> {
         let mut bindings = BTreeMap::new();
         match (pattern, value) {
             (Pat::Or(pattern), value) => {
-                let mut alternatives = pattern.cases.iter().map(|pattern| self.pattern_bindings(pattern, value));
-                let Some(mut common) = alternatives.next() else { return bindings; };
+                let mut alternatives = pattern
+                    .cases
+                    .iter()
+                    .map(|pattern| self.pattern_bindings(pattern, value));
+                let Some(mut common) = alternatives.next() else {
+                    return bindings;
+                };
                 for alternative in alternatives {
                     common.retain(|name, value| alternative.get(name) == Some(value));
                 }
                 return common;
             }
-            (Pat::Ident(name), value) => { bindings.insert(name.ident.to_string(), value.clone()); }
-            (Pat::Reference(pattern), value) => { return self.pattern_bindings(&pattern.pat, value); }
-            (Pat::Type(pattern), value) => { return self.pattern_bindings(&pattern.pat, value); }
+            (Pat::Ident(name), value) => {
+                bindings.insert(name.ident.to_string(), value.clone());
+            }
+            (Pat::Reference(pattern), value) => {
+                return self.pattern_bindings(&pattern.pat, value);
+            }
+            (Pat::Type(pattern), value) => {
+                return self.pattern_bindings(&pattern.pat, value);
+            }
             (Pat::TupleStruct(pattern), RustValueType::Optional(element))
-                if pattern.path.is_ident("Some") && pattern.elems.len() == 1 && !self.is_generic("Some") => {
+                if pattern.path.is_ident("Some")
+                    && pattern.elems.len() == 1
+                    && !self.is_generic("Some") =>
+            {
                 return self.pattern_bindings(&pattern.elems[0], element);
             }
             (Pat::TupleStruct(pattern), RustValueType::ResultKnown(ok, error))
-                if pattern.elems.len() == 1 && (pattern.path.is_ident("Ok") || pattern.path.is_ident("Err"))
-                    && !self.is_generic(&pattern.path.segments[0].ident.to_string()) => {
-                return self.pattern_bindings(&pattern.elems[0], if pattern.path.is_ident("Ok") { ok } else { error });
+                if pattern.elems.len() == 1
+                    && (pattern.path.is_ident("Ok") || pattern.path.is_ident("Err"))
+                    && !self.is_generic(&pattern.path.segments[0].ident.to_string()) =>
+            {
+                return self.pattern_bindings(
+                    &pattern.elems[0],
+                    if pattern.path.is_ident("Ok") {
+                        ok
+                    } else {
+                        error
+                    },
+                );
             }
             (Pat::TupleStruct(pattern), RustValueType::Named(owner)) => {
-                if pattern.qself.is_some() || pattern.path.segments.iter().any(|segment| !matches!(segment.arguments, PathArguments::None)) { return bindings; }
+                if pattern.qself.is_some()
+                    || pattern
+                        .path
+                        .segments
+                        .iter()
+                        .any(|segment| !matches!(segment.arguments, PathArguments::None))
+                {
+                    return bindings;
+                }
                 let mut path = pattern.path.clone();
-                let Some(variant) = path.segments.pop() else { return bindings; };
-                if path.segments.is_empty() { return bindings; }
-                let reference = path.segments.iter().map(|segment| segment.ident.to_string()).collect::<Vec<_>>().join("::");
-                if path.segments.first().is_some_and(|segment| self.is_generic(&segment.ident.to_string())) { return bindings; }
-                if self.resolve_named_type(&reference).as_ref() != Some(owner) { return bindings; }
-                if let Some(values) = self.variants.get(&(owner.clone(), variant.value().ident.to_string()))
-                    .filter(|values| values.len() == pattern.elems.len()) {
-                    for (pattern, value) in pattern.elems.iter().zip(values) { bindings.extend(self.pattern_bindings(pattern, value)); }
+                let Some(variant) = path.segments.pop() else {
+                    return bindings;
+                };
+                if path.segments.is_empty() {
+                    return bindings;
+                }
+                let reference = path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.ident.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                if path
+                    .segments
+                    .first()
+                    .is_some_and(|segment| self.is_generic(&segment.ident.to_string()))
+                {
+                    return bindings;
+                }
+                if self.resolve_named_type(&reference).as_ref() != Some(owner) {
+                    return bindings;
+                }
+                if let Some(values) = self
+                    .variants
+                    .get(&(owner.clone(), variant.value().ident.to_string()))
+                    .filter(|values| values.len() == pattern.elems.len())
+                {
+                    for (pattern, value) in pattern.elems.iter().zip(values) {
+                        bindings.extend(self.pattern_bindings(pattern, value));
+                    }
                 }
             }
-            (Pat::Tuple(pattern), RustValueType::Tuple(values)) if pattern.elems.len() == values.len() => {
-                for (pattern, value) in pattern.elems.iter().zip(values) { bindings.extend(self.pattern_bindings(pattern, value)); }
+            (Pat::Tuple(pattern), RustValueType::Tuple(values))
+                if pattern.elems.len() == values.len() =>
+            {
+                for (pattern, value) in pattern.elems.iter().zip(values) {
+                    bindings.extend(self.pattern_bindings(pattern, value));
+                }
             }
             _ => {}
         }
@@ -918,7 +1668,12 @@ impl RustTypeIndex {
     // Rust fixes a local's type across all branches. An exact non-generic
     // function's `&mut Vec<T>` parameter constrains an empty Vec local without
     // inferring anything about callback behavior or arbitrary constructors.
-    pub(super) fn empty_sequence_constraint(&self, name: &str, block: &syn::Block, scope: &BTreeMap<String, RustValueType>) -> Option<RustValueType> {
+    pub(super) fn empty_sequence_constraint(
+        &self,
+        name: &str,
+        block: &syn::Block,
+        scope: &BTreeMap<String, RustValueType>,
+    ) -> Option<RustValueType> {
         use syn::visit::{self, Visit};
         struct Constraints<'a> {
             index: &'a RustTypeIndex,
@@ -931,20 +1686,46 @@ impl RustTypeIndex {
         }
         impl<'ast> Visit<'ast> for Constraints<'_> {
             fn visit_pat_ident(&mut self, node: &'ast syn::PatIdent) {
-                if node.ident == self.name { self.declarations += 1; }
+                if node.ident == self.name {
+                    self.declarations += 1;
+                }
                 self.bound.insert(node.ident.to_string());
                 visit::visit_pat_ident(self, node);
             }
-            fn visit_item(&mut self, _: &'ast Item) { self.rebound = true; }
+            fn visit_item(&mut self, _: &'ast Item) {
+                self.rebound = true;
+            }
             fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
                 if let Expr::Path(path) = call.func.as_ref() {
-                    if let Some(root) = path.path.segments.first() { self.callees.insert(root.ident.to_string()); }
-                    let reference = path.path.segments.iter().map(|segment| segment.ident.to_string()).collect::<Vec<_>>().join("::");
-                    if let Some(exact) = super::rust_exact_function_reference(&self.index.path, &reference, &self.index.sources, 0) {
-                        if let Some(parameters) = self.index.mutable_sequences.get(&exact).filter(|parameters| parameters.len() == call.args.len()) {
+                    if let Some(root) = path.path.segments.first() {
+                        self.callees.insert(root.ident.to_string());
+                    }
+                    let reference = path
+                        .path
+                        .segments
+                        .iter()
+                        .map(|segment| segment.ident.to_string())
+                        .collect::<Vec<_>>()
+                        .join("::");
+                    if let Some(exact) = super::rust_exact_function_reference(
+                        &self.index.path,
+                        &reference,
+                        self.index,
+                        0,
+                    ) {
+                        if let Some(parameters) = self
+                            .index
+                            .mutable_sequences
+                            .get(&exact)
+                            .filter(|parameters| parameters.len() == call.args.len())
+                        {
                             for (argument, parameter) in call.args.iter().zip(parameters) {
-                                if let (Expr::Reference(reference), Some(value)) = (argument, parameter) {
-                                    if reference.mutability.is_some() && matches!(reference.expr.as_ref(), Expr::Path(path) if path.path.is_ident(self.name)) {
+                                if let (Expr::Reference(reference), Some(value)) =
+                                    (argument, parameter)
+                                {
+                                    if reference.mutability.is_some()
+                                        && matches!(reference.expr.as_ref(), Expr::Path(path) if path.path.is_ident(self.name))
+                                    {
                                         self.values.push(value.clone());
                                     }
                                 }
@@ -955,18 +1736,42 @@ impl RustTypeIndex {
                 visit::visit_expr_call(self, call);
             }
         }
-        let mut constraints = Constraints { index: self, name, values: Vec::new(), rebound: false, declarations: 0, bound: scope.keys().cloned().collect(), callees: BTreeSet::new() };
+        let mut constraints = Constraints {
+            index: self,
+            name,
+            values: Vec::new(),
+            rebound: false,
+            declarations: 0,
+            bound: scope.keys().cloned().collect(),
+            callees: BTreeSet::new(),
+        };
         constraints.visit_block(block);
         let first = constraints.values.first()?;
-        (!constraints.rebound && constraints.bound.is_disjoint(&constraints.callees) && constraints.declarations == 1 && constraints.values.iter().all(|value| value == first)).then(|| first.clone())
+        (!constraints.rebound
+            && constraints.bound.is_disjoint(&constraints.callees)
+            && constraints.declarations == 1
+            && constraints.values.iter().all(|value| value == first))
+        .then(|| first.clone())
     }
 
     pub(super) fn is_standard_empty_vec(&self, expression: &Expr) -> bool {
-        let Expr::Call(call) = expression else { return false; };
-        let Expr::Path(path) = call.func.as_ref() else { return false; };
-        if !call.args.is_empty() || path.path.segments.len() != 2 || path.path.segments[0].ident != "Vec"
-            || path.path.segments[1].ident != "new" || self.shadowed_types.contains("Vec") { return false; }
-        let Some(file) = self.sources.get(&self.path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
+        let Expr::Call(call) = expression else {
+            return false;
+        };
+        let Expr::Path(path) = call.func.as_ref() else {
+            return false;
+        };
+        if !call.args.is_empty()
+            || path.path.segments.len() != 2
+            || path.path.segments[0].ident != "Vec"
+            || path.path.segments[1].ident != "new"
+            || self.shadowed_types.contains("Vec")
+        {
+            return false;
+        }
+        let Some(file) = self.parsed_source(&self.path) else {
+            return false;
+        };
         fn glob(tree: &syn::UseTree) -> bool {
             match tree {
                 syn::UseTree::Glob(_) => true,
@@ -975,100 +1780,194 @@ impl RustTypeIndex {
                 _ => false,
             }
         }
-        !super::rust_import_aliases(&file).contains_key("Vec") && !file.items.iter().any(|item|
-            matches!(item, Item::Use(item) if glob(&item.tree)) || matches!(item, Item::Mod(item) if item.ident == "Vec"))
+        !super::rust_import_aliases(&file).contains_key("Vec")
+            && !file.items.iter().any(|item| {
+                matches!(item, Item::Use(item) if glob(&item.tree))
+                    || matches!(item, Item::Mod(item) if item.ident == "Vec")
+            })
     }
 
     pub(super) fn is_standard_empty_map(&self, expression: &Expr) -> bool {
-        let Expr::Call(call) = expression else { return false; };
-        let Expr::Path(path) = call.func.as_ref() else { return false; };
-        if !call.args.is_empty() || path.path.segments.len() != 2
-            || path.path.segments[0].ident != "BTreeMap" || path.path.segments[1].ident != "new"
-            || path.path.segments.iter().any(|s| !matches!(s.arguments, PathArguments::None))
-            || self.is_generic("BTreeMap") || self.shadowed_types.contains("BTreeMap")
-            || !self.unshadowed_external_root("std") { return false; }
-        let Some(file) = self.sources.get(&self.path).and_then(|source| syn::parse_file(source).ok()) else { return false; };
+        let Expr::Call(call) = expression else {
+            return false;
+        };
+        let Expr::Path(path) = call.func.as_ref() else {
+            return false;
+        };
+        if !call.args.is_empty()
+            || path.path.segments.len() != 2
+            || path.path.segments[0].ident != "BTreeMap"
+            || path.path.segments[1].ident != "new"
+            || path
+                .path
+                .segments
+                .iter()
+                .any(|s| !matches!(s.arguments, PathArguments::None))
+            || self.is_generic("BTreeMap")
+            || self.shadowed_types.contains("BTreeMap")
+            || !self.unshadowed_external_root("std")
+        {
+            return false;
+        }
+        let Some(file) = self.parsed_source(&self.path) else {
+            return false;
+        };
         super::rust_unique_unconditional_imports(&file).contains("BTreeMap")
-            && super::rust_import_aliases(&file).get("BTreeMap").map(String::as_str) == Some("std::collections::BTreeMap")
+            && super::rust_import_aliases(&file)
+                .get("BTreeMap")
+                .map(String::as_str)
+                == Some("std::collections::BTreeMap")
     }
 
     // A standard map has one fixed value type. An exact insertion constrains
     // it even when other insertions use branch-local values. Shadowing or
     // conflicting known types cannot establish that constraint.
-    pub(super) fn empty_map_constraint(&self, name: &str, block: &syn::Block, scope: &BTreeMap<String, RustValueType>) -> Option<RustValueType> {
+    pub(super) fn empty_map_constraint(
+        &self,
+        name: &str,
+        block: &syn::Block,
+        scope: &BTreeMap<String, RustValueType>,
+    ) -> Option<RustValueType> {
         use syn::visit::{self, Visit};
         struct Constraints<'a> {
-            index: &'a RustTypeIndex, name: &'a str, scope: &'a BTreeMap<String, RustValueType>,
-            values: Vec<RustValueType>, declarations: usize, rebound: bool,
-            bound: BTreeSet<String>, callees: BTreeSet<String>,
+            index: &'a RustTypeIndex,
+            name: &'a str,
+            scope: &'a BTreeMap<String, RustValueType>,
+            values: Vec<RustValueType>,
+            declarations: usize,
+            rebound: bool,
+            bound: BTreeSet<String>,
+            callees: BTreeSet<String>,
         }
         impl<'ast> Visit<'ast> for Constraints<'_> {
             fn visit_pat_ident(&mut self, node: &'ast syn::PatIdent) {
-                if node.ident == self.name { self.declarations += 1; }
+                if node.ident == self.name {
+                    self.declarations += 1;
+                }
                 self.bound.insert(node.ident.to_string());
                 visit::visit_pat_ident(self, node);
             }
-            fn visit_item(&mut self, _: &'ast Item) { self.rebound = true; }
+            fn visit_item(&mut self, _: &'ast Item) {
+                self.rebound = true;
+            }
             fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
                 if let Expr::Path(path) = call.func.as_ref() {
-                    if let Some(root) = path.path.segments.first() { self.callees.insert(root.ident.to_string()); }
+                    if let Some(root) = path.path.segments.first() {
+                        self.callees.insert(root.ident.to_string());
+                    }
                 }
                 visit::visit_expr_call(self, call);
             }
             fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-                if call.method == "insert" && call.args.len() == 2
-                    && matches!(call.receiver.as_ref(), Expr::Path(path) if path.path.is_ident(self.name)) {
-                    if let Some(value) = self.index.expression_type(&call.args[1], self.scope)
-                        .filter(|value| *value != RustValueType::Unknown) { self.values.push(value); }
+                if call.method == "insert"
+                    && call.args.len() == 2
+                    && matches!(call.receiver.as_ref(), Expr::Path(path) if path.path.is_ident(self.name))
+                {
+                    if let Some(value) = self
+                        .index
+                        .expression_type(&call.args[1], self.scope)
+                        .filter(|value| *value != RustValueType::Unknown)
+                    {
+                        self.values.push(value);
+                    }
                 }
                 visit::visit_expr_method_call(self, call);
             }
         }
-        let mut constraints = Constraints { index: self, name, scope, values: Vec::new(), declarations: 0,
-            rebound: false, bound: scope.keys().cloned().collect(), callees: BTreeSet::new() };
+        let mut constraints = Constraints {
+            index: self,
+            name,
+            scope,
+            values: Vec::new(),
+            declarations: 0,
+            rebound: false,
+            bound: scope.keys().cloned().collect(),
+            callees: BTreeSet::new(),
+        };
         constraints.visit_block(block);
         let first = constraints.values.first()?;
-        (!constraints.rebound && constraints.declarations == 1 && constraints.bound.is_disjoint(&constraints.callees)
+        (!constraints.rebound
+            && constraints.declarations == 1
+            && constraints.bound.is_disjoint(&constraints.callees)
             && constraints.values.iter().all(|value| value == first))
-            .then(|| RustValueType::MapValues(Box::new(first.clone())))
+        .then(|| RustValueType::MapValues(Box::new(first.clone())))
     }
 
     pub(super) fn sequence_annotation(&self, pattern: &Pat) -> Option<RustValueType> {
-        let Pat::Type(pattern) = pattern else { return None; };
-        self.parse_type(&pattern.ty).filter(|value| matches!(value, RustValueType::Sequence(_)))
+        let Pat::Type(pattern) = pattern else {
+            return None;
+        };
+        self.parse_type(&pattern.ty)
+            .filter(|value| matches!(value, RustValueType::Sequence(_)))
     }
 
     pub(super) fn inherent_self_type(&self, ty: &Type) -> Option<RustValueType> {
-        let Type::Path(path) = ty else { return None; };
-        if path.qself.is_some() || path.path.segments.len() != 1 { return None; }
+        let Type::Path(path) = ty else {
+            return None;
+        };
+        if path.qself.is_some() || path.path.segments.len() != 1 {
+            return None;
+        }
         let segment = &path.path.segments[0];
-        if self.is_generic(&segment.ident.to_string()) { return None; }
+        if self.is_generic(&segment.ident.to_string()) {
+            return None;
+        }
         match &segment.arguments {
-            PathArguments::None => {},
-            PathArguments::AngleBracketed(arguments) if arguments.args.iter().all(|arg| matches!(arg, GenericArgument::Lifetime(_))) => {},
+            PathArguments::None => {}
+            PathArguments::AngleBracketed(arguments)
+                if arguments
+                    .args
+                    .iter()
+                    .all(|arg| matches!(arg, GenericArgument::Lifetime(_))) => {}
             _ => return None,
         }
         let exact = format!("{}#{}", self.path, segment.ident);
-        self.unique_types.contains(&exact).then_some(RustValueType::Named(exact))
+        self.unique_types
+            .contains(&exact)
+            .then_some(RustValueType::Named(exact))
     }
 
-    fn local_constructed_type(&self, path: &syn::Path, tuple_arity: Option<usize>) -> Option<RustValueType> {
-        if path.segments.len() != 1 || path.leading_colon.is_some() { return None; }
+    fn local_constructed_type(
+        &self,
+        path: &syn::Path,
+        tuple_arity: Option<usize>,
+    ) -> Option<RustValueType> {
+        if path.segments.len() != 1 || path.leading_colon.is_some() {
+            return None;
+        }
         let name = path.segments[0].ident.to_string();
-        if self.is_generic(&name) { return None; }
-        let file = syn::parse_file(self.sources.get(&self.path)?).ok()?;
+        if self.is_generic(&name) {
+            return None;
+        }
+        let file = self.parsed_source(&self.path)?;
         if super::rust_import_aliases(&file).contains_key(&name)
-            || file.items.iter().any(|item| matches!(item, Item::Fn(item) if item.sig.ident == name)) { return None; }
+            || file
+                .items
+                .iter()
+                .any(|item| matches!(item, Item::Fn(item) if item.sig.ident == name))
+        {
+            return None;
+        }
         let exact = format!("{}#{name}", self.path);
-        if !self.unique_types.contains(&exact) { return None; }
+        if !self.unique_types.contains(&exact) {
+            return None;
+        }
         let item = file.items.iter().find_map(|item| match item {
-            Item::Struct(item) if item.ident == name => Some(item), _ => None,
+            Item::Struct(item) if item.ident == name => Some(item),
+            _ => None,
         })?;
-        if item.generics.type_params().next().is_some() || item.generics.const_params().next().is_some()
-            || item.attrs.iter().any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")) { return None; }
+        if item.generics.type_params().next().is_some()
+            || item.generics.const_params().next().is_some()
+            || item
+                .attrs
+                .iter()
+                .any(|attr| attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr"))
+        {
+            return None;
+        }
         match (&item.fields, tuple_arity) {
-            (syn::Fields::Unnamed(fields), Some(arity)) if fields.unnamed.len() == arity => {},
-            (syn::Fields::Named(_), None) => {},
+            (syn::Fields::Unnamed(fields), Some(arity)) if fields.unnamed.len() == arity => {}
+            (syn::Fields::Named(_), None) => {}
             _ => return None,
         }
         Some(RustValueType::Named(exact))
@@ -1081,14 +1980,28 @@ impl RustTypeIndex {
     ) -> Option<RustValueType> {
         match expression {
             Expr::Block(block) => {
-                let Some(syn::Stmt::Expr(tail, None)) = block.block.stmts.last() else { return None; };
+                let Some(syn::Stmt::Expr(tail, None)) = block.block.stmts.last() else {
+                    return None;
+                };
                 // No untracked local binding may change a tail expression's type.
-                if block.block.stmts[..block.block.stmts.len() - 1].iter().any(|statement| matches!(statement, syn::Stmt::Local(_) | syn::Stmt::Item(_))) { return None; }
+                if block.block.stmts[..block.block.stmts.len() - 1]
+                    .iter()
+                    .any(|statement| matches!(statement, syn::Stmt::Local(_) | syn::Stmt::Item(_)))
+                {
+                    return None;
+                }
                 self.expression_type(tail, values)
             }
             Expr::If(expression) => {
-                let Some(syn::Stmt::Expr(tail, None)) = expression.then_branch.stmts.last() else { return None; };
-                if expression.then_branch.stmts[..expression.then_branch.stmts.len() - 1].iter().any(|statement| matches!(statement, syn::Stmt::Local(_) | syn::Stmt::Item(_))) { return None; }
+                let Some(syn::Stmt::Expr(tail, None)) = expression.then_branch.stmts.last() else {
+                    return None;
+                };
+                if expression.then_branch.stmts[..expression.then_branch.stmts.len() - 1]
+                    .iter()
+                    .any(|statement| matches!(statement, syn::Stmt::Local(_) | syn::Stmt::Item(_)))
+                {
+                    return None;
+                }
                 let left = self.expression_type(tail, values)?;
                 let right = self.expression_type(&expression.else_branch.as_ref()?.1, values)?;
                 (left == right).then_some(left)
@@ -1097,33 +2010,66 @@ impl RustTypeIndex {
                 let matched = self.expression_type(&expression.expr, values)?;
                 let mut joined = None;
                 for arm in &expression.arms {
-                    if matches!(arm.body.as_ref(), Expr::Return(_)) { continue; }
+                    if matches!(arm.body.as_ref(), Expr::Return(_)) {
+                        continue;
+                    }
                     let mut scope = values.clone();
                     let mut names = BTreeSet::new();
                     super::collect_rust_pattern_identifiers(&arm.pat, &mut names);
-                    for name in names { scope.insert(name, RustValueType::Unknown); }
+                    for name in names {
+                        scope.insert(name, RustValueType::Unknown);
+                    }
                     scope.extend(self.pattern_bindings(&arm.pat, &matched));
                     let value = self.expression_type(&arm.body, &scope)?;
-                    if joined.as_ref().is_some_and(|prior| prior != &value) { return None; }
+                    if joined.as_ref().is_some_and(|prior| prior != &value) {
+                        return None;
+                    }
                     joined = Some(value);
                 }
                 joined
             }
-            Expr::Lit(literal) if matches!(literal.lit, syn::Lit::Str(_)) => Some(RustValueType::Text),
+            Expr::Lit(literal) if matches!(literal.lit, syn::Lit::Str(_)) => {
+                Some(RustValueType::Text)
+            }
             Expr::Path(path) => {
-                if let Some(ident) = path.path.get_ident() { return values.get(&ident.to_string()).cloned(); }
-                matches!(self.external_path(&path.path).as_deref(), Some("git2::TreeWalkResult::Ok" | "git2::TreeWalkResult::Skip" | "git2::TreeWalkResult::Abort"))
-                    .then_some(RustValueType::External(ExternalType::GitTreeWalkResult))
+                if let Some(ident) = path.path.get_ident() {
+                    return values.get(&ident.to_string()).cloned();
+                }
+                matches!(
+                    self.external_path(&path.path).as_deref(),
+                    Some(
+                        "git2::TreeWalkResult::Ok"
+                            | "git2::TreeWalkResult::Skip"
+                            | "git2::TreeWalkResult::Abort"
+                    )
+                )
+                .then_some(RustValueType::External(ExternalType::GitTreeWalkResult))
             }
             Expr::Reference(reference) => self.expression_type(&reference.expr, values),
             Expr::Paren(paren) => self.expression_type(&paren.expr, values),
-            Expr::Index(index) if matches!(index.index.as_ref(), Expr::Range(_))
-                && self.expression_type(&index.expr, values) == Some(RustValueType::Text) => Some(RustValueType::Text),
-            Expr::Tuple(tuple) => Some(RustValueType::Tuple(tuple.elems.iter().map(|expr|
-                self.expression_type(expr, values).unwrap_or(RustValueType::Unknown)).collect())),
-            Expr::Struct(value) if value.qself.is_none() => self.local_constructed_type(&value.path, None),
+            Expr::Index(index)
+                if matches!(index.index.as_ref(), Expr::Range(_))
+                    && self.expression_type(&index.expr, values) == Some(RustValueType::Text) =>
+            {
+                Some(RustValueType::Text)
+            }
+            Expr::Tuple(tuple) => Some(RustValueType::Tuple(
+                tuple
+                    .elems
+                    .iter()
+                    .map(|expr| {
+                        self.expression_type(expr, values)
+                            .unwrap_or(RustValueType::Unknown)
+                    })
+                    .collect(),
+            )),
+            Expr::Struct(value) if value.qself.is_none() => {
+                self.local_constructed_type(&value.path, None)
+            }
             Expr::Field(field) => {
-                let RustValueType::Named(owner) = self.expression_type(&field.base, values)? else { return None; };
+                let RustValueType::Named(owner) = self.expression_type(&field.base, values)? else {
+                    return None;
+                };
                 let member = match &field.member {
                     syn::Member::Named(name) => name.to_string(),
                     syn::Member::Unnamed(index) => index.index.to_string(),
@@ -1147,16 +2093,36 @@ impl RustTypeIndex {
                         use ExternalType::*;
                         let value = match (external.as_str(), call.args.len()) {
                             ("std::io::stdin", 0) => Some(RustValueType::External(Stdin)),
-                            ("git2::Repository::open" | "git2::Repository::discover", 1) if matches!(self.expression_type(&call.args[0], values), Some(RustValueType::Text))
-                                || matches!(self.expression_type(&call.args[0], values), Some(RustValueType::Named(name)) if name == "std::path::Path" || name == "std::path::PathBuf") => Some(RustValueType::ResultKnown(Box::new(RustValueType::External(GitRepository)), Box::new(RustValueType::External(GitError)))),
-                            ("git2::Index::new", 0) => Some(RustValueType::ResultKnown(Box::new(RustValueType::External(GitIndex)), Box::new(RustValueType::External(GitError)))),
-                            ("git2::StatusOptions::new", 0) => Some(RustValueType::External(GitStatusOptions)),
-                            ("git2::DiffOptions::new", 0) => Some(RustValueType::External(GitDiffOptions)),
+                            ("git2::Repository::open" | "git2::Repository::discover", 1)
+                                if matches!(
+                                    self.expression_type(&call.args[0], values),
+                                    Some(RustValueType::Text)
+                                ) || matches!(self.expression_type(&call.args[0], values), Some(RustValueType::Named(name)) if name == "std::path::Path" || name == "std::path::PathBuf") =>
+                            {
+                                Some(RustValueType::ResultKnown(
+                                    Box::new(RustValueType::External(GitRepository)),
+                                    Box::new(RustValueType::External(GitError)),
+                                ))
+                            }
+                            ("git2::Index::new", 0) => Some(RustValueType::ResultKnown(
+                                Box::new(RustValueType::External(GitIndex)),
+                                Box::new(RustValueType::External(GitError)),
+                            )),
+                            ("git2::StatusOptions::new", 0) => {
+                                Some(RustValueType::External(GitStatusOptions))
+                            }
+                            ("git2::DiffOptions::new", 0) => {
+                                Some(RustValueType::External(GitDiffOptions))
+                            }
                             _ => None,
                         };
-                        if value.is_some() { return value; }
+                        if value.is_some() {
+                            return value;
+                        }
                     }
-                    if let Some(value) = self.local_constructed_type(&path.path, Some(call.args.len())) {
+                    if let Some(value) =
+                        self.local_constructed_type(&path.path, Some(call.args.len()))
+                    {
                         return Some(value);
                     }
                 }
@@ -1167,42 +2133,70 @@ impl RustTypeIndex {
                     .map(|s| s.ident.to_string())
                     .collect::<Vec<_>>()
                     .join("::");
-                if reference == "std::str::from_utf8" && call.args.len() == 1
-                    && self.unshadowed_external_root("std") {
+                if reference == "std::str::from_utf8"
+                    && call.args.len() == 1
+                    && self.unshadowed_external_root("std")
+                {
                     return Some(RustValueType::ResultOk(Box::new(RustValueType::Text)));
                 }
-                let exact =
-                    super::rust_exact_function_reference(&self.path, &reference, &self.sources, 0)?;
-                self.function_returns.get(&exact).or_else(|| self.returns.get(&exact)).cloned()
+                let exact = super::rust_exact_function_reference(&self.path, &reference, self, 0)?;
+                self.function_returns
+                    .get(&exact)
+                    .or_else(|| self.returns.get(&exact))
+                    .cloned()
             }
             Expr::MethodCall(call) => {
                 let receiver = self.expression_type(&call.receiver, values)?;
                 let method = call.method.to_string();
                 match receiver {
-                    RustValueType::External(receiver) if call.turbofish.is_none() => receiver.method(&method, call.args.len()),
-                    RustValueType::ResultKnown(ok, _) if method == "map_err" && call.args.len() == 1 =>
-                        Some(RustValueType::ResultKnown(ok, Box::new(RustValueType::Unknown))),
-                    RustValueType::ResultOk(element) if method == "map_err" && call.args.len() == 1 =>
-                        Some(RustValueType::ResultOk(element)),
+                    RustValueType::External(receiver) if call.turbofish.is_none() => {
+                        receiver.method(&method, call.args.len())
+                    }
+                    RustValueType::ResultKnown(ok, _)
+                        if method == "map_err" && call.args.len() == 1 =>
+                    {
+                        Some(RustValueType::ResultKnown(
+                            ok,
+                            Box::new(RustValueType::Unknown),
+                        ))
+                    }
+                    RustValueType::ResultOk(element)
+                        if method == "map_err" && call.args.len() == 1 =>
+                    {
+                        Some(RustValueType::ResultOk(element))
+                    }
                     RustValueType::Text => match method.as_str() {
-                        "len" if call.args.is_empty() && call.turbofish.is_none() => Some(RustValueType::Usize),
-                        "bytes" if call.args.is_empty() && call.turbofish.is_none() =>
-                            Some(RustValueType::Iterator(Box::new(RustValueType::Byte))),
-                        "chars" if call.args.is_empty() && call.turbofish.is_none() =>
-                            Some(RustValueType::Iterator(Box::new(RustValueType::Character))),
-                        "split_inclusive" | "split" | "lines" | "split_whitespace" =>
-                            Some(RustValueType::Iterator(Box::new(RustValueType::Text))),
-                        "as_str" | "to_owned" | "to_string" | "clone" | "trim" | "trim_end_matches" => Some(RustValueType::Text),
+                        "len" if call.args.is_empty() && call.turbofish.is_none() => {
+                            Some(RustValueType::Usize)
+                        }
+                        "bytes" if call.args.is_empty() && call.turbofish.is_none() => {
+                            Some(RustValueType::Iterator(Box::new(RustValueType::Byte)))
+                        }
+                        "chars" if call.args.is_empty() && call.turbofish.is_none() => {
+                            Some(RustValueType::Iterator(Box::new(RustValueType::Character)))
+                        }
+                        "split_inclusive" | "split" | "lines" | "split_whitespace" => {
+                            Some(RustValueType::Iterator(Box::new(RustValueType::Text)))
+                        }
+                        "as_str" | "to_owned" | "to_string" | "clone" | "trim"
+                        | "trim_end_matches" => Some(RustValueType::Text),
                         _ => None,
                     },
                     RustValueType::Named(name) => {
-                        if matches!(name.as_str(), "std::path::Path" | "std::path::PathBuf") && call.turbofish.is_none() {
-                            if method == "join" && call.args.len() == 1
-                                && matches!(&call.args[0], Expr::Lit(literal) if matches!(literal.lit, syn::Lit::Str(_))) {
+                        if matches!(name.as_str(), "std::path::Path" | "std::path::PathBuf")
+                            && call.turbofish.is_none()
+                        {
+                            if method == "join"
+                                && call.args.len() == 1
+                                && matches!(&call.args[0], Expr::Lit(literal) if matches!(literal.lit, syn::Lit::Str(_)))
+                            {
                                 return Some(RustValueType::Named("std::path::PathBuf".into()));
                             }
                             if method == "canonicalize" && call.args.is_empty() {
-                                return Some(RustValueType::ResultKnown(Box::new(RustValueType::Named("std::path::PathBuf".into())), Box::new(RustValueType::External(ExternalType::IoError))));
+                                return Some(RustValueType::ResultKnown(
+                                    Box::new(RustValueType::Named("std::path::PathBuf".into())),
+                                    Box::new(RustValueType::External(ExternalType::IoError)),
+                                ));
                             }
                         }
                         self.returns.get(&format!("{name}::{method}")).cloned()
@@ -1213,10 +2207,14 @@ impl RustTypeIndex {
                         "first" | "last" | "last_mut" => Some(RustValueType::Optional(element)),
                         _ => None,
                     },
-                    RustValueType::Set(element) if matches!(method.as_str(), "iter" | "into_iter") =>
-                        Some(RustValueType::Iterator(element)),
-                    RustValueType::MapValues(element) if method == "get" =>
-                        Some(RustValueType::Optional(element)),
+                    RustValueType::Set(element)
+                        if matches!(method.as_str(), "iter" | "into_iter") =>
+                    {
+                        Some(RustValueType::Iterator(element))
+                    }
+                    RustValueType::MapValues(element) if method == "get" => {
+                        Some(RustValueType::Optional(element))
+                    }
                     RustValueType::MapValues(element)
                         if matches!(method.as_str(), "values" | "into_values") =>
                     {
@@ -1225,31 +2223,71 @@ impl RustTypeIndex {
                     RustValueType::Iterator(element)
                         if method == "enumerate" && call.args.is_empty() =>
                     {
-                        Some(RustValueType::Iterator(Box::new(RustValueType::Tuple(vec![RustValueType::Unknown, *element]))))
+                        Some(RustValueType::Iterator(Box::new(RustValueType::Tuple(
+                            vec![RustValueType::Unknown, *element],
+                        ))))
                     }
                     RustValueType::Iterator(element)
-                        if matches!(method.as_str(), "filter" | "take" | "skip" | "copied" | "cloned") =>
+                        if matches!(
+                            method.as_str(),
+                            "filter" | "take" | "skip" | "copied" | "cloned"
+                        ) =>
                     {
                         Some(RustValueType::Iterator(element))
                     }
-                    RustValueType::Iterator(element) if matches!(method.as_str(), "find" | "min" | "max" | "min_by" | "max_by" | "min_by_key" | "max_by_key") => {
+                    RustValueType::Iterator(element)
+                        if matches!(
+                            method.as_str(),
+                            "find"
+                                | "min"
+                                | "max"
+                                | "min_by"
+                                | "max_by"
+                                | "min_by_key"
+                                | "max_by_key"
+                        ) =>
+                    {
                         Some(RustValueType::Optional(element))
                     }
-                    RustValueType::Optional(element) if matches!(method.as_str(), "filter" | "as_ref" | "copied" | "cloned" | "or_else") => {
+                    RustValueType::Optional(element)
+                        if matches!(
+                            method.as_str(),
+                            "filter" | "as_ref" | "copied" | "cloned" | "or_else"
+                        ) =>
+                    {
                         Some(RustValueType::Optional(element))
                     }
-                    RustValueType::Optional(element) if method == "transpose" && call.args.is_empty() => {
-                        let RustValueType::ResultKnown(ok, error) = *element else { return None; };
-                        Some(RustValueType::ResultKnown(Box::new(RustValueType::Optional(ok)), error))
+                    RustValueType::Optional(element)
+                        if method == "transpose" && call.args.is_empty() =>
+                    {
+                        let RustValueType::ResultKnown(ok, error) = *element else {
+                            return None;
+                        };
+                        Some(RustValueType::ResultKnown(
+                            Box::new(RustValueType::Optional(ok)),
+                            error,
+                        ))
                     }
-                    RustValueType::Optional(element) if matches!(method.as_str(), "and_then" | "map") => {
-                        let Expr::Closure(closure) = call.args.first()? else { return None; };
-                        if closure.inputs.len() != 1 { return None; }
-                        let Pat::Ident(name) = &closure.inputs[0] else { return None; };
+                    RustValueType::Optional(element)
+                        if matches!(method.as_str(), "and_then" | "map") =>
+                    {
+                        let Expr::Closure(closure) = call.args.first()? else {
+                            return None;
+                        };
+                        if closure.inputs.len() != 1 {
+                            return None;
+                        }
+                        let Pat::Ident(name) = &closure.inputs[0] else {
+                            return None;
+                        };
                         let mut nested = values.clone();
                         nested.insert(name.ident.to_string(), *element);
                         let result = self.expression_type(&closure.body, &nested)?;
-                        if method == "and_then" { Some(result) } else { Some(RustValueType::Optional(Box::new(result))) }
+                        if method == "and_then" {
+                            Some(result)
+                        } else {
+                            Some(RustValueType::Optional(Box::new(result)))
+                        }
                     }
                     RustValueType::Iterator(element)
                         if method == "collect"
@@ -1269,10 +2307,7 @@ impl RustTypeIndex {
                                 }
                                 // Require an explicit standard Vec target; an unconstrained
                                 // FromIterator implementation may produce a different type.
-                                let Some(source) = self.sources.get(&self.path) else {
-                                    return false;
-                                };
-                                let Ok(file) = syn::parse_file(source) else {
+                                let Some(file) = self.parsed_source(&self.path) else {
                                     return false;
                                 };
                                 super::rust_import_aliases(&file).get("Vec").is_none()

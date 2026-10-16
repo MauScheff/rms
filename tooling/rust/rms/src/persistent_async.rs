@@ -33,7 +33,10 @@ impl ExecutionBinding {
         matches!(self, Self::PersistentAsync { .. })
     }
     pub(crate) fn uses_envelopes(&self) -> bool {
-        matches!(self, Self::SynchronousEnvelopes { .. } | Self::PersistentAsync { .. })
+        matches!(
+            self,
+            Self::SynchronousEnvelopes { .. } | Self::PersistentAsync { .. }
+        )
     }
 
     pub(crate) fn is_caller_driven(&self) -> bool {
