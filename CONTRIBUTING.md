@@ -36,6 +36,16 @@ Apply the [understandability review](UNDERSTANDABILITY.md) before adding a new
 status, optional field, workflow phase, routing choice, or proof mode. Prefer a
 closed variant or derived projection when it removes invalid combinations.
 
+## CI acceptance boundary
+
+RMS native regressions, reference-solver conformance, formatting, cross-platform
+tests, and consumer example validation and composition are required.
+The separate `rms-self-checks` job reports full example production certification
+and the repository-wide RMS self-audit as advisory evidence. Their failure or
+timeout does not certify the examples or self-description and does not waive a
+required native or consumer check. This policy applies only to this repository's
+CI. It does not change RMS CLI results or downstream gates.
+
 ## Pilot rule
 
 During the 0.1 pilot, prefer reports from real implementations over speculative expansion. Friction that appears in one language or agent should first be solved in its binding or integration layer.

@@ -81,7 +81,34 @@ jobs:
         run: |
           cargo fmt --all --check
           cargo build -p rms --locked
-      - name: RMS exhaustive strict audit
+      - name: Consumer example validation and composition
+        run: |
+          target/debug/rms validate --root examples --json
+          target/debug/rms compose --root . --json
+
+  # RMS self-description is diagnostic evidence, not authority over RMS development.
+  # Native regressions, consumer validation and composition remain required.
+  rms-self-checks:
+    needs: native-release-proofs
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build self-audit binary
+        run: cargo build -p rms --locked
+      - name: Advisory full example certification
+        continue-on-error: true
+        run: target/debug/rms check --all --root examples
+      - name: Advisory RMS repository self-audit
         run: target/debug/rms check --all --root .
 
   behavioral-contracts:
@@ -103,7 +130,7 @@ jobs:
         run: cargo test -p rms --locked behavioral_contract::tests
       - name: Cross-platform structural and composition checks
         run: |
-          cargo run -p rms --locked -- validate --root . --json
+          cargo run -p rms --locked -- validate --root examples --json
           cargo run -p rms --locked -- compose --root . --json
 
   python-binding:

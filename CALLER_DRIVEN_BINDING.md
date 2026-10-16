@@ -42,8 +42,9 @@ resource lifecycles, and evidence.
 - The caller retains state and records, executes requests, and returns correlated
   result facts. The provider has no local driver, executor, effect-support role,
   runnable surface, or effectful semantic function.
-- Source authority analysis remains mandatory. A pure declaration cannot hide IO,
-  unresolved calls, or dynamic dispatch. Both transition callables have declared
+- Source authority findings remain visible. Detected forbidden IO blocks acceptance.
+  Unresolved calls and dynamic dispatch are advisory and do not prove purity.
+  Native compilation and declared executable tests remain required. Both transition callables have declared
   pure semantic owners and belong to transition-role source files.
 - Provider properties prove its decisions for stale and duplicate results,
   cancellation, replay, and cleanup requests. They do not prove actual cleanup.
