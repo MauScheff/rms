@@ -77,9 +77,7 @@ impl Index {
                 match item {
                     Item::Fn(function)
                         if function.sig.ident == symbol
-                            && function.attrs.iter().all(|attr| {
-                                attr.path().is_ident("doc") || attr.path().is_ident("test")
-                            }) =>
+                            && function.attrs.iter().all(inert_function_attribute) =>
                     {
                         bodies.push((None, &function.sig, &*function.block))
                     }
@@ -210,10 +208,7 @@ impl Index {
                     }
                 }
                 Item::Fn(item)
-                    if call.len() == 1
-                        && item.attrs.iter().all(|attr| {
-                            attr.path().is_ident("test") || attr.path().is_ident("doc")
-                        }) =>
+                    if call.len() == 1 && item.attrs.iter().all(inert_function_attribute) =>
                 {
                     Ok((path.to_path_buf(), first.clone()))
                 }
@@ -315,6 +310,17 @@ impl Index {
             Err(())
         }
     }
+}
+
+// Formatting-only tool metadata cannot transform or conditionally remove a
+// function. Unknown attributes and cfg remain unresolved, as before.
+fn inert_function_attribute(attribute: &syn::Attribute) -> bool {
+    attribute.path().is_ident("doc")
+        || attribute.path().is_ident("test")
+        || (matches!(&attribute.meta, syn::Meta::Path(_))
+            && attribute.path().segments.len() == 2
+            && attribute.path().segments[0].ident == "rustfmt"
+            && attribute.path().segments[1].ident == "skip")
 }
 
 fn type_path(ty: &syn::Type) -> Option<Vec<String>> {
