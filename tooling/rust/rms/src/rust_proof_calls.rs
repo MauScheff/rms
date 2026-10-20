@@ -9,6 +9,7 @@ pub(crate) struct Index {
     files: BTreeMap<PathBuf, syn::File>,
     library: PathBuf,
     crate_name: Option<String>,
+    test_parents: Option<BTreeMap<PathBuf, Vec<PathBuf>>>,
 }
 
 impl Index {
@@ -24,6 +25,7 @@ impl Index {
                 .collect(),
             library: normalize(&library).unwrap_or(library),
             crate_name,
+            test_parents: None,
         }
     }
 
@@ -43,7 +45,126 @@ impl Index {
                 .collect(),
             library,
             crate_name,
+            test_parents: None,
         }
+    }
+
+    /// Only trace proofs run in the explicit test configuration. Production
+    /// call inspection retains its existing conditional-declaration policy.
+    pub(crate) fn for_test_proof(mut self, runner: &Path) -> Self {
+        self.test_parents = Some(BTreeMap::new());
+        let mut parents = BTreeMap::<PathBuf, Vec<PathBuf>>::new();
+        let mut visited = BTreeSet::new();
+        // A helper can be compiled by several independent integration crates.
+        // Only attachments reachable from this library and selected test root
+        // participate in this proof; duplicate active attachments still fail.
+        for root in [self.library.clone(), runner.to_path_buf()] {
+            let mut pending = vec![root];
+            while let Some(path) = pending.pop() {
+                if !visited.insert(path.clone()) {
+                    continue;
+                }
+                let Some(file) = self.files.get(&path) else {
+                    continue;
+                };
+                for item in &file.items {
+                    if let Item::Mod(module) = item {
+                        if let Some(target) = self.module_target(&path, module) {
+                            parents
+                                .entry(target.clone())
+                                .or_default()
+                                .push(path.clone());
+                            pending.push(target);
+                        }
+                    }
+                }
+            }
+        }
+        self.test_parents = Some(parents);
+        self
+    }
+
+    fn proof_parent(&self, path: &Path) -> Result<Option<&PathBuf>, ()> {
+        match self
+            .test_parents
+            .as_ref()
+            .and_then(|parents| parents.get(path))
+        {
+            None => Ok(None),
+            Some(parents) if parents.len() == 1 => Ok(parents.first()),
+            _ => Err(()),
+        }
+    }
+
+    fn proof_root<'a>(&'a self, path: &'a Path) -> Result<&'a Path, ()> {
+        let mut root = path;
+        let mut seen = BTreeSet::new();
+        while let Some(parent) = self.proof_parent(root)? {
+            if !seen.insert(root.to_path_buf()) || seen.len() > 24 {
+                return Err(());
+            }
+            root = parent;
+        }
+        Ok(root)
+    }
+
+    fn module_target(&self, path: &Path, module: &syn::ItemMod) -> Option<PathBuf> {
+        if module.content.is_some() {
+            return None;
+        }
+        let mut explicit = Vec::new();
+        for attr in &module.attrs {
+            if let syn::Meta::NameValue(meta) = &attr.meta {
+                if meta.path.is_ident("path") {
+                    if let syn::Expr::Lit(value) = &meta.value {
+                        if let syn::Lit::Str(value) = &value.lit {
+                            explicit.push(value.value());
+                            continue;
+                        }
+                    }
+                }
+            }
+            let test_cfg = self.test_parents.is_some()
+                && attr.path().is_ident("cfg")
+                && attr
+                    .parse_args::<syn::Path>()
+                    .is_ok_and(|path| path.is_ident("test"));
+            if !attr.path().is_ident("doc") && !test_cfg {
+                return None;
+            }
+        }
+        let parent = path.parent()?;
+        let candidates = match explicit.as_slice() {
+            [relative] => vec![normalize(&parent.join(relative))?],
+            [] => {
+                let directory = if matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("lib.rs" | "main.rs" | "mod.rs")
+                ) || path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    == Some("tests")
+                {
+                    parent.to_path_buf()
+                } else {
+                    parent.join(path.file_stem()?)
+                };
+                vec![
+                    directory.join(format!("{}.rs", module.ident)),
+                    directory.join(module.ident.to_string()).join("mod.rs"),
+                ]
+            }
+            _ => return None,
+        };
+        let mut existing = candidates
+            .into_iter()
+            .filter(|path| self.files.contains_key(path));
+        let target = existing.next()?;
+        if existing.next().is_some() {
+            return None;
+        }
+        Some(target)
     }
 
     pub(crate) fn resolve(&self, path: &Path, call: &[String]) -> Option<(PathBuf, String)> {
@@ -171,7 +292,9 @@ impl Index {
             }
             if first == "crate" {
                 // An integration test is its own crate, not the package library.
-                let root = if path.starts_with(self.library.parent().ok_or(())?) {
+                let root = if self.test_parents.is_some() {
+                    self.proof_root(path)?
+                } else if path.starts_with(self.library.parent().ok_or(())?) {
                     self.library.as_path()
                 } else {
                     path
@@ -179,19 +302,24 @@ impl Index {
                 return self.resolve_at(root, &call[1..], depth + 1);
             }
         }
+        if first == "super" && self.test_parents.is_some() {
+            return self.resolve_at(self.proof_parent(path)?.ok_or(())?, &call[1..], depth + 1);
+        }
         let definitions = file
             .items
             .iter()
             .filter(|item| match item {
-                Item::Fn(item) => item.sig.ident == first,
-                Item::Mod(item) => item.ident == first,
+                Item::Fn(item) => call.len() == 1 && item.sig.ident == first,
+                Item::Mod(item) => call.len() > 1 && item.ident == first,
                 Item::Struct(item) => item.ident == first,
                 Item::Enum(item) => item.ident == first,
                 _ => false,
             })
             .collect::<Vec<_>>();
         if !definitions.is_empty() {
-            if definitions.len() != 1 {
+            if definitions.len() != 1
+                || (!root_imports.is_empty() && !matches!(definitions[0], Item::Mod(_)))
+            {
                 return Err(());
             }
             return match definitions[0] {
@@ -213,54 +341,8 @@ impl Index {
                     Ok((path.to_path_buf(), first.clone()))
                 }
                 Item::Mod(item) if call.len() > 1 && item.content.is_none() => {
-                    let mut explicit = Vec::new();
-                    for attr in &item.attrs {
-                        if let syn::Meta::NameValue(meta) = &attr.meta {
-                            if meta.path.is_ident("path") {
-                                if let syn::Expr::Lit(value) = &meta.value {
-                                    if let syn::Lit::Str(value) = &value.lit {
-                                        explicit.push(value.value());
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                        if !attr.path().is_ident("doc") {
-                            return Err(());
-                        }
-                    }
-                    let parent = path.parent().ok_or(())?;
-                    let candidates = match explicit.as_slice() {
-                        [relative] => vec![normalize(&parent.join(relative)).ok_or(())?],
-                        [] => {
-                            let directory = if matches!(
-                                path.file_name().and_then(|s| s.to_str()),
-                                Some("lib.rs" | "main.rs" | "mod.rs")
-                            ) || path
-                                .parent()
-                                .and_then(Path::file_name)
-                                .and_then(|s| s.to_str())
-                                == Some("tests")
-                            {
-                                parent.to_path_buf()
-                            } else {
-                                parent.join(path.file_stem().ok_or(())?)
-                            };
-                            vec![
-                                directory.join(format!("{first}.rs")),
-                                directory.join(first).join("mod.rs"),
-                            ]
-                        }
-                        _ => return Err(()),
-                    };
-                    let existing = candidates
-                        .iter()
-                        .filter(|path| self.files.contains_key(*path))
-                        .collect::<Vec<_>>();
-                    if existing.len() != 1 {
-                        return Err(());
-                    }
-                    self.resolve_at(existing[0], &call[1..], depth + 1)
+                    let target = self.module_target(path, item).ok_or(())?;
+                    self.resolve_at(&target, &call[1..], depth + 1)
                 }
                 _ => Err(()),
             };
@@ -290,6 +372,7 @@ impl Index {
             let known = glob.first().is_some_and(|name| {
                 name == "crate"
                     || name == "self"
+                    || (name == "super" && self.test_parents.is_some())
                     || self.crate_name.as_ref() == Some(name)
                     || file
                         .items
@@ -451,6 +534,67 @@ impl<'ast> Visit<'ast> for Calls<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_and_function_facade_names_use_the_applicable_namespace() {
+        let library = PathBuf::from("/p/src/lib.rs");
+        let record = (
+            PathBuf::from("/p/src/transition.rs"),
+            "transition_record".into(),
+        );
+        let facade = "mod transition; pub fn transition() { crate::transition::transition(); } pub use crate::transition::transition_record;";
+        let sources = BTreeMap::from([
+            (library.clone(), facade.into()),
+            (
+                record.0.clone(),
+                "pub fn transition() {} pub fn transition_record() { transition(); }".into(),
+            ),
+            (
+                PathBuf::from("/p/src/driver.rs"),
+                "fn drive() { crate::transition(); crate::transition_record(); }".into(),
+            ),
+            (
+                PathBuf::from("/p/tests/trace.rs"),
+                "use owner::transition_record; fn produce() { transition_record(); }".into(),
+            ),
+        ]);
+        let index = Index::new(&sources, library.clone(), Some("owner".into()));
+        assert_eq!(
+            index.resolve(&library, &["transition".into()]),
+            Some((library.clone(), "transition".into()))
+        );
+        assert_eq!(
+            index.resolve(&library, &["transition".into(), "transition_record".into()]),
+            Some(record.clone())
+        );
+        for start in [
+            (PathBuf::from("/p/src/driver.rs"), "drive".into()),
+            (PathBuf::from("/p/tests/trace.rs"), "produce".into()),
+        ] {
+            assert!(index.reaches(start, record.clone()));
+        }
+        for (extra, call) in [
+            ("mod transition;", vec!["transition", "transition_record"]),
+            (
+                "struct transition;",
+                vec!["transition", "transition_record"],
+            ),
+            ("pub fn transition() {}", vec!["transition"]),
+            ("use foreign::transition;", vec!["transition"]),
+        ] {
+            let mut changed = sources.clone();
+            changed.insert(library.clone(), format!("{facade} {extra}"));
+            assert!(
+                Index::new(&changed, library.clone(), Some("owner".into()))
+                    .resolve(
+                        &library,
+                        &call.into_iter().map(str::to_string).collect::<Vec<_>>()
+                    )
+                    .is_none(),
+                "{extra}"
+            );
+        }
+    }
 
     #[test]
     fn nested_crate_facade_methods_reach_only_the_exact_driver() {
