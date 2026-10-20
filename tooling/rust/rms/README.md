@@ -85,6 +85,12 @@ RMS-generated machine receipts under `.rms/evidence/` are disposable derived evi
 
 Git commits are required evidence, not implied authority. This guidance does not grant Git authority. When the task and host policy authorize commits, commit at the prescribed point and run strict audit. Otherwise do not claim RMS completion or production readiness. The pending states are `bootstrap prepared; provenance baseline pending authorized commit` and `candidate prepared; strict audit pending authorized commit`.
 
+## Representative probe verification
+
+`verify` checks the complete representative state/input Cartesian product for probe v0.2. It sends at most 4,096 cases and 1 MiB of encoded input per runner request and checks every batch against the same canonical machine. Stable case identities retain their original state/input indices. A failed or missing later batch fails verification. No sampling occurs.
+
+The total product is bounded at 1,048,576 cases. The complete matrix shares one execution deadline; each batch uses only the remaining budget. Large products no longer require one large allocation or a runner request above its protocol limit. This is exhaustive coverage of the described representatives, not a claim about values outside that finite set.
+
 ## Command Semantics
 
 `init` creates or adopts canonical system artifacts and concise managed agent guidance. The onboarding order is `init → authorized bootstrap commit → design → recommended scaffold`.
@@ -141,3 +147,7 @@ rms release check --root .
 The release gate builds and smoke-tests the release binary, validates canonical artifacts, verifies the CLI binding and examples, checks packages and Cargo packaging, exercises a clean-room install, and rejects drift in embedded skills, plugin skills, managed local copies, or generated guidance. It does not invoke optional providers.
 
 The root [Quickstart](../../../QUICKSTART.md), [Production guide](../../../PRODUCTION.md), and [Release process](../../../RELEASE.md) provide the user, downstream-production, and maintainer workflows.
+
+Rust trace proof inspection accepts the exact formatting-only `#[rustfmt::skip]` attribute on free functions. Conditional attributes, unknown transforming attributes, malformed formatting attributes, and wrong-source identities remain unresolved. This does not permit an attribute to substitute a different recorder.
+
+Module-scoped check results use the same diagnostic applicability policy as the audit. Advisory static findings remain visible and do not certify purity or replace required Native proof. Ordinary review findings, missing evidence, proven authority violations, and failed Native commands continue to block acceptance.

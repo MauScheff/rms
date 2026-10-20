@@ -39,7 +39,9 @@ mod persistent_async;
 mod probe;
 mod proof_certificate;
 mod property;
+mod retained_structural;
 mod retirement;
+mod rust_import_resolution;
 mod rust_proof_calls;
 mod schema_generator;
 mod semantic_graph;
@@ -2034,6 +2036,52 @@ struct TraceProducer {
     bundle: String,
     command: String,
     runner: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    semantic_function: Option<String>,
+}
+
+fn trace_producer_record_symbol(
+    implementation: &LoadedManifest,
+    producer: &TraceProducer,
+) -> Result<Option<String>> {
+    let Some(id) = &producer.semantic_function else {
+        return Ok(get_str(
+            &implementation.value,
+            &["architecture", "machine", "transition_record_function"],
+        )
+        .map(str::to_string));
+    };
+    if get_str(&implementation.value, &["spec"]) != Some(IMPLEMENTATION_V2_SPEC)
+        || get_str(&implementation.value, &["binding"]) != Some("rust")
+    {
+        bail!("explicit trace semantic_function requires a Rust implementation v0.2");
+    }
+    let functions = semantic_function_items(implementation)
+        .into_iter()
+        .flatten()
+        .filter(|function| get_str(function, &["id"]) == Some(id.as_str()))
+        .collect::<Vec<_>>();
+    let [function] = functions.as_slice() else {
+        bail!("trace semantic_function `{id}` must identify exactly one declaration");
+    };
+    let symbol = get_str(function, &["symbol"])
+        .ok_or_else(|| anyhow!("trace semantic function has no exact symbol"))?;
+    let Some((path, _)) = binding_reference_parts(symbol) else {
+        bail!("trace semantic function requires an exact path#symbol");
+    };
+    if get_str(function, &["kind"]) != Some("transition")
+        || get_str(function, &["purity"]) != Some("pure")
+        || !get_string_array(function, &["authorities"]).is_empty()
+        || !structure_role_paths(implementation, "transition_record")
+            .iter()
+            .any(|role| same_semantic_path(role, path))
+    {
+        bail!("trace semantic_function `{id}` must be pure and owned by an exact transition_record role");
+    }
+    if trace_command_uses_invocation_records(implementation, &producer.command) {
+        bail!("transition-record semantic_function cannot select an invocation-record command");
+    }
+    Ok(Some(symbol.to_string()))
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -2256,6 +2304,7 @@ struct SemanticFunctionFinalStateReport {
 
 #[derive(Clone, Debug, Default, Serialize)]
 struct MachineFinalStateReport {
+    retained_structural_bindings: Vec<retained_structural::Binding>,
     execution_binding: Option<persistent_async::ExecutionBinding>,
     mode: Option<String>,
     transition_signature: Option<String>,
@@ -3843,6 +3892,8 @@ struct MachineChange {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MachineChangeMachine {
+    #[serde(default)]
+    retained_structural_bindings: Option<Vec<retained_structural::Binding>>,
     #[serde(default)]
     execution_binding: Option<persistent_async::ExecutionBinding>,
     mode: String,
@@ -15712,11 +15763,28 @@ fn validate_probe_evaluation(
             requested.len()
         );
     }
+    // Parse the same immutable canonical declarations once for this batch.
+    // Rebuilding them for each representative pair makes complete matrices
+    // spend their budget deserializing declarations instead of checking cases.
+    let declared_pairs = existing_machine_transitions(&binding.implementation)
+        .iter()
+        .map(|transition| {
+            (
+                transition.from.clone(),
+                transition_input_variant(&transition.on),
+            )
+        })
+        .collect::<BTreeSet<_>>();
     let mut failures = Vec::new();
     for (index, (expected, result)) in requested.iter().zip(results).enumerate() {
-        if let Err(error) =
-            validate_probe_evaluation_case(binding, expected, result, index, temp_root)
-        {
+        if let Err(error) = validate_probe_evaluation_case(
+            binding,
+            &declared_pairs,
+            expected,
+            result,
+            index,
+            temp_root,
+        ) {
             failures.push(format!("{error:#}"));
         }
     }
@@ -15744,6 +15812,7 @@ fn validate_probe_evaluation(
 
 fn validate_probe_evaluation_case(
     binding: &ProbeBinding,
+    declared_pairs: &BTreeSet<(String, String)>,
     expected: &YamlValue,
     result: &YamlValue,
     index: usize,
@@ -15768,7 +15837,7 @@ fn validate_probe_evaluation_case(
     }))?;
     validate_probe_trace_shape(&bundle)
         .with_context(|| format!("invalid evaluation result `{expected_id}`"))?;
-    if !probe_case_has_declared_transition(expected, &binding.implementation) {
+    if !probe_case_has_declared_transition(expected, declared_pairs) {
         return validate_undeclared_probe_transition_refusal(expected, &record, expected_id);
     }
     let path = temp_root.join(format!("evaluation-{index}.json"));
@@ -15784,15 +15853,17 @@ fn validate_probe_evaluation_case(
     Ok(())
 }
 
-fn probe_case_has_declared_transition(case: &YamlValue, implementation: &LoadedManifest) -> bool {
-    let state = get_str(case, &["state", "name"]);
-    let input = get_str(case, &["input", "name"]);
-    existing_machine_transitions(implementation)
-        .iter()
-        .any(|transition| {
-            Some(transition.from.as_str()) == state
-                && Some(transition_input_variant(&transition.on).as_str()) == input
-        })
+fn probe_case_has_declared_transition(
+    case: &YamlValue,
+    declared_pairs: &BTreeSet<(String, String)>,
+) -> bool {
+    let (Some(state), Some(input)) = (
+        get_str(case, &["state", "name"]),
+        get_str(case, &["input", "name"]),
+    ) else {
+        return false;
+    };
+    declared_pairs.contains(&(state.to_owned(), input.to_owned()))
 }
 
 fn validate_undeclared_probe_transition_refusal(
@@ -16841,11 +16912,18 @@ fn execute_trace_producers(
         }
         let inspectable_producer =
             runner_valid && get_str(&manifest.value, &["binding"]) != Some("executable");
-        let transition_record_symbol = get_str(
-            &manifest.value,
-            &["architecture", "machine", "transition_record_function"],
-        );
-        let calls_transition_record = transition_record_symbol.is_some_and(|symbol| {
+        let transition_record_symbol = match trace_producer_record_symbol(&manifest, &producer) {
+            Ok(symbol) => symbol,
+            Err(problem) => {
+                diagnostics.push(error(
+                    "trace.producer-semantic-function",
+                    implementation,
+                    problem.to_string(),
+                ));
+                continue;
+            }
+        };
+        let calls_transition_record = transition_record_symbol.as_deref().is_some_and(|symbol| {
             trace_producer_calls_transition_record(root, &manifest, &producer.runner, symbol)
         });
         let serializes_transition_records =
@@ -20273,12 +20351,19 @@ fn validate_trace_producer_declarations(
             );
         }
     }
-    let transition_record = get_str(
-        &implementation.value,
-        &["architecture", "machine", "transition_record_function"],
-    );
     let producer_roles = structure_role_paths(implementation, "trace_producer");
     for producer in producers {
+        let transition_record = match trace_producer_record_symbol(implementation, &producer) {
+            Ok(symbol) => symbol,
+            Err(problem) => {
+                diagnostics.push(error(
+                    "trace.producer-semantic-function",
+                    &implementation.path,
+                    problem.to_string(),
+                ));
+                continue;
+            }
+        };
         if get_str(&implementation.value, &["commands", &producer.command]).is_none() {
             push_unique_warning(
                 diagnostics,
@@ -20319,7 +20404,7 @@ fn validate_trace_producer_declarations(
             );
         }
         let inspectable = get_str(&implementation.value, &["binding"]) != Some("executable");
-        let calls_transition_record = transition_record.is_some_and(|symbol| {
+        let calls_transition_record = transition_record.as_deref().is_some_and(|symbol| {
             trace_producer_calls_transition_record(base, implementation, &producer.runner, symbol)
         });
         let serializes_transition_records =
@@ -25817,16 +25902,33 @@ fn verify_probe_handshake(implementation: &Path, timeout_seconds: u64) -> Result
             );
         }
         if binding.protocol == "rms/machine-probe/v0.2" {
-            let evaluation_request = build_probe_verification_matrix(&binding, &description)?;
-            validate_probe_request(&evaluation_request, &binding.implementation)?;
-            let evaluation = execute_machine_probe_request(
-                &binding,
-                &evaluation_request,
-                &temp_root,
-                "evaluate",
-                timeout_seconds,
-            )?;
-            validate_probe_evaluation(&evaluation, &evaluation_request, &binding, &temp_root)?;
+            let matrix = build_probe_verification_matrix(&description)?;
+            let started = std::time::Instant::now();
+            let mut offset = 0;
+            while offset < matrix.case_count {
+                let (evaluation_request, batch_count) = matrix.batch(&binding, offset)?;
+                validate_probe_request(&evaluation_request, &binding.implementation)?;
+                // The full matrix retains one execution budget. Batching must
+                // not multiply the existing runner timeout by the batch count.
+                let remaining = Duration::from_secs(timeout_seconds)
+                    .checked_sub(started.elapsed())
+                    .filter(|remaining| !remaining.is_zero())
+                    .ok_or_else(|| {
+                        anyhow!("probe representative matrix exceeded its verification deadline")
+                    })?;
+                let evaluation = execute_machine_probe_request(
+                    &binding,
+                    &evaluation_request,
+                    &temp_root,
+                    &format!("evaluate-offset-{offset}"),
+                    remaining.as_secs().max(1),
+                )?;
+                validate_probe_evaluation(&evaluation, &evaluation_request, &binding, &temp_root)?;
+                if started.elapsed() > Duration::from_secs(timeout_seconds) {
+                    bail!("probe representative matrix exceeded its verification deadline");
+                }
+                offset += batch_count;
+            }
         }
         Ok(Some(format!(
             "probe handshake passed: {} describe + smoke{}",
@@ -25842,14 +25944,19 @@ fn verify_probe_handshake(implementation: &Path, timeout_seconds: u64) -> Result
     result
 }
 
-// Bound allocation without sampling the representative Cartesian product.
-// Runner timeouts and per-case trace conformance remain independent limits.
-const MAX_VERIFY_PROBE_MATRIX_CASES: usize = 4096;
+// Bound each allocation and runner request without sampling the complete product.
+// A separate total bound rejects unreasonably large untrusted descriptions.
+const MAX_VERIFY_PROBE_BATCH_CASES: usize = 4096;
+const MAX_VERIFY_PROBE_BATCH_BYTES: usize = 1024 * 1024;
+const MAX_VERIFY_PROBE_MATRIX_CASES: usize = 1_048_576;
 
-fn build_probe_verification_matrix(
-    binding: &ProbeBinding,
-    description: &YamlValue,
-) -> Result<YamlValue> {
+struct ProbeVerificationMatrix {
+    states: Vec<YamlValue>,
+    inputs: Vec<YamlValue>,
+    case_count: usize,
+}
+
+fn build_probe_verification_matrix(description: &YamlValue) -> Result<ProbeVerificationMatrix> {
     let states = get_path(description, &["states"])
         .and_then(YamlValue::as_sequence)
         .into_iter()
@@ -25868,7 +25975,10 @@ fn build_probe_verification_matrix(
         .flatten()
         .filter_map(|input| get_path(input, &["example"]).cloned())
         .collect::<Vec<_>>();
-    let case_count = states.len().saturating_mul(inputs.len());
+    let case_count = states
+        .len()
+        .checked_mul(inputs.len())
+        .ok_or_else(|| anyhow!("probe representative matrix size overflow"))?;
     if case_count == 0 {
         bail!("probe v0.2 representative state/input matrix is empty");
     }
@@ -25877,22 +25987,68 @@ fn build_probe_verification_matrix(
             "probe v0.2 representative state/input matrix has {case_count} cases; maximum is {MAX_VERIFY_PROBE_MATRIX_CASES}"
         );
     }
-    let mut cases = Vec::with_capacity(case_count);
-    for (state_index, state) in states.iter().enumerate() {
-        for (input_index, input) in inputs.iter().enumerate() {
-            cases.push(json!({
-                "id": format!("verify-state-{state_index}-input-{input_index}"),
-                "state": serde_json::to_value(state)?,
-                "input": serde_json::to_value(input)?
-            }));
+    Ok(ProbeVerificationMatrix {
+        states,
+        inputs,
+        case_count,
+    })
+}
+
+impl ProbeVerificationMatrix {
+    fn batch(&self, binding: &ProbeBinding, offset: usize) -> Result<(YamlValue, usize)> {
+        if offset >= self.case_count {
+            bail!("probe verification batch offset is out of range");
         }
+        let end = offset
+            .saturating_add(MAX_VERIFY_PROBE_BATCH_CASES)
+            .min(self.case_count);
+        let mut cases = Vec::new();
+        // Include a conservative allowance for the outer request and commas.
+        // Each nested case gains four spaces on every pretty-printed line.
+        let mut bytes = 128usize;
+        for index in offset..end {
+            let state_index = index / self.inputs.len();
+            let input_index = index % self.inputs.len();
+            let case = json!({
+                "id": format!("verify-state-{state_index}-input-{input_index}"),
+                "state": serde_json::to_value(&self.states[state_index])?,
+                "input": serde_json::to_value(&self.inputs[input_index])?
+            });
+            let encoded = serde_json::to_vec_pretty(&case)?;
+            let line_count = encoded.iter().filter(|byte| **byte == b'\n').count() + 1;
+            let cost = encoded
+                .len()
+                .checked_add(
+                    line_count
+                        .checked_mul(4)
+                        .ok_or_else(|| anyhow!("probe case byte size overflow"))?,
+                )
+                .and_then(|value| value.checked_add(2))
+                .ok_or_else(|| anyhow!("probe case byte size overflow"))?;
+            if cost > MAX_VERIFY_PROBE_BATCH_BYTES - bytes {
+                if cases.is_empty() {
+                    bail!("one representative probe case exceeds the request byte limit");
+                }
+                break;
+            }
+            bytes += cost;
+            cases.push(case);
+        }
+        let count = cases.len();
+        let request = json!({
+            "spec": binding.protocol.as_str(),
+            "operation": "evaluate",
+            "cases": cases
+        });
+        if serde_json::to_vec_pretty(&request)?.len() > MAX_VERIFY_PROBE_BATCH_BYTES {
+            bail!("probe verification batch exceeds its request byte limit");
+        }
+        Ok((
+            serde_yaml::to_value(request)
+                .context("failed to build representative probe verification batch")?,
+            count,
+        ))
     }
-    serde_yaml::to_value(json!({
-        "spec": binding.protocol.as_str(),
-        "operation": "evaluate",
-        "cases": cases
-    }))
-    .context("failed to build representative probe verification matrix")
 }
 
 fn execute_machine_probe_request(
@@ -34684,6 +34840,7 @@ fn validate_rust_source_boundaries(
     .into_iter()
     .collect();
 
+    let mut parsed_sources = BTreeMap::new();
     for path in rust_source_files(source_root) {
         let source = match fs::read_to_string(&path) {
             Ok(source) => source,
@@ -34714,12 +34871,32 @@ fn validate_rust_source_boundaries(
             }
         };
 
-        for import in collect_rust_imports(&parsed) {
-            match import
-                .source_kind
-                .unwrap_or_else(|| rust_import_root_kind(&import.root, &local_modules))
-            {
-                RustImportRootKind::External => {
+        parsed_sources.insert(path, parsed);
+    }
+    let base = manifest.path.parent().unwrap_or_else(|| Path::new("."));
+    let library = cargo
+        .get("lib")
+        .and_then(|lib| lib.get("path"))
+        .and_then(TomlValue::as_str)
+        .unwrap_or("src/lib.rs");
+    let resolver = rust_import_resolution::Resolver::new(
+        &parsed_sources,
+        &base.join(library),
+        &rust_local_crate_names(cargo),
+    );
+    for path in parsed_sources.keys() {
+        for (import, kind) in resolver.imports(path, &local_modules) {
+            // Refine the existing dependency policy only with proven bindings.
+            // This source-only resolver does not expand arbitrary Rust macros or
+            // inspect external wildcard exports. Those limits must not turn
+            // qualified crate/standard imports into new dependency requirements.
+            let kind = if kind == RustImportRootKind::Unresolved {
+                rust_import_root_kind(&import.root, &local_modules)
+            } else {
+                kind
+            };
+            match kind {
+                RustImportRootKind::External | RustImportRootKind::Unresolved => {
                     if !allowed_external_crates.contains(&canonical_rust_crate_name(&import.root)) {
                         diagnostics.push(error(
                             "implementation.rust.imports.declared",
@@ -34775,6 +34952,7 @@ fn validate_rust_typing(
     _base: &Path,
     source_root: &Path,
 ) {
+    retained_structural::validate(implementation, diagnostics);
     if !source_root.exists() {
         return;
     }
@@ -34845,9 +35023,13 @@ fn inspect_rust_typing_file(
             .path
             .parent()
             .unwrap_or_else(|| Path::new("."));
-        summary
-            .async_sources
-            .insert(display_relative(base, path), parsed.clone());
+        let relative = display_relative(base, path);
+        // The closed envelope binding supports ordinary src/*.rs crate modules.
+        // Cargo integration tests are independent compilation units. Keep them
+        // in exact_sources for their own proofs, not in the production closure.
+        if relative.starts_with("src/") {
+            summary.async_sources.insert(relative, parsed.clone());
+        }
     }
     let allowed_public_field_structs: BTreeSet<_> = get_string_array(
         &implementation.value,
@@ -34999,7 +35181,12 @@ fn inspect_rust_struct_typing(
 
     let public_fields = public_struct_field_count(item_struct);
     if public_fields > 0 {
-        if !allowed_public_field_structs.contains(&struct_name) {
+        if let Some(permitted) = retained_structural::permits(implementation, &struct_name, path) {
+            if !permitted {
+                diagnostics.push(error("structure.retained-binding-provenance", &implementation.path,
+                    format!("retained record `{struct_name}` is not unchanged at its exact pinned source path")));
+            }
+        } else if !allowed_public_field_structs.contains(&struct_name) {
             let validated = get_string_array(
                 &implementation.value,
                 &["architecture", "representation", "validated_values"],
@@ -35534,6 +35721,7 @@ enum RustImportRootKind {
     LocalModule,
     Standard,
     SelfQualified,
+    Unresolved,
 }
 
 fn rust_import_root_kind(root: &str, local_modules: &BTreeSet<String>) -> RustImportRootKind {
@@ -35563,6 +35751,7 @@ fn path_has_component(path: &Path, component: &str) -> bool {
         .any(|part| matches!(part, Component::Normal(value) if value == component))
 }
 
+#[cfg(test)]
 fn collect_rust_imports(file: &syn::File) -> Vec<RustImport> {
     let mut imports = Vec::new();
     for item in &file.items {
@@ -36076,10 +36265,32 @@ fn validate_rust_machine_execution_path(
                 .into_iter()
                 .filter_map(|protocol| protocol.executor_symbol)
                 .collect::<Vec<_>>();
+            let flow_contract = persistent_async::FlowContract {
+                protocols: existing_effect_protocols(implementation)
+                    .into_iter()
+                    .filter_map(|protocol| {
+                        protocol
+                            .executor_symbol
+                            .map(|symbol| (symbol, protocol.effect))
+                    })
+                    .collect(),
+                request_fields: get_structure_values(
+                    &implementation.value,
+                    &["architecture", "messages", "effect_envelope"],
+                )
+                .into_iter()
+                .collect(),
+                result_fields: get_structure_values(
+                    &implementation.value,
+                    &["architecture", "messages", "effect_result_envelope"],
+                )
+                .into_iter()
+                .collect(),
+            };
             for message in (persistent_async::Index {
                 files: &summary.async_sources,
             })
-            .validate(
+            .validate_with_flow(
                 &binding,
                 get_str(
                     &implementation.value,
@@ -36088,6 +36299,7 @@ fn validate_rust_machine_execution_path(
                 .unwrap_or(""),
                 &protocols,
                 &types,
+                Some(&flow_contract),
             ) {
                 diagnostics.push(error(
                     if persistent {
@@ -36260,7 +36472,15 @@ fn validate_rust_machine_execution_path(
                 ),
             ));
         }
-        if !rust_function_reaches(summary, driver, executor, None) {
+        if !rust_function_reaches(summary, driver, executor, None)
+            && !get_str(
+                &implementation.value,
+                &["architecture", "machine", "driver_function"],
+            )
+            .is_some_and(|driver_symbol| {
+                rust_exact_binding_reaches(implementation, summary, driver_symbol, executor_symbol)
+            })
+        {
             diagnostics.push(error(
                 "structure.machine-driver-effect-executor-missing",
                 &implementation.path,
@@ -36325,15 +36545,32 @@ fn rust_surface_reaches_driver(
     surface: &str,
     driver: &str,
 ) -> bool {
+    let driver_paths = structure_role_paths(implementation, "machine_driver");
+    let [driver_path] = driver_paths.as_slice() else {
+        return false;
+    };
+    rust_exact_binding_reaches(
+        implementation,
+        summary,
+        surface,
+        &format!("{driver_path}#{driver}"),
+    )
+}
+
+fn rust_exact_binding_reaches(
+    implementation: &LoadedManifest,
+    summary: &RustTypingSummary,
+    source: &str,
+    target: &str,
+) -> bool {
     let base = implementation
         .path
         .parent()
         .unwrap_or_else(|| Path::new("."));
-    let Some((surface_path, surface_symbol)) = binding_reference_parts(surface) else {
+    let Some((source_path, source_symbol)) = binding_reference_parts(source) else {
         return false;
     };
-    let driver_paths = structure_role_paths(implementation, "machine_driver");
-    let [driver_path] = driver_paths.as_slice() else {
+    let Some((target_path, target_symbol)) = binding_reference_parts(target) else {
         return false;
     };
     let cargo_path =
@@ -36360,8 +36597,8 @@ fn rust_surface_reaches_driver(
     let index =
         rust_proof_calls::Index::from_parsed(summary.exact_sources.clone(), library, crate_name);
     index.reaches(
-        (base.join(surface_path), surface_symbol.to_string()),
-        (base.join(driver_path), driver.to_string()),
+        (base.join(source_path), source_symbol.to_string()),
+        (base.join(target_path), target_symbol.to_string()),
     )
 }
 
@@ -36787,6 +37024,7 @@ fn has_cfg_test_attr(attrs: &[Attribute]) -> bool {
     })
 }
 
+#[cfg(test)]
 fn collect_use_tree_roots(
     tree: &UseTree,
     prefix: Option<String>,
@@ -42863,15 +43101,14 @@ fn build_module_scoped_check_report_with_audit(
                 .map(|check| format!("{}: {}", check.id, check.note))
         }))
         .collect::<Vec<_>>();
-    let result = if failures.is_empty() {
-        if diagnostic_warnings.is_empty() {
-            CheckResult::Pass
-        } else {
-            CheckResult::ReviewRequired
-        }
-    } else {
-        CheckResult::Fail
-    };
+    let result = module_scoped_acceptance_result(
+        &failures,
+        &diagnostics,
+        scoped_audit
+            .as_ref()
+            .map(|audit| audit.checks.as_slice())
+            .unwrap_or(&[]),
+    );
     let warnings = diagnostic_warnings
         .into_iter()
         .chain((!out_of_scope_changed.is_empty()).then(|| {
@@ -42930,6 +43167,28 @@ fn build_module_scoped_check_report_with_audit(
             "audit": scoped_audit,
         }),
     })
+}
+
+fn module_scoped_acceptance_result(
+    failures: &[String],
+    diagnostics: &[Diagnostic],
+    checks: &[AuditCheck],
+) -> CheckResult {
+    // Use the established audit applicability policy for the aggregate too.
+    // Raw diagnostics remain visible in the report; Native proof stays required.
+    let classified = diagnostics
+        .iter()
+        .map(|diagnostic| audit_check_from_diagnostic(diagnostic, true))
+        .collect::<Vec<_>>();
+    let diagnostic_result = audit_result(&classified);
+    let check_result = audit_result(checks);
+    if !failures.is_empty() || diagnostic_result == "fail" || check_result == "fail" {
+        CheckResult::Fail
+    } else if diagnostic_result == "review-required" || check_result == "review-required" {
+        CheckResult::ReviewRequired
+    } else {
+        CheckResult::Pass
+    }
 }
 
 fn restrict_audit_to_module_closure(
@@ -43811,6 +44070,11 @@ fn build_next_report_with_optional_program(
         exact_owner_scoped_proof_support_role_change_ready(task, intent.as_ref(), &owner);
     let owner_scoped_existing_semantic_change =
         owner_scoped_existing_semantic_change_ready(intent.as_ref(), &owner);
+    let retained_repairs = if owner_scoped_existing_semantic_change {
+        retained_structural::route_repairs(task, &owner)
+    } else {
+        BTreeMap::new()
+    };
     let proven_effect_repairs = if owner_scoped_existing_semantic_change {
         owner
             .selected_module()
@@ -43839,6 +44103,9 @@ fn build_next_report_with_optional_program(
     };
     if !proven_effect_repairs.is_empty() {
         warnings.push("A read-only preflight proves that the exact requested canonical repair resolves the named effect-analysis finding without changing source, purity, or authority rows. Apply the receipt-guarded repair and rerun normal proof; this route is not verification of the current candidate.".to_string());
+    }
+    if !retained_repairs.is_empty() {
+        warnings.push(format!("Read-only provenance verifies explicitly requested retained structural compatibility for {}. Apply the reviewed retained_structural_bindings through machine apply; unchanged source pins and all final proof gates remain required.", retained_repairs.keys().cloned().collect::<Vec<_>>().join(", ")));
     }
     if explicit_outside_coverage
         && intent
@@ -43898,6 +44165,11 @@ fn build_next_report_with_optional_program(
                         && requested_external_crate_declaration_diagnostic(
                             task, diagnostic, &owner,
                         ))
+                    && !retained_structural::repaired_diagnostic(
+                        diagnostic,
+                        &owner,
+                        &retained_repairs,
+                    )
                     && if explicit_outside_coverage {
                         diagnostic.check.starts_with("intent.")
                     } else if matches!(owner.status(), OwnerStatus::Ambiguous | OwnerStatus::None) {
@@ -55742,6 +56014,7 @@ fn render_machine_plan_prompt(
             .map(yaml_quote)
             .unwrap_or_else(|| "null".to_string())
     )?;
+    writeln!(out, "  retained_structural_bindings: null")?;
     writeln!(out, "  types:")?;
     for (field, value) in [
         ("state", report.machine.types.state.as_deref()),
@@ -55846,6 +56119,7 @@ fn render_machine_plan_prompt(
     writeln!(out, "Legacy inspectable bindings missing rc.8 probe declarations are repaired in this same machine change: set `commands: {{ probe: <binding-native command> }}`, set `machine.initial_state` to one declared state, set `probe` with `protocol`, `command: probe`, `runner: path#symbol`, and `initial_state_function: path#symbol` for state-and-input machines, and add the exact runner path as `roles.add[].kind: probe_adapter`. Omit `commands` and `probe` only when those declarations already exist and are not changing.")?;
     writeln!(out, "Role items use scalar `kind`, optional scalar `path`, optional scalar `effect`, and optional scalar `binding_hint`. A role with `kind: effect_executor` must include the exact declared `effect` and should use a dedicated role path separate from transition and machine-driver code. Shared IO mechanics used by multiple executors use `kind: effect_support`; they cannot own state progression, transitions, drivers, or public/runnable behavior. Effectful stateful machines declare one `machine_driver` role, set `machine.driver_function` to its exact callable, and set `machine.transition_record_function` to the exact pure record constructor used by that driver. Effect-protocol add/set items use scalar `effect`, string-list `results`, scalar `executor_role`, exact scalar `executor_symbol`, and `atomicity: one-request-one-result`; atomicity applies to that exact protocol. Machine apply binds each executor as an effectful `effect-executor` semantic function. Aggregate protocols use `atomicity: aggregate` plus `aggregate_justification` and evidence.")?;
     writeln!(out, "Run `rms machine apply ... --dry-run` first and do not edit source while `final_machine` still contains scaffold-generic variants instead of the intended product cases.")?;
+    writeln!(out, "For explicit Rust V1 public-shape compatibility, `machine.retained_structural_bindings` replaces the retained list. Each entry requires `compatibility: preserve-public-shape`, `prior_revision` (full 40-character ancestor commit), `kind` (command_envelope, event_envelope, effect_envelope, effect_result_envelope, transition, or transition_record), exact `name`, module-relative declared-role `source`, and `source_sha256` (64 hex characters). The prior binding must map and allow that exact structural type. The complete source file must remain byte-identical to that commit; RMS rejects changed source, unproven names, aliases, and arbitrary domain types. Omission/null preserves existing retention; no existing retention means ordinary replacement. An empty list removes retention. These are compatibility records, not purity or behavioral proof, and require the repository and pinned Git history for verification. Use a ready receipt whose exact task requests retained structural compatibility; source and final gates still apply.")?;
     writeln!(out)?;
     writeln!(out, "## Machine-Gate Checklist")?;
     for item in [
@@ -55909,6 +56183,7 @@ fn run_machine_apply_change(
         value: manifest.value.clone(),
     };
     apply_machine_change_to_manifest(&mut candidate.value, change);
+    retained_structural::validate(&candidate, &mut diagnostics);
     validate_against_embedded_schema(&candidate, &mut diagnostics);
     validate_caller_driven_binding(&candidate, &mut diagnostics);
     let writes = planned_machine_apply_writes(&manifest, change);
@@ -58084,6 +58359,7 @@ fn apply_machine_change_to_manifest(value: &mut YamlValue, change: &MachineChang
         }
     }
     sync_machine_type_closed_variants(value, &previous_types, &types);
+    retained_structural::apply(value, &change.machine.retained_structural_bindings);
     sync_machine_structural_public_fields(value, &previous_types, &types, &names.source_provenance);
 
     set_yaml_sequence_path(
@@ -58241,6 +58517,7 @@ fn sync_machine_structural_public_fields(
     }
 
     let mut allowed = get_string_array(value, &["architecture", "allowed_public_field_structs"]);
+    final_types.extend(retained_structural::names(value));
     allowed.retain(|type_name| !previous.contains(type_name) || final_types.contains(type_name));
     for type_name in final_types {
         if !allowed.contains(&type_name) {
@@ -58398,6 +58675,11 @@ fn machine_final_state_report(
         })
         .collect::<Vec<_>>();
     MachineFinalStateReport {
+        retained_structural_bindings: change
+            .machine
+            .retained_structural_bindings
+            .clone()
+            .unwrap_or_else(|| retained_structural::bindings(&manifest.value).unwrap_or_default()),
         execution_binding: change.machine.execution_binding.clone().or_else(|| {
             get_path(
                 &manifest.value,
@@ -58729,6 +59011,13 @@ fn print_machine_apply_report(report: &MachineApplyReport) {
 
 fn print_machine_final_state(final_machine: &MachineFinalStateReport) {
     println!("final_machine:");
+    if !final_machine.retained_structural_bindings.is_empty() {
+        println!(
+            "  retained_structural_bindings: {}",
+            serde_json::to_string(&final_machine.retained_structural_bindings)
+                .expect("serializable retained bindings")
+        );
+    }
     if let Some(binding) = &final_machine.execution_binding {
         println!(
             "  execution_binding: {}",
@@ -62867,6 +63156,7 @@ fn render_spec_plan_prompt(context: &SpecTargetContext, root: &Path, task: &str)
     )?;
     writeln!(out, "      command: trace")?;
     writeln!(out, "      runner: path/to/trace_producer#produce_trace")?;
+    writeln!(out, "      # Optional Rust v0.2 semantic_function: exact existing pure transition semantic-function id in a transition_record role. Omission selects the current machine record function. The producer must still call that exact source symbol and serialize returned record fields; this does not change trace coverage or proof gates.")?;
     writeln!(out, "  set: null")?;
     writeln!(out, "  remove: []")?;
     writeln!(out, "public_behavior_bindings:")?;
@@ -68697,6 +68987,13 @@ fn validate_trace_producers(
     working.extend(request.add.clone());
     let mut ids = BTreeSet::new();
     for producer in &working {
+        if let Err(problem) = trace_producer_record_symbol(implementation, producer) {
+            diagnostics.push(error(
+                "trace.producer-semantic-function",
+                &context.target,
+                problem.to_string(),
+            ));
+        }
         if !is_stable_semantic_id(&producer.id) || !ids.insert(producer.id.clone()) {
             diagnostics.push(error(
                 "trace.producer-id-invalid",
@@ -70592,6 +70889,7 @@ fn semantic_machine_change_to_machine_change(
         }),
         machine: MachineChangeMachine {
             mode,
+            retained_structural_bindings: None,
             execution_binding: machine.execution_binding.clone(),
             initial_state,
             justification: machine.justification.clone(),
@@ -89682,7 +89980,7 @@ fn authority_alignment_analysis(
                     && function.verdict != effect_analysis::FunctionVerdict::Pass)
         })
     {
-        bail!("authority alignment cannot waive unknown calls, dynamic dispatch, or pure-function violations");
+        preflight_retained_authority_alignment(context, &analysis, None)?;
     }
     if !analysis.functions.iter().any(|function| {
         function.declared_purity == "effectful"
@@ -89691,6 +89989,135 @@ fn authority_alignment_analysis(
         bail!("authority alignment requires an existing effectful authority-row mismatch");
     }
     Ok(analysis)
+}
+
+// An existing uncertainty is not permission to add one. This exception repairs
+// only proven authority-row errors, with unchanged source and unchanged dispatch.
+fn preflight_retained_authority_alignment(
+    context: &SpecTargetContext,
+    before: &effect_analysis::EffectAnalysis,
+    proposed: Option<&SemanticChange>,
+) -> Result<()> {
+    if before.result == effect_analysis::AnalysisResult::Unsupported
+        || before.functions.is_empty()
+        || before
+            .functions
+            .iter()
+            .any(|row| row.declared_purity != "effectful" && row.has_proven_violation())
+    {
+        bail!("authority alignment cannot waive unsupported analysis or pure-function violations");
+    }
+    let implementation = context.implementation.as_ref().unwrap();
+    let current = typed_yaml_sequence::<SemanticFunctionChange>(
+        &implementation.value,
+        &["semantic_functions"],
+    );
+    let mut replacements = Vec::new();
+    for row in before
+        .functions
+        .iter()
+        .filter(|row| row.has_proven_violation())
+    {
+        if row.declared_purity != "effectful"
+            || row.declared_authorities == row.transitive_authorities
+            || row
+                .declared_authorities
+                .iter()
+                .any(|authority| authority == "dynamic-dispatch")
+                != row
+                    .transitive_authorities
+                    .iter()
+                    .any(|authority| authority == "dynamic-dispatch")
+            || row.transitive_authorities.iter().any(|authority| {
+                (authority == "dynamic-dispatch" && !row.declared_authorities.contains(authority))
+                    || (!row.declared_authorities.contains(authority)
+                        && !effect_analysis::is_raw_authority(authority))
+            })
+        {
+            bail!("retained authority alignment requires a proven existing effectful row error without new uncertainty or unknown authority");
+        }
+        let matches = current
+            .iter()
+            .filter(|item| item.id == row.id && item.symbol == row.symbol)
+            .collect::<Vec<_>>();
+        let [original] = matches.as_slice() else {
+            bail!("retained authority alignment requires one exact existing row");
+        };
+        let mut aligned = (*original).clone();
+        aligned.authorities = row.transitive_authorities.clone();
+        replacements.push(aligned);
+    }
+    if replacements.is_empty() {
+        bail!("retained authority alignment requires a proven known-authority mismatch");
+    }
+    let expected: SemanticChange = serde_json::from_value(json!({
+        "spec":"rms/semantic-change/v0.1", "semantic_functions":{"set":replacements}
+    }))?;
+    let change = proposed.unwrap_or(&expected);
+    if let Some(proposed) = proposed {
+        for (field, value) in serde_json::to_value(proposed)?.as_object().unwrap() {
+            if !matches!(
+                field.as_str(),
+                "spec" | "module" | "intent" | "semantic_functions"
+            ) && json_value_has_material_operation(value)
+            {
+                bail!("retained authority alignment forbids `{field}` changes");
+            }
+        }
+        // A complete correction is pinned. No additional rows, even unchanged
+        // rows, may be smuggled into this bounded exception.
+        if serde_json::to_value(&proposed.semantic_functions)?
+            != serde_json::to_value(&expected.semantic_functions)?
+        {
+            bail!("retained authority alignment requires the complete exact existing authority-row correction");
+        }
+    }
+    let candidate = spec_apply_candidate_context(context, change, None)?;
+    let after = build_effect_analysis(candidate.implementation.as_ref().unwrap())?;
+    if before.source_digest != after.source_digest
+        || after.result == effect_analysis::AnalysisResult::Unsupported
+        || after.functions.iter().any(|row| row.has_proven_violation())
+        || before.functions.len() != after.functions.len()
+        || before
+            .functions
+            .iter()
+            .zip(&after.functions)
+            .any(|(old, new)| {
+                old.id != new.id
+                    || old.symbol != new.symbol
+                    || old.declared_purity != new.declared_purity
+                    || old.unresolved_calls != new.unresolved_calls
+                    || old.transitive_authorities != new.transitive_authorities
+            })
+    {
+        bail!("retained authority alignment must clear proven errors with identical source, calls, purity and inferred authority");
+    }
+    let hard_errors = |context: &SpecTargetContext| {
+        let mut diagnostics = Vec::new();
+        for manifest in [context.module.as_ref(), context.implementation.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            validate_loaded_manifest(manifest, &mut diagnostics);
+        }
+        diagnostics
+            .into_iter()
+            .filter(|item| item.severity == Severity::Error)
+            .map(|item| (item.path, item.check, item.message))
+            .collect::<BTreeSet<_>>()
+    };
+    let baseline = hard_errors(context);
+    let introduced = hard_errors(&candidate)
+        .difference(&baseline)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !introduced.is_empty() {
+        bail!(
+            "retained authority alignment introduces a new hard validation error: {}",
+            serde_json::to_string(&introduced)?
+        );
+    }
+    Ok(())
 }
 
 fn build_authority_alignment_repair(context: &SpecTargetContext) -> Result<SpecRepairAuthority> {
@@ -89827,6 +90254,15 @@ fn validate_authority_alignment_change(
                 proposed.id
             );
         }
+    }
+    if analysis.functions.iter().any(|row| {
+        !row.unresolved_calls.is_empty()
+            || row
+                .transitive_authorities
+                .iter()
+                .any(|authority| authority == "dynamic-dispatch")
+    }) {
+        preflight_retained_authority_alignment(context, &analysis, Some(change))?;
     }
     Ok(())
 }
@@ -90224,6 +90660,9 @@ fn validate_machine_change_route_receipt(
         serde_json::from_slice(&fs::read(run_dir.join("normalized-intent.json"))?)
             .context("route run normalized intent is not an rms/intent-model/v0.1 object")?;
     let manifest = load_manifest(target)?;
+    if let Some(items) = &change.machine.retained_structural_bindings {
+        retained_structural::check_intent(task, items)?;
+    }
     validate_machine_change_intent_anchors(&manifest, change, task, &intent)?;
     Ok(receipt)
 }
@@ -91596,6 +92035,75 @@ mod tests {
         )
         .unwrap();
         assert!(build_authority_alignment_repair(&load_spec_target(&path).unwrap()).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn authority_alignment_retains_existing_dispatch_without_widening_repair() {
+        let root = unique_test_dir("authority-alignment-retained-dispatch");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("module.yaml"),
+            "spec: rms/module/v0.1\nmodule: {name: owner}\nauthorities:\n- {id: filesystem, kind: privileged, capabilities: [read-file], rationale: The executor reads a file.}\n",
+        )
+        .unwrap();
+        let row = json!({"id":"execute", "symbol":"src/lib.rs#execute", "kind":"effect-executor", "purity":"effectful", "trust":"boundary", "authorities":["dynamic-dispatch", "native-process"]});
+        let path = root.join("implementation.yaml");
+        fs::write(&path, serde_yaml::to_string(&json!({"spec":IMPLEMENTATION_V2_SPEC,"module":"owner","binding":"rust","semantic_functions":[row.clone()]})).unwrap()).unwrap();
+        let source = "fn execute(callback: fn()) { callback(); std::fs::read(\"x\"); }";
+        fs::write(root.join("src/lib.rs"), source).unwrap();
+        fs::write(root.join("prior.yaml"), "prior: immutable\n").unwrap();
+        seal_implementation_semantics(
+            &mut load_manifest(&path).unwrap(),
+            &root.join("prior.yaml"),
+            SemanticRevisionAuthority::SpecApply,
+        )
+        .unwrap();
+        let context = load_spec_target(&path).unwrap();
+        let repair = build_authority_alignment_repair(&context).expect("an unchanged declared dispatch row must not block its exact known-authority correction");
+        let mut aligned = row.clone();
+        aligned["authorities"] = json!(["dynamic-dispatch", "filesystem"]);
+        let make = |row: JsonValue| {
+            serde_json::from_value::<SemanticChange>(json!({"spec":"rms/semantic-change/v0.1","module":"owner","semantic_functions":{"set":[row]}})).unwrap()
+        };
+        validate_authority_alignment_change(&root, &context, &make(aligned.clone())).unwrap();
+        for (field, value) in [
+            ("purity", json!("pure")),
+            ("symbol", json!("src/lib.rs#other")),
+            (
+                "authorities",
+                json!(["dynamic-dispatch", "unknown-authority"]),
+            ),
+            ("evidence", json!({"properties":["unrelated"]})),
+        ] {
+            let mut invalid = aligned.clone();
+            invalid[field] = value;
+            assert!(
+                validate_authority_alignment_change(&root, &context, &make(invalid)).is_err(),
+                "{field}"
+            );
+        }
+        let mut extra = make(aligned.clone());
+        extra.authorities = Some(serde_json::from_value(json!({"add":[{"id":"filesystem","kind":"privileged","capabilities":["read-file"],"rationale":"The executor reads a file."}]})).unwrap());
+        assert!(
+            validate_authority_alignment_change(&root, &context, &extra).is_err(),
+            "retained-dispatch repair must not add authority declarations"
+        );
+        fs::write(
+            root.join("src/lib.rs"),
+            format!("{source}\n// changed source\n"),
+        )
+        .unwrap();
+        assert_ne!(repair, build_authority_alignment_repair(&context).unwrap());
+        fs::write(
+            root.join("src/lib.rs"),
+            source.replace("std::fs::read(\"x\");", "mystery();"),
+        )
+        .unwrap();
+        assert!(
+            build_authority_alignment_repair(&context).is_err(),
+            "unknown replacement is not a known authority correction"
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -93840,6 +94348,7 @@ pub enum CheckoutBoundaryReply { Accepted }
 pub enum CheckoutBoundaryRejection { Rejected }
 pub struct CheckoutBoundaryTransition { rejection: Option<CheckoutBoundaryRejection> }
 pub enum CheckoutBoundaryTransitionRecord { Accepted }
+pub enum CheckoutBoundaryEffectResult { Done }
 pub struct CheckoutBoundaryMachine;
 
 pub fn transition(
@@ -93858,6 +94367,8 @@ pub fn run() {}
             "use checkout_boundary::run;\nfn main() { run(); }\n",
         )
         .unwrap();
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(root.join("tests/aliases.rs"), "use checkout_boundary::*; use CheckoutBoundaryCommand as C; use CheckoutBoundaryEffectResult as F; use CheckoutBoundaryInput as I;\n").unwrap();
         fs::write(
             root.join("implementation.yaml"),
             r#"spec: rms/implementation/v0.1
@@ -93929,6 +94440,173 @@ architecture:
             diagnostics
         );
         assert_no_error_diagnostics(&diagnostics);
+    }
+
+    #[test]
+    fn rust_source_boundaries_preserve_qualified_imports_around_macros() {
+        let root = unique_test_dir("rust-import-macro-policy");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("tests")).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            r#"
+            macro_rules! declare { () => { pub struct Generated; }; }
+            declare!();
+            mod nested { use crate::Generated; }
+        "#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("tests/probe.rs"),
+            "use provider::*; use provider::Generated; use serde_json::{json, Value};",
+        )
+        .unwrap();
+        let path = root.join("implementation.yaml");
+        fs::write(&path, "spec: rms/implementation/v0.2\nmodule: provider\nbinding: rust\nsource: {root: ., public_entrypoint: src/lib.rs}\ndependencies: {allowed_external_crates: [serde_json]}\n").unwrap();
+        let manifest = load_manifest(&path).unwrap();
+        let cargo: TomlValue = "[package]\nname='provider'\n[lib]\npath='src/lib.rs'\n"
+            .parse()
+            .unwrap();
+        let mut diagnostics = Vec::new();
+        validate_rust_source_boundaries(&manifest, &mut diagnostics, &root, &cargo);
+        assert_no_error_diagnostics(&diagnostics);
+        fs::write(
+            root.join("tests/probe.rs"),
+            "use provider::*; use undeclared_real::Thing; pub use undeclared_real as serde_json;",
+        )
+        .unwrap();
+        diagnostics.clear();
+        validate_rust_source_boundaries(&manifest, &mut diagnostics, &root, &cargo);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.check == "implementation.rust.imports.declared"
+                    && d.message.contains("undeclared_real")),
+            "{diagnostics:#?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.check == "implementation.rust.reexports.external"
+                    && d.message.contains("undeclared_real")),
+            "{diagnostics:#?}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rust_source_boundaries_resolve_glob_type_aliases_before_crates() {
+        let root = unique_test_dir("rust-import-lexical-binding");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("tests")).unwrap();
+        let root = fs::canonicalize(root).unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            "mod types; pub use crate::types::*;\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/types.rs"), "pub enum Command { Start }\npub enum Input { Command(Command) }\npub enum EffectResult { Done }\n").unwrap();
+        let path = root.join("implementation.yaml");
+        fs::write(&path, "spec: rms/implementation/v0.2\nmodule: provider\nbinding: rust\nsource: {root: ., public_entrypoint: src/lib.rs}\ndependencies: {allowed_external_crates: []}\n").unwrap();
+        let manifest = load_manifest(&path).unwrap();
+        let cargo: TomlValue = "[package]\nname='speech-provider'\n[lib]\npath='src/lib.rs'\n"
+            .parse()
+            .unwrap();
+        fs::write(
+            root.join("tests/probe.rs"),
+            "use speech_provider::*; use Command as C; use EffectResult as F; use Input as I;\n",
+        )
+        .unwrap();
+        let mut diagnostics = Vec::new();
+        validate_rust_source_boundaries(&manifest, &mut diagnostics, &root, &cargo);
+        assert_no_error_diagnostics(&diagnostics);
+        // The same validator diagnostic is a hard route blocker for an exact
+        // owner. Lexical aliases must not create it, real foreign imports must.
+        let owner = OwnerResolution::selected(
+            "exact owner".into(),
+            RouteModuleSummary {
+                name: "provider".into(),
+                path: root.join("module.yaml").display().to_string(),
+                kind: "adapter".into(),
+                shape: "boundary-adapter".into(),
+                visibility: None,
+            },
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        fs::write(root.join("tests/probe.rs"), "use speech_provider::*; use Command as C; use undeclared_real::Thing; use undeclared_real as renamed; pub use renamed::Other;\n").unwrap();
+        diagnostics.clear();
+        validate_rust_source_boundaries(&manifest, &mut diagnostics, &root, &cargo);
+        assert!(
+            diagnostics.iter().any(|diagnostic| diagnostic.check
+                == "implementation.rust.imports.declared"
+                && diagnostic.message.contains("undeclared_real")
+                && bounded_owner_scoped_semantic_route_hard_blocker(&root, diagnostic, &owner)),
+            "{diagnostics:#?}"
+        );
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic.check
+            == "implementation.rust.reexports.external"
+            && diagnostic.message.contains("undeclared_real")));
+        assert!(!diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("crate `Command`")
+                || diagnostic.message.contains("crate `renamed`")));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires RMS_RUST_IMPORT_REPRODUCER naming the authorized consumer implementation"]
+    fn rust_lexical_import_consumer_reproducer() {
+        let path = PathBuf::from(std::env::var("RMS_RUST_IMPORT_REPRODUCER").unwrap());
+        let manifest = load_manifest(&path).unwrap();
+        let mut diagnostics = Vec::new();
+        validate_loaded_manifest(&manifest, &mut diagnostics);
+        println!(
+            "consumer validator diagnostics: {}",
+            serde_json::to_string_pretty(&diagnostics).unwrap()
+        );
+        assert_no_error_diagnostics(&diagnostics);
+        if let Ok(baseline) = std::env::var("RMS_RUST_IMPORT_BASELINE") {
+            let baseline: Vec<JsonValue> =
+                serde_json::from_slice(&fs::read(baseline).unwrap()).unwrap();
+            let mut retained = baseline
+                .into_iter()
+                .filter(|diagnostic| {
+                    !diagnostic["check"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("implementation.rust.imports.")
+                })
+                .map(|value| serde_json::to_string(&value).unwrap())
+                .collect::<Vec<_>>();
+            let mut actual = diagnostics
+                .iter()
+                .map(|diagnostic| serde_json::to_string(diagnostic).unwrap())
+                .collect::<Vec<_>>();
+            // Compare values rather than JSON object's serialized key order.
+            retained = retained
+                .iter()
+                .map(|value| {
+                    serde_json::to_string(&serde_json::from_str::<JsonValue>(value).unwrap())
+                        .unwrap()
+                })
+                .collect();
+            actual = actual
+                .iter()
+                .map(|value| {
+                    serde_json::to_string(&serde_json::from_str::<JsonValue>(value).unwrap())
+                        .unwrap()
+                })
+                .collect();
+            retained.sort();
+            actual.sort();
+            assert_eq!(
+                actual, retained,
+                "the bounded import fix changed another consumer diagnostic"
+            );
+        }
     }
 
     #[test]
@@ -102954,6 +103632,137 @@ architecture:
     }
 
     #[test]
+    fn trace_producer_selects_exact_versioned_semantic_record_function() {
+        let root = unique_test_dir("trace-versioned-record-function");
+        run_add_module(
+            add_module_request(
+                &root,
+                "versioned",
+                "Preserve V1 trace execution beside V2.",
+                "library",
+                &[],
+                Some(ScaffoldShape::DomainEngine),
+                Some("rust"),
+            ),
+            &no_provider_options(),
+        )
+        .unwrap();
+        let path = root.join("implementation.yaml");
+        let mut manifest = load_manifest(&path).unwrap();
+        let record_path = structure_role_paths(&manifest, "transition_record")[0].clone();
+        let function = json!({"id":"v1-record", "symbol":format!("{record_path}#transition_record"), "kind":"transition", "purity":"pure", "trust":"internal", "authorities":[]});
+        let mut functions = get_path(&manifest.value, &["semantic_functions"])
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .clone();
+        functions.push(serde_yaml::to_value(&function).unwrap());
+        set_yaml_sequence_path(&mut manifest.value, &["semantic_functions"], functions);
+        set_yaml_string_path(
+            &mut manifest.value,
+            &["architecture", "machine", "transition_record_function"],
+            "transition_record_v2",
+        );
+        let mut producer = trace_producers_from_implementation(&manifest).remove(0);
+        assert_eq!(
+            trace_producer_record_symbol(&manifest, &producer)
+                .unwrap()
+                .as_deref(),
+            Some("transition_record_v2")
+        );
+        assert!(!trace_producer_calls_transition_record(
+            &root,
+            &manifest,
+            &producer.runner,
+            "transition_record_v2"
+        ));
+        producer.semantic_function = Some("v1-record".into());
+        let target = trace_producer_record_symbol(&manifest, &producer)
+            .unwrap()
+            .unwrap();
+        assert!(trace_producer_calls_transition_record(
+            &root,
+            &manifest,
+            &producer.runner,
+            &target
+        ));
+        assert!(trace_producer_serializes_transition_records(
+            &root,
+            &manifest,
+            &producer.runner
+        ));
+        set_yaml_sequence_path(
+            &mut manifest.value,
+            &["architecture", "trace", "producers"],
+            vec![trace_producer_yaml(&producer)],
+        );
+        write_yaml_manifest(&manifest).unwrap();
+        let report =
+            execute_trace_producers(&path, PropertyProfile::Smoke, false, true, 30).unwrap();
+        assert!(
+            !report.diagnostics.iter().any(|diagnostic| matches!(
+                diagnostic.check.as_str(),
+                "trace.producer-semantic-function" | "trace.producer-bypasses-transition-record"
+            )),
+            "{report:?}"
+        );
+        let change: SemanticChange = serde_json::from_value(json!({"spec":"rms/semantic-change/v0.1", "trace_producers":{"set":[producer.clone()]}})).unwrap();
+        assert_eq!(
+            final_trace_producers(&manifest, change.trace_producers.as_ref().unwrap())[0]
+                .semantic_function
+                .as_deref(),
+            Some("v1-record")
+        );
+        for (field, value) in [
+            ("purity", json!("effectful")),
+            ("kind", json!("constructor")),
+            ("symbol", json!("src/other.rs#transition_record")),
+            ("symbol", json!("transition_record")),
+            ("authorities", json!(["filesystem"])),
+        ] {
+            let mut bad = manifest.clone();
+            let mut invalid = function.clone();
+            invalid[field] = value;
+            set_yaml_sequence_path(
+                &mut bad.value,
+                &["semantic_functions"],
+                vec![serde_yaml::to_value(invalid).unwrap()],
+            );
+            assert!(
+                trace_producer_record_symbol(&bad, &producer).is_err(),
+                "{field}"
+            );
+        }
+        let mut duplicate = manifest.clone();
+        set_yaml_sequence_path(
+            &mut duplicate.value,
+            &["semantic_functions"],
+            vec![
+                serde_yaml::to_value(&function).unwrap(),
+                serde_yaml::to_value(&function).unwrap(),
+            ],
+        );
+        assert!(trace_producer_record_symbol(&duplicate, &producer).is_err());
+        producer.semantic_function = Some("unknown".into());
+        assert!(trace_producer_record_symbol(&manifest, &producer).is_err());
+        producer.semantic_function = Some("v1-record".into());
+        let (runner_path, _) = binding_reference_parts(&producer.runner).unwrap();
+        fs::write(root.join(runner_path), "#[test] fn produce_transition_trace() { let static_declaration = \"{}\"; std::fs::write(\"out\", static_declaration); }").unwrap();
+        assert!(!trace_producer_calls_transition_record(
+            &root,
+            &manifest,
+            &producer.runner,
+            &target
+        ));
+        assert!(!trace_producer_serializes_transition_records(
+            &root,
+            &manifest,
+            &producer.runner
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn trace_producer_must_serialize_returned_transition_records() {
         let root = unique_test_dir("trace-producer-static-copy");
         run_add_module(
@@ -102998,6 +103807,81 @@ fn produce_transition_trace() {
                     .message
                     .contains("serializes returned records: false")
         }));
+    }
+
+    #[test]
+    fn rust_trace_proof_accepts_formatting_only_attribute_on_private_path_target() {
+        let root = unique_test_dir("trace-proof-rustfmt-private-path");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname='proof-owner'\nversion='0.1.0'\n",
+        )
+        .unwrap();
+        fs::write(root.join("src/lib.rs"), "mod transition;").unwrap();
+        let target = root.join("src/transition.rs");
+        let body = "pub(crate) fn transition_record() -> Record { todo!() }";
+        fs::write(&target, format!("#[rustfmt::skip]\n{body}")).unwrap();
+        fs::write(
+            root.join("tests/trace_producer.rs"),
+            r#"
+    #[path = "../src/transition.rs"] mod transition;
+    use transition::transition_record;
+    fn produce() {
+        let record = transition_record();
+        let document = serde_json::json!({"state_before":record.state_before,
+            "state_after":record.state_after,"output":record.output,"source":record.source});
+        std::fs::write("trace.json", serde_json::to_vec(&document).unwrap()).unwrap();
+    }"#,
+        )
+        .unwrap();
+        let check = || {
+            rust_trace_proof(
+                &root,
+                "tests/trace_producer.rs",
+                "produce",
+                Some("src/transition.rs#transition_record"),
+            )
+        };
+        assert_eq!(
+            check(),
+            (true, true),
+            "formatting metadata cannot change call identity"
+        );
+        for attribute in [
+            "#[cfg(any())]",
+            "#[unknown_transform]",
+            "#[rustfmt::other]",
+            "#[rustfmt::skip(arguments)]",
+        ] {
+            fs::write(&target, format!("{attribute}\n{body}")).unwrap();
+            assert_eq!(
+                check(),
+                (false, true),
+                "conditional or transforming attribute must remain unresolved: {attribute}"
+            );
+        }
+        fs::write(&target, format!("#[rustfmt::skip]\n{body}")).unwrap();
+        fs::write(
+            root.join("tests/impostor.rs"),
+            "pub fn transition_record() -> Record { todo!() }",
+        )
+        .unwrap();
+        let producer = root.join("tests/trace_producer.rs");
+        fs::write(
+            &producer,
+            fs::read_to_string(&producer)
+                .unwrap()
+                .replace("../src/transition.rs", "impostor.rs"),
+        )
+        .unwrap();
+        assert_eq!(
+            check(),
+            (false, true),
+            "formatting permission must not erase exact source identity"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -103347,6 +104231,7 @@ architecture:
                 bundle: "verification/traces/codec.json".into(),
                 command: "codec".into(),
                 runner: "runner.py#run".into(),
+                semantic_function: None,
             }])
             .unwrap(),
         );
@@ -107921,6 +108806,103 @@ machine:
     }
 
     #[test]
+    fn scoped_check_result_matches_existing_audit_applicability_policy() {
+        let path = Path::new("implementation.yaml");
+        let notices = [
+            warning(
+                "effects.transitive-purity",
+                path,
+                "inconclusive Native analysis",
+            ),
+            warning(
+                "effects.analysis-unavailable",
+                path,
+                "Native proof required",
+            ),
+            warning(
+                "effects.opaque-pure-forbidden",
+                path,
+                "Native proof required",
+            ),
+            warning(
+                "implementation.rust.imports.unresolved",
+                path,
+                "Native proof required",
+            ),
+            warning(
+                "implementation.rust.typing.public-fields",
+                path,
+                "untrusted input DTO",
+            ),
+            warning(
+                "implementation.rust.typing.constructor",
+                path,
+                "unresolved constructor",
+            ),
+            warning(
+                "unknown.review-finding",
+                path,
+                "ordinary review is required",
+            ),
+            warning(
+                "trace.producer-missing",
+                path,
+                "required execution witness missing",
+            ),
+            warning(
+                "semantic.reconciliation-without-evidence",
+                path,
+                "required recovery evidence missing",
+            ),
+            error("effects.transitive-purity", path, "proven forbidden IO"),
+            error(
+                "semantic.revision-drift",
+                path,
+                "invalid canonical revision",
+            ),
+        ];
+        // Compare independent acceptance surfaces against the established audit
+        // policy, including mixed advisory/blocking/error findings.
+        for first in 0..=notices.len() {
+            for second in first..=notices.len() {
+                let diagnostics = [first, second]
+                    .into_iter()
+                    .filter_map(|n| notices.get(n).cloned())
+                    .collect::<Vec<_>>();
+                for native_result in ["pass", "review-required", "fail"] {
+                    let native = audit_check(
+                        "native-verification",
+                        "native",
+                        native_result,
+                        path,
+                        "required Native proof",
+                    );
+                    let mut canonical = diagnostics
+                        .iter()
+                        .map(|d| audit_check_from_diagnostic(d, true))
+                        .collect::<Vec<_>>();
+                    canonical.push(native.clone());
+                    let expected = audit_result(&canonical);
+                    let observed = module_scoped_acceptance_result(&[], &diagnostics, &[native]);
+                    assert_eq!(
+                        observed.label(),
+                        expected,
+                        "{diagnostics:?}, Native={native_result}"
+                    );
+                    assert_eq!(
+                        module_scoped_acceptance_result(
+                            &["native command failed".into()],
+                            &diagnostics,
+                            &[]
+                        ),
+                        CheckResult::Fail
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn advisory_policy_preserves_native_compile_and_test_failures() {
         let root = copy_minimal_fixture("native-proof-stays-strict");
         let path = root.join("implementation.yaml");
@@ -108452,6 +109434,182 @@ machine:
         assert!(validate_machine_change(&manifest, &unsupported)
             .iter()
             .any(|diagnostic| diagnostic.check == "machine-change.execution-binding-unsupported"));
+    }
+
+    #[test]
+    fn rust_envelope_source_collection_separates_integration_crates() {
+        let implementation = LoadedManifest {
+            path: PathBuf::from("/p/implementation.yaml"),
+            value: serde_yaml::from_str("architecture: {allow_panics: true, machine: {execution_binding: {kind: persistent-async}}}").unwrap(),
+        };
+        let mut summary = RustTypingSummary::default();
+        let mut diagnostics = Vec::new();
+        for file in [
+            "src/lib.rs",
+            "src/runtime.rs",
+            "tests/native_process.rs",
+            "examples/probe.rs",
+        ] {
+            inspect_rust_typing_file(
+                &implementation,
+                &mut diagnostics,
+                &PathBuf::from("/p").join(file),
+                &syn::parse_file("fn sample() {}").unwrap(),
+                &mut summary,
+            );
+        }
+        assert_eq!(
+            summary.exact_sources.len(),
+            4,
+            "Each separate proof retains its source"
+        );
+        assert_eq!(
+            summary
+                .async_sources
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["src/lib.rs", "src/runtime.rs"]
+        );
+    }
+    #[test]
+    fn rust_exact_driver_executor_reachability_ignores_same_named_decoys() {
+        let root = unique_test_dir("exact-driver-executor");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"driver-fixture\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let manifest = LoadedManifest {
+            path: root.join("implementation.yaml"),
+            value: serde_yaml::from_str("toolchain: {cargo_manifest: Cargo.toml}").unwrap(),
+        };
+        let mut summary = RustTypingSummary::default();
+        for (file, source) in [
+            (
+                "src/lib.rs",
+                "mod driver; mod ports; mod actual; mod decoy;",
+            ),
+            (
+                "src/driver.rs",
+                "use crate::ports::Ports; fn drive(ports: &Ports) { ports.dispatch(); }",
+            ),
+            (
+                "src/ports.rs",
+                "struct Ports; impl Ports { fn dispatch(&self) { crate::actual::execute(); } }",
+            ),
+            ("src/actual.rs", "fn execute() {}"),
+            ("src/decoy.rs", "fn execute() {}"),
+        ] {
+            summary
+                .exact_sources
+                .insert(root.join(file), syn::parse_file(source).unwrap());
+        }
+        assert!(rust_exact_binding_reaches(
+            &manifest,
+            &summary,
+            "src/driver.rs#drive",
+            "src/actual.rs#execute"
+        ));
+        assert!(!rust_exact_binding_reaches(
+            &manifest,
+            &summary,
+            "src/driver.rs#drive",
+            "src/decoy.rs#execute"
+        ));
+        summary.exact_sources.insert(
+            root.join("src/ports.rs"),
+            syn::parse_file(
+                "struct Ports; impl Ports { fn dispatch(&self) { crate::decoy::execute(); } }",
+            )
+            .unwrap(),
+        );
+        assert!(!rust_exact_binding_reaches(
+            &manifest,
+            &summary,
+            "src/driver.rs#drive",
+            "src/actual.rs#execute"
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn envelope_flow_binding_roundtrips_through_canonical_machine_change_and_schema() {
+        let change: MachineChange = serde_yaml::from_str(
+            r#"
+spec: rms/machine-change/v0.1
+machine:
+  mode: workflow-effect-machine
+  execution_binding:
+    kind: synchronous-envelopes
+    executors:
+    - {symbol: 'src/read.rs#execute', request_parameter: 1, status_symbol: 'src/io.rs#Ports::read'}
+    envelope_flow:
+      context: src/types.rs#Context
+      split: src/types.rs#Context::split
+      observe: src/types.rs#Context::observed
+      dispatcher: src/runtime.rs#dispatch
+      request_parameter: 1
+"#,
+        )
+        .unwrap();
+        let mut value = serde_yaml::from_str(include_str!(
+            "../../../../examples/rust/implementation.yaml"
+        ))
+        .unwrap();
+        apply_machine_change_to_manifest(&mut value, &change);
+        let manifest = LoadedManifest {
+            path: PathBuf::from("implementation.yaml"),
+            value,
+        };
+        let mut diagnostics = Vec::new();
+        validate_against_embedded_schema(&manifest, &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(
+            get_str(
+                &manifest.value,
+                &[
+                    "architecture",
+                    "machine",
+                    "execution_binding",
+                    "envelope_flow",
+                    "context"
+                ]
+            ),
+            Some("src/types.rs#Context")
+        );
+        let binding = get_path(
+            &manifest.value,
+            &["architecture", "machine", "execution_binding"],
+        )
+        .unwrap();
+        let decoded: persistent_async::ExecutionBinding =
+            serde_yaml::from_value(binding.clone()).unwrap();
+        assert_eq!(&serde_yaml::to_value(decoded).unwrap(), binding);
+        for path in [
+            vec![
+                "architecture",
+                "machine",
+                "execution_binding",
+                "envelope_flow",
+            ],
+            vec!["architecture", "machine", "execution_binding", "executors"],
+        ] {
+            let mut invalid = manifest.clone();
+            if path.last() == Some(&"envelope_flow") {
+                remove_yaml_path(&mut invalid.value, &path);
+            } else {
+                set_yaml_value_path(
+                    &mut invalid.value,
+                    &path,
+                    serde_yaml::from_str("[{symbol: 'src/read.rs#execute', request_parameter: 1}]")
+                        .unwrap(),
+                );
+            }
+            diagnostics.clear();
+            validate_against_embedded_schema(&invalid, &mut diagnostics);
+            assert!(!diagnostics.is_empty(), "schema accepted incomplete opt-in");
+        }
     }
 
     #[test]
@@ -121782,30 +122940,138 @@ semantic_functions:
             }))
             .unwrap()
         };
-        for (states, inputs) in [(16, 44), (64, 64)] {
-            let matrix =
-                build_probe_verification_matrix(&binding, &description(states, inputs)).unwrap();
-            let cases = get_path(&matrix, &["cases"])
-                .unwrap()
-                .as_sequence()
-                .unwrap();
-            assert_eq!(cases.len(), states * inputs);
-            for (index, case) in cases.iter().enumerate() {
-                assert_eq!(
-                    serde_json::to_value(case).unwrap(),
-                    json!({
-                        "id": format!("verify-state-{}-input-{}", index / inputs, index % inputs),
-                        "state": index / inputs, "input": index % inputs
-                    })
+        for (states, inputs) in [(16, 44), (64, 64), (1, 4097), (387, 129)] {
+            let matrix = build_probe_verification_matrix(&description(states, inputs)).unwrap();
+            let mut seen = 0;
+            let mut ids = std::collections::HashSet::new();
+            while seen < matrix.case_count {
+                let (request, count) = matrix.batch(&binding, seen).unwrap();
+                assert!(
+                    serde_json::to_vec_pretty(&serde_json::to_value(&request).unwrap())
+                        .unwrap()
+                        .len()
+                        <= MAX_VERIFY_PROBE_BATCH_BYTES
                 );
+                let cases = get_path(&request, &["cases"])
+                    .unwrap()
+                    .as_sequence()
+                    .unwrap();
+                assert!(!cases.is_empty() && cases.len() <= MAX_VERIFY_PROBE_BATCH_CASES);
+                assert_eq!(count, cases.len());
+                for case in cases {
+                    assert_eq!(
+                        serde_json::to_value(case).unwrap(),
+                        json!({
+                            "id": format!("verify-state-{}-input-{}", seen / inputs, seen % inputs),
+                            "state": seen / inputs, "input": seen % inputs
+                        })
+                    );
+                    assert!(ids.insert(get_str(case, &["id"]).unwrap().to_owned()));
+                    seen += 1;
+                }
             }
+            assert_eq!(seen, states * inputs);
+            assert!(matrix.batch(&binding, matrix.case_count).is_err());
         }
-        let error = build_probe_verification_matrix(&binding, &description(1, 4097))
+        let mut wide = description(1, 300);
+        wide["states"][0]["examples"][0] = YamlValue::String("x".repeat(4096));
+        let matrix = build_probe_verification_matrix(&wide).unwrap();
+        let mut offset = 0;
+        let mut batches = 0;
+        while offset < matrix.case_count {
+            let (request, count) = matrix.batch(&binding, offset).unwrap();
+            assert!(count > 0);
+            assert!(
+                serde_json::to_vec_pretty(&serde_json::to_value(request).unwrap())
+                    .unwrap()
+                    .len()
+                    <= MAX_VERIFY_PROBE_BATCH_BYTES
+            );
+            offset += count;
+            batches += 1;
+        }
+        assert_eq!(offset, 300);
+        assert!(
+            batches > 1,
+            "byte limit must split a product below the case-count limit"
+        );
+        wide["states"][0]["examples"][0] =
+            YamlValue::String("x".repeat(MAX_VERIFY_PROBE_BATCH_BYTES));
+        assert!(build_probe_verification_matrix(&wide)
+            .unwrap()
+            .batch(&binding, 0)
+            .is_err());
+        let error = build_probe_verification_matrix(&description(1025, 1024))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.contains("1049600 cases; maximum is 1048576"),
+            "{error}"
+        );
+        assert!(build_probe_verification_matrix(&description(0, 44)).is_err());
+        assert!(build_probe_verification_matrix(&description(16, 0)).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly selected consumer implementation and its native probe runner"]
+    fn consumer_complete_probe_matrix_uses_bounded_batches() {
+        let implementation = std::env::var_os("RMS_MATRIX_CONSUMER_IMPLEMENTATION")
+            .expect("select an explicit consumer implementation");
+        let summary =
+            verify_probe_handshake(Path::new(&implementation), DEFAULT_PROOF_TIMEOUT_SECONDS)
+                .unwrap()
+                .expect("consumer must declare a probe");
+        assert!(
+            summary.contains("representative state/input matrix"),
+            "{summary}"
+        );
+        println!("{summary}");
+    }
+
+    #[test]
+    #[ignore = "requires an explicitly selected consumer implementation and its native probe runner"]
+    fn consumer_probe_rejects_a_missing_result_in_a_later_batch() {
+        let selected = PathBuf::from(
+            std::env::var_os("RMS_MATRIX_CONSUMER_IMPLEMENTATION")
+                .expect("select an explicit consumer implementation"),
+        );
+        let binding = load_probe_binding(&selected).unwrap();
+        let root = unique_test_dir("probe-later-batch-refusal");
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("corrupt_later_batch.py");
+        fs::write(
+            &script,
+            format!(
+                r#"import json, os, subprocess
+subprocess.run(["/bin/sh", "-c", {command}], cwd={cwd}, check=True)
+with open(os.environ["RMS_PROBE_REQUEST"]) as source:
+    request = json.load(source)
+if request.get("operation") == "evaluate" and request["cases"][0]["id"] != "verify-state-0-input-0":
+    with open(os.environ["RMS_PROBE_OUTPUT"]) as source:
+        result = json.load(source)
+    result["results"].pop()
+    with open(os.environ["RMS_PROBE_OUTPUT"], "w") as destination:
+        json.dump(result, destination)
+"#,
+                command = serde_json::to_string(&binding.command).unwrap(),
+                cwd = serde_json::to_string(&selected.parent().unwrap().display().to_string())
+                    .unwrap(),
+            ),
+        )
+        .unwrap();
+        let mut implementation = binding.implementation.value;
+        implementation["commands"]["probe"] = YamlValue::String(format!(
+            "python3 '{}'",
+            script.display().to_string().replace('\'', "'\\''")
+        ));
+        let fixture = root.join("implementation.yaml");
+        fs::write(&fixture, serde_yaml::to_string(&implementation).unwrap()).unwrap();
+        let error = verify_probe_handshake(&fixture, DEFAULT_PROOF_TIMEOUT_SECONDS)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("4097 cases; maximum is 4096"), "{error}");
-        assert!(build_probe_verification_matrix(&binding, &description(0, 44)).is_err());
-        assert!(build_probe_verification_matrix(&binding, &description(16, 0)).is_err());
+        assert!(error.contains("results for"), "{error}");
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -127627,7 +128893,7 @@ properties:
         fs::remove_dir_all(home).unwrap();
     }
 
-    fn unique_test_dir(label: &str) -> PathBuf {
+    pub(super) fn unique_test_dir(label: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -127635,7 +128901,7 @@ properties:
         std::env::temp_dir().join(format!("rms-{label}-{}-{nanos}", std::process::id()))
     }
 
-    fn initialize_test_git_repository(root: &Path) {
+    pub(super) fn initialize_test_git_repository(root: &Path) {
         fs::create_dir_all(root).unwrap();
         for args in [
             vec!["init"],
@@ -127819,7 +129085,7 @@ properties:
         );
     }
 
-    fn no_provider_options() -> PromptRunOptions {
+    pub(super) fn no_provider_options() -> PromptRunOptions {
         PromptRunOptions {
             provider: Provider::None,
             record: false,
@@ -127868,7 +129134,7 @@ properties:
         fs::remove_dir_all(root).unwrap();
     }
 
-    fn add_module_request(
+    pub(super) fn add_module_request(
         root: &Path,
         name: &str,
         purpose: &str,

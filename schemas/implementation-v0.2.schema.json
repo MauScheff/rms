@@ -161,6 +161,23 @@
     }
   ],
   "$defs": {
+    "envelopeFlow": {
+      "type": "object",
+      "required": ["context", "split", "observe", "dispatcher", "request_parameter"],
+      "properties": {
+        "context": {"type": "string", "pattern": "^[^#]+#[^#]+$"},
+        "split": {"type": "string", "pattern": "^[^#]+#[^#]+$"},
+        "observe": {"type": "string", "pattern": "^[^#]+#[^#]+$"},
+        "dispatcher": {"type": "string", "pattern": "^[^#]+#[^#]+$"},
+        "request_parameter": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "envelopeFlowStatus": {
+      "if": {"required": ["envelope_flow"]},
+      "then": {"properties": {"executors": {"items": {"required": ["status_symbol"]}}}},
+      "else": {"properties": {"executors": {"items": {"not": {"required": ["status_symbol"]}}}}}
+    },
     "architecture": {
       "type": "object",
       "required": [
@@ -171,6 +188,28 @@
       "properties": {
         "shape": {
           "type": "string"
+        },
+        "trace": {
+          "type": "object",
+          "properties": {
+            "producers": {
+              "type": ["array", "null"],
+              "items": {
+                "type": "object",
+                "required": ["id", "profile", "bundle", "command", "runner"],
+                "properties": {
+                  "id": {"type": "string", "minLength": 1},
+                  "profile": {"enum": ["smoke", "ci", "nightly"]},
+                  "bundle": {"type": "string", "minLength": 1},
+                  "command": {"type": "string", "minLength": 1},
+                  "runner": {"type": "string", "minLength": 1},
+                  "semantic_function": {"type": "string", "minLength": 1}
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "additionalProperties": true
         },
         "machine": {
           "$ref": "#/$defs/machine"
@@ -267,6 +306,7 @@
               "required": ["kind", "executors"],
               "properties": {
                 "kind": {"const": "synchronous-envelopes"},
+                "envelope_flow": {"$ref": "#/$defs/envelopeFlow"},
                 "executors": {
                   "type": "array", "minItems": 1,
                   "items": {
@@ -274,19 +314,22 @@
                     "required": ["symbol", "request_parameter"],
                     "properties": {
                       "symbol": {"type": "string", "pattern": "^[^#]+#[^#]+$"},
-                      "request_parameter": {"type": "integer", "minimum": 0}
+                      "request_parameter": {"type": "integer", "minimum": 0},
+                      "status_symbol": {"type": "string", "pattern": "^[^#]+#[^#]+$"}
                     },
                     "additionalProperties": false
                   }
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "allOf": [{"$ref": "#/$defs/envelopeFlowStatus"}]
             },
             {
               "type": "object",
               "required": ["kind", "runtime", "state_field", "records_field", "pending_field", "input_poll", "executors"],
               "properties": {
                 "kind": {"const": "persistent-async"},
+                "envelope_flow": {"$ref": "#/$defs/envelopeFlow"},
                 "runtime": {"type": "string", "pattern": "^[^#]+#[^#]+$"},
                 "state_field": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
                 "records_field": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
@@ -299,13 +342,15 @@
                     "required": ["symbol", "request_parameter"],
                     "properties": {
                       "symbol": {"type": "string", "pattern": "^[^#]+#[^#]+$"},
-                      "request_parameter": {"type": "integer", "minimum": 0}
+                      "request_parameter": {"type": "integer", "minimum": 0},
+                      "status_symbol": {"type": "string", "pattern": "^[^#]+#[^#]+$"}
                     },
                     "additionalProperties": false
                   }
                 }
               },
-              "additionalProperties": false
+              "additionalProperties": false,
+              "allOf": [{"$ref": "#/$defs/envelopeFlowStatus"}]
             }
           ]
         },
@@ -319,6 +364,23 @@
         },
         "types": {
           "$ref": "#/$defs/machineTypes"
+        },
+        "retained_structural_bindings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["compatibility", "prior_revision", "kind", "name", "source", "source_sha256"],
+            "properties": {
+              "compatibility": {"const": "preserve-public-shape"},
+              "prior_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+              "kind": {"enum": ["command_envelope", "event_envelope", "effect_envelope", "effect_result_envelope", "transition", "transition_record"]},
+              "name": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+              "source": {"type": "string", "minLength": 1},
+              "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            },
+            "additionalProperties": false
+          }
         },
         "states": {
           "$ref": "#/$defs/identifierList"
