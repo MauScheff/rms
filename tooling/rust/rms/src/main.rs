@@ -14599,6 +14599,46 @@ fn write_prompt_run_record(
     prompt: &str,
     options: &PromptRunOptions,
 ) -> Result<PathBuf> {
+    let run_dir = write_prompt_run_record_without_validation(
+        manifest, root, kind, task, diff, impact, prompt, options,
+    )?;
+    let diagnostics = collect_validation_diagnostics(
+        root,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )?;
+    let checks = json!({
+        "validator": VALIDATOR_NAME,
+        "validator_version": VALIDATOR_VERSION,
+        "validation": diagnostics,
+    });
+    fs::write(
+        run_dir.join("checks.json"),
+        serde_json::to_string_pretty(&checks)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write `{}`",
+            run_dir.join("checks.json").display()
+        )
+    })?;
+    Ok(run_dir)
+}
+
+fn write_prompt_run_record_without_validation(
+    manifest: &LoadedManifest,
+    root: &Path,
+    kind: PromptKind,
+    task: Option<&str>,
+    diff: Option<&str>,
+    impact: bool,
+    prompt: &str,
+    options: &PromptRunOptions,
+) -> Result<PathBuf> {
     let run_root = root.join(&options.run_root);
     fs::create_dir_all(&run_root)
         .with_context(|| format!("failed to create run root `{}`", run_root.display()))?;
@@ -14625,31 +14665,6 @@ fn write_prompt_run_record(
         format!(
             "failed to write `{}`",
             run_dir.join("request.yaml").display()
-        )
-    })?;
-
-    let diagnostics = collect_validation_diagnostics(
-        root,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-    )?;
-    let checks = json!({
-        "validator": VALIDATOR_NAME,
-        "validator_version": VALIDATOR_VERSION,
-        "validation": diagnostics,
-    });
-    fs::write(
-        run_dir.join("checks.json"),
-        serde_json::to_string_pretty(&checks)?,
-    )
-    .with_context(|| {
-        format!(
-            "failed to write `{}`",
-            run_dir.join("checks.json").display()
         )
     })?;
 
@@ -59983,16 +59998,30 @@ fn run_spec_plan(
     };
 
     let run_dir = if options.record || options.provider != Provider::None {
-        Some(write_prompt_run_record(
-            authority,
-            root,
-            PromptKind::Plan,
-            Some(task),
-            None,
-            false,
-            &rendered,
-            options,
-        )?)
+        let record = if options.provider == Provider::Codex && rendered.len() > CODEX_INPUT_LIMIT {
+            write_prompt_run_record_without_validation(
+                authority,
+                root,
+                PromptKind::Plan,
+                Some(task),
+                None,
+                false,
+                &rendered,
+                options,
+            )?
+        } else {
+            write_prompt_run_record(
+                authority,
+                root,
+                PromptKind::Plan,
+                Some(task),
+                None,
+                false,
+                &rendered,
+                options,
+            )?
+        };
+        Some(record)
     } else {
         None
     };
@@ -60039,6 +60068,9 @@ fn run_spec_plan(
     Ok(())
 }
 
+// UTF-8 bytes are a conservative upper bound on the provider's character count.
+const CODEX_INPUT_LIMIT: usize = 1_048_576;
+
 fn execute_spec_plan_provider(
     root: &Path,
     context: &SpecTargetContext,
@@ -60079,6 +60111,67 @@ fn execute_spec_plan_provider_with_program(
     for attempt in 1..=2 {
         if attempt > 1 {
             fs::write(run_dir.join("prompt-repair.md"), &prompt_for_attempt)?;
+        }
+        // Count UTF-8 bytes conservatively: this cannot undercount the provider's
+        // character limit, including for non-ASCII input.
+        let input_bytes = prompt_for_attempt.len();
+        if input_bytes > CODEX_INPUT_LIMIT {
+            let packet_path = run_dir.join("local-planning-packet.md");
+            let prompt_path = run_dir.join(if attempt == 1 {
+                "prompt.md"
+            } else {
+                "prompt-repair.md"
+            });
+            // Direct callers of this helper need the same inspectable evidence
+            // as the CLI, which normally writes prompt.md in the run record.
+            if attempt == 1 && !prompt_path.exists() {
+                fs::write(&prompt_path, &prompt_for_attempt)?;
+            }
+            let packet = format!(
+                "# Local semantic planning packet\n\nProvider dispatch was stopped: attempt {attempt} contains {input_bytes} UTF-8 bytes; the conservative limit is {CODEX_INPUT_LIMIT}.\n\nTarget: {}\nRoot: {}\nComplete task and rendered context: {}\n\nTask excerpt (may be truncated; read the complete task in the prompt):\n\n{}\n\nInspect the target manifests, directly referenced contracts, semantic functions, transitions, and proof obligations, including their dependencies. This packet does not establish which declarations are relevant or complete. Prepare an rms/semantic-change/v0.1 change file using the schema in the saved prompt. Run `rms spec apply <target> --change-file <file> --dry-run` and review the result before apply. Preserve the original route receipt when required. No provider request or canonical change was made by this attempt.\n",
+                context.target.display(),
+                root.display(),
+                prompt_path.display(),
+                truncate_for_prompt(task, 16_000),
+            );
+            fs::write(&packet_path, packet)?;
+            if attempt == 1 && !run_dir.join("checks.json").exists() {
+                fs::write(
+                    run_dir.join("checks.json"),
+                    serde_json::to_string_pretty(&json!({
+                        "validator": VALIDATOR_NAME,
+                        "validator_version": VALIDATOR_VERSION,
+                        "validation_status": "not-run-input-too-large",
+                    }))?,
+                )?;
+            }
+            let message = format!(
+                "semantic planner attempt {attempt} is too large for Codex: {input_bytes} UTF-8 bytes exceeds the conservative {CODEX_INPUT_LIMIT}-byte limit; no provider was started for this attempt. Inspect `{}` and use the manual change-file dry-run/apply workflow",
+                packet_path.display()
+            );
+            let diagnostics = vec![error(
+                "semantic-plan.input-too-large",
+                &authority.path,
+                message.clone(),
+            )];
+            fs::write(
+                run_dir.join("semantic-plan-diagnostics.json"),
+                serde_json::to_string_pretty(&diagnostics)?,
+            )?;
+            write_provider_status(
+                run_dir,
+                &json!({
+                    "provider": options.provider.label(),
+                    "result": "input-too-large",
+                    "attempts": attempt,
+                    "input_bytes": input_bytes,
+                    "limit_bytes": CODEX_INPUT_LIMIT,
+                    "planning_packet": packet_path,
+                    "prompt_path": prompt_path,
+                    "tokens": null,
+                }),
+            )?;
+            bail!("{message}");
         }
         let response_name = format!("attempt-{attempt}-response.md");
         let log_prefix = format!("attempt-{attempt}-provider");
@@ -119531,6 +119624,90 @@ composition_exports:
                 diagnostic.check == "semantic.composition-export-provider-ambiguous"
             }));
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn semantic_plan_oversized_record_skips_validation_before_dispatch() {
+        let root = prompt_fixture("semantic-plan-oversized-record");
+        let module = root.join("module.yaml");
+        let mut manifest = fs::read_to_string(&module).unwrap();
+        manifest.push_str("\nx-padding: ");
+        manifest.push_str(&"x".repeat(CODEX_INPUT_LIMIT + 1));
+        manifest.push('\n');
+        fs::write(&module, manifest).unwrap();
+        let mut options = no_provider_options();
+        options.provider = Provider::Codex;
+        let error = run_spec_plan(&module, &root, "preserve existing behavior", None, &options)
+            .unwrap_err();
+        assert!(error.to_string().contains("no provider was started"));
+        let records: Vec<_> = fs::read_dir(root.join("runs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(records.len(), 1);
+        let checks = fs::read_to_string(records[0].join("checks.json")).unwrap();
+        assert!(checks.contains("not-run-input-too-large"));
+        assert!(records[0].join("local-planning-packet.md").is_file());
+        assert!(records[0].join("prompt.md").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn semantic_plan_oversized_input_never_starts_provider() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = prompt_fixture("semantic-plan-oversized-input");
+        let context = load_spec_target(&root.join("module.yaml")).unwrap();
+        let authority = context.module.as_ref().unwrap();
+        let run_dir = root.join("provider-run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let program = root.join("provider.sh");
+        let marker = root.join("provider-started");
+        write_test_file(
+            &program,
+            &format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        );
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let mut options = no_provider_options();
+        options.provider = Provider::Codex;
+        let prompt = "x".repeat(1_048_577);
+        let result = execute_spec_plan_provider_with_program(
+            &program,
+            &root,
+            &context,
+            authority,
+            "preserve existing behavior",
+            &prompt,
+            &run_dir,
+            &options,
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no provider was started"));
+        assert!(!marker.exists());
+        assert_eq!(
+            fs::read_to_string(run_dir.join("prompt.md")).unwrap(),
+            prompt
+        );
+        let packet = fs::read_to_string(run_dir.join("local-planning-packet.md")).unwrap();
+        assert!(packet.contains("preserve existing behavior"));
+        assert!(packet.contains("--change-file <file> --dry-run"));
+        assert!(packet.contains("does not establish which declarations are relevant"));
+        assert!(packet.len() < 32_000);
+        assert!(
+            fs::read_to_string(run_dir.join("semantic-plan-diagnostics.json"))
+                .unwrap()
+                .contains("semantic-plan.input-too-large")
+        );
+        assert!(fs::read_to_string(run_dir.join("provider.json"))
+            .unwrap()
+            .contains("input-too-large"));
         fs::remove_dir_all(root).unwrap();
     }
 
