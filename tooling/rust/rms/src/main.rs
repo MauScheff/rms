@@ -54896,6 +54896,7 @@ fn advisory_static_finding(diagnostic: &Diagnostic) -> bool {
                 | "effects.opaque-pure-forbidden"
                 | "implementation.rust.imports.unresolved"
                 | "implementation.rust.typing.public-fields"
+                | "implementation.rust.typing.constructor"
         )
 }
 
@@ -108973,6 +108974,8 @@ machine:
             "effects.analysis-unavailable",
             "effects.opaque-pure-forbidden",
             "implementation.rust.imports.unresolved",
+            "implementation.rust.typing.public-fields",
+            "implementation.rust.typing.constructor",
         ] {
             let diagnostic = warning(
                 check,
@@ -112359,9 +112362,19 @@ pub fn run_plan(_state: WidgetState, _input: WidgetInput) -> WidgetTransition {
         assert!(diagnostics.iter().all(|diagnostic| {
             diagnostic.check != "implementation.rust.semantic-functions.symbol"
         }));
-        assert!(diagnostics
+        let constructor = diagnostics
             .iter()
-            .any(|diagnostic| { diagnostic.check == "implementation.rust.typing.constructor" }));
+            .find(|diagnostic| diagnostic.check == "implementation.rust.typing.constructor")
+            .expect("constructor uncertainty must remain visible");
+        assert!(advisory_static_finding(constructor));
+        assert_eq!(
+            audit_check_from_diagnostic(constructor, true).result,
+            "not-applicable"
+        );
+        assert_eq!(
+            module_scoped_acceptance_result(&[], &[constructor.clone()], &[]),
+            CheckResult::Pass
+        );
     }
 
     #[test]

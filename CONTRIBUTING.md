@@ -49,3 +49,16 @@ CI. It does not change RMS CLI results or downstream gates.
 ## Pilot rule
 
 During the 0.1 pilot, prefer reports from real implementations over speculative expansion. Friction that appears in one language or agent should first be solved in its binding or integration layer.
+
+## Consumer analyzer acceptance
+
+Uncertain static analysis remains visible as advisory evidence. Unresolved calls,
+unavailable effect analysis, opaque pure implementation inspection, unresolved Rust
+imports, public-field design findings, and unrecognized Rust constructors do not
+block acceptance when reported as warnings. These findings do not prove that the
+implementation is correct.
+
+Errors remain blocking, including a demonstrated forbidden effect. Canonical
+ownership, schema validity, declared dependencies, and required native compilation,
+tests, and consumer checks retain their existing gates. An unknown diagnostic is
+not automatically advisory.
